@@ -4,6 +4,7 @@ import base64
 from email.message import EmailMessage
 import requests
 import streamlit as st
+import pandas as pd
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
@@ -35,6 +36,26 @@ APP_PASSWORD = get_secret("APP_PASSWORD", "ctg2026")
 
 st.set_page_config(page_title="CTG Ministry Hub - AI Agent", page_icon="⛪", layout="wide")
 
+@st.cache_data
+def load_excel_data():
+    # Awtomatikong hahanapin ang anumang .xlsx file sa folder para maiwasan ang path error
+    excel_files = [f for f in os.listdir('.') if f.endswith('.xlsx') and 'CTG' in f]
+    if not excel_files:
+        # Fallback sa eksaktong pangalan kung sakaling wala sa listahan
+        if os.path.exists("CTG_HEADS_TOTAL_UPDATED FIXED.xlsx"):
+            excel_files = ["CTG_HEADS_TOTAL_UPDATED FIXED.xlsx"]
+        else:
+            return None, "Walang nakitang Excel file sa folder."
+    
+    filename = excel_files[0]
+    try:
+        xls = pd.ExcelFile(filename)
+        return xls, filename
+    except Exception as e:
+        return None, str(e)
+
+excel_xls, excel_filename = load_excel_data()
+
 def safe_generate_content(client, model, contents, config=None):
     max_retries = 3
     delay = 2
@@ -64,7 +85,7 @@ if not st.session_state.authenticated:
     col1, col2, col3 = st.columns([1, 1.2, 1])
     with col2:
         st.title("⛪ CTG Ministry Hub")
-        st.caption("Mag-login upang ma-access ang AI Assistant para sa mga Leaders at Priests.")
+        st.caption("Mag-login upang ma-access ang AI Assistant para sa mga Leaders.")
         with st.form("login_form"):
             username = st.text_input("Username")
             password = st.text_input("Password", type="password")
@@ -77,43 +98,23 @@ if not st.session_state.authenticated:
                     st.error("Maling Username o Password.")
     st.stop()
 
-def get_notion_crm_data(search_name: str = "") -> str:
-    if not NOTION_TOKEN or not NOTION_CRM_DB_ID:
-        return "Error: Kulang ang NOTION credentials."
-    clean_db_id = NOTION_CRM_DB_ID.strip().replace("-", "")
-    url = f"https://api.notion.com/v1/databases/{clean_db_id}/query"
-    headers = {"Authorization": f"Bearer {NOTION_TOKEN.strip()}", "Notion-Version": "2022-06-28", "Content-Type": "application/json"}
+def query_excel_database(search_query: str) -> str:
+    if excel_xls is None:
+        return "Error: Hindi makita ang Excel database file."
     try:
-        response = requests.post(url, headers=headers, json={"page_size": 50}, timeout=15)
-        if response.status_code != 200:
-            return f"Notion API Error ({response.status_code}): {response.text}"
-        results = response.json().get("results", [])
-        if not results:
-            return "Walang nakitang records sa Notion database."
-        records = []
-        for page in results:
-            props = page.get("properties", {})
-            row_info = []
-            for prop_name, prop_val in props.items():
-                ptype = prop_val.get("type")
-                val_str = ""
-                if ptype == "title":
-                    val_str = "".join([t.get("plain_text", "") for t in prop_val.get("title", [])])
-                elif ptype == "rich_text":
-                    val_str = "".join([t.get("plain_text", "") for t in prop_val.get("rich_text", [])])
-                elif ptype == "email":
-                    val_str = prop_val.get("email") or ""
-                elif ptype == "phone_number":
-                    val_str = prop_val.get("phone_number") or ""
-                if val_str:
-                    row_info.append(f"{prop_name}: {val_str}")
-            line = " | ".join(row_info)
-            if line:
-                if not search_name or search_name.lower() in line.lower():
-                    records.append(f"- {line}")
-        return "Mga Rekord mula sa Notion CRM:\n" + "\n".join(records) if records else f"Walang nahanap na record para sa '{search_name}'."
+        results = []
+        if "HEAD OF FAMILY MASTER" in excel_xls.sheet_names:
+            df_hof = pd.read_excel(excel_xls, sheet_name="HEAD OF FAMILY MASTER", header=1)
+            match = df_hof[df_hof.astype(str).apply(lambda x: x.str.contains(search_query, case=False, na=False)).any(axis=1)]
+            if not match.empty:
+                for _, row in match.head(5).iterrows():
+                    results.append(f"Family ID: {row.get('Family ID', 'N/A')} | Parish: {row.get('Parish', 'N/A')} | Head: {row.get('Head of Family', 'N/A')} | Address: {row.get('Complete Address', 'N/A')}")
+        
+        if results:
+            return "Mga nahanap sa Excel Database:\n" + "\n".join(results)
+        return f"Walang nahanap na record sa Excel para sa '{search_query}'."
     except Exception as e:
-        return f"System Error sa Notion: {str(e)}"
+        return f"Error sa pagbasa ng Excel: {str(e)}"
 
 def send_email_via_gmail(recipient_email: str, subject: str, body_text: str) -> str:
     if not all([GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN]):
@@ -126,7 +127,7 @@ def send_email_via_gmail(recipient_email: str, subject: str, body_text: str) -> 
         msg["To"] = recipient_email
         msg["Subject"] = subject
         encoded_msg = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-        send_result = service.users().messages().send(userId="me", body={"raw": encoded_msg}).execute()
+        service.users().messages().send(userId="me", body={"raw": encoded_msg}).execute()
         return f"Matagumpay na naipadala ang email kay {recipient_email}!"
     except Exception as e:
         return f"Error sa pag-send ng Gmail: {str(e)}"
@@ -142,7 +143,7 @@ if "custom_secrets" not in st.session_state:
 with st.sidebar:
     st.header("⚙️ Ministry Control Panel")
     st.write(f"👤 Naka-login bilang: **{APP_USER}**")
-    app_mode = st.radio("Pumili ng Pahina:", ["💬 AI Chat Assistant", "🙏 Prayer Wall & Categorizer", "📢 Announcement Broadcaster", "🛠️ App Settings"])
+    app_mode = st.radio("Pumili ng Pahina:", ["💬 AI Chat Assistant", "📊 Parish Directory & Excel Search", "🙏 Prayer Wall & Categorizer", "📢 Announcement Broadcaster", "🛠️ App Settings"])
     selected_model = st.selectbox("Gemini Model:", ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-3.8-flash"], index=0)
     st.divider()
     if st.button("🗑️ I-clear ang Chat History"):
@@ -153,16 +154,53 @@ with st.sidebar:
         st.session_state.authenticated = False
         st.rerun()
 
+if app_mode == "📊 Parish Directory & Excel Search":
+    st.title("📊 CTG Parish Directory & Excel Database")
+    st.caption("Pumili ng parokya gamit ang dropdown filter o hanapin ang Family ID at pangalan ng miyembro mula sa Excel master file.")
+    
+    if excel_xls is not None:
+        st.info(f"📁 Nakakonekta sa Excel File: `{excel_filename}`")
+        try:
+            df_hof = pd.read_excel(excel_xls, sheet_name="HEAD OF FAMILY MASTER", header=1)
+            
+            available_parishes = ["Lahat ng Parokya"] + sorted(df_hof['Parish'].dropna().unique().tolist())
+            
+            col_filter1, col_filter2 = st.columns(2)
+            with col_filter1:
+                selected_parish = st.selectbox("Pumili ng Parish:", available_parishes)
+            with col_filter2:
+                search_term = st.text_input("Maghanap (Family ID o Pangalan):", placeholder="hal. CTG-LN-FAM-0001")
+            
+            filtered_df = df_hof.copy()
+            if selected_parish != "Lahat ng Parokya":
+                filtered_df = filtered_df[filtered_df['Parish'] == selected_parish]
+                
+            if search_term:
+                filtered_df = filtered_df[filtered_df.astype(str).apply(lambda x: x.str.contains(search_term, case=False, na=False)).any(axis=1)]
+            
+            st.divider()
+            st.subheader(f"Resulta para sa: {selected_parish} ({len(filtered_df)} pamilya ang nahanap)")
+            
+            if not filtered_df.empty:
+                st.dataframe(filtered_df[['Family ID', 'Parish', 'Head of Family', 'Mobile Number', 'Complete Address', 'Total Family Members', 'Active Members']], use_container_width=True)
+            else:
+                st.warning("Walang nahanap na record para sa napiling parokya o salita.")
+                
+        except Exception as ex:
+            st.error(f"Error sa pagbasa ng Excel data: {str(ex)}")
+    else:
+        st.error(f"Hindi makita ang Excel database file sa folder. Detalye: {excel_filename}")
+    st.stop()
+
 if app_mode == "🙏 Prayer Wall & Categorizer":
     st.title("🙏 AI Prayer Request & Needs Categorizer")
-    st.caption("I-paste dito ang mga prayer requests para awtomatikong ma-classify ng AI.")
     raw_prayer = st.text_area("Nilalaman ng Prayer Request o Mensahe:")
-    if st.button("Suriin at I-categorize", type="primary"):
+    if st.button("Suriin sa AI at I-categorize", type="primary"):
         if raw_prayer:
             active_key = st.session_state.custom_secrets["GEMINI_API_KEY"]
             client = genai.Client(api_key=active_key)
             with st.spinner("Sinusuri ng AI ang kahilingan..."):
-                prompt = f"Suriin ang sumusunod na prayer request. Ibigay ang Kategorya (Kalusugan, Pananalapi, Pamilya, Espirituwal, o Iba pa), Urgency Level, at comforting Bible verse:\n\n{raw_prayer}"
+                prompt = f"Suriin ang sumusunod na prayer request. Ibigay ang Kategorya (Kalusugan, Pananalapi, Pamilya, Espirituwal), Urgency Level, at comforting Bible verse:\n\n{raw_prayer}"
                 try:
                     res = safe_generate_content(client, selected_model, prompt)
                     st.success("Tapos na ang Pagsusuri!")
@@ -175,7 +213,6 @@ if app_mode == "🙏 Prayer Wall & Categorizer":
 
 if app_mode == "📢 Announcement Broadcaster":
     st.title("📢 AI Ministry Announcement Broadcaster")
-    st.caption("Gumawa ng pormal na announcement para sa mga miyembro at ipadala via email.")
     event_title = st.text_input("Pamagat ng Aktibidad / Event:")
     event_details = st.text_area("Mga Detalye (Petsa, Oras, Lugar, Mensahe):")
     target_email = st.text_input("Email ng Tatanggap:")
@@ -185,7 +222,7 @@ if app_mode == "📢 Announcement Broadcaster":
             client = genai.Client(api_key=active_key)
             with st.spinner("Gumagawa at nagpapadala ng broadcast..."):
                 try:
-                    p_prompt = f"Gumawa ng pormal, nakaka-inspire, at malinaw na simbahan announcement email tungkol sa: {event_title}. Mga detalye: {event_details}. Isulat sa Tagalog."
+                    p_prompt = f"Gumawa ng pormal at nakaka-inspire na announcement email tungkol sa: {event_title}. Mga detalye: {event_details}. Isulat sa Tagalog."
                     ai_res = safe_generate_content(client, selected_model, p_prompt)
                     email_body = ai_res.text
                     res_send = send_email_via_gmail(target_email, f"CTG Announcement: {event_title}", email_body)
@@ -225,7 +262,7 @@ if app_mode == "🛠️ App Settings":
     st.stop()
 
 st.title("⛪ CTG Church AI Ministry Assistant")
-st.caption("Katuwang ng mga Leaders at Priests sa pamamahala ng Visitors CRM, Follow-up Emails, at Iskedyul.")
+st.caption("Katuwang ng mga Leaders sa pamamahala ng Parish Records, Visitors, at Emails.")
 
 active_gemini_key = st.session_state.custom_secrets["GEMINI_API_KEY"]
 if not active_gemini_key:
@@ -243,13 +280,13 @@ if "chat_session" not in st.session_state or st.session_state.current_model != s
     client = genai.Client(api_key=active_gemini_key)
     system_instruction = (
         "Ikaw ang opisyal na AI Ministry Assistant ng CTG Church. "
-        "Tinutulungan mo ang mga church leaders sa pag-check ng Notion CRM database "
-        "at sa pagpapadala ng follow-up emails sa pamamagitan ng Gmail. "
+        "Tinutulungan mo ang mga church leaders sa paghanap ng record sa Excel database "
+        "at sa pagpapadala ng follow-up emails sa pamamahala ng Gmail. "
         "Maging magalang, malinaw, at tumugon sa wikang Tagalog o Taglish."
     )
     config = types.GenerateContentConfig(
         system_instruction=system_instruction,
-        tools=[get_notion_crm_data, send_email_via_gmail],
+        tools=[query_excel_database, send_email_via_gmail],
         temperature=0.3,
     )
     st.session_state.chat_session = client.chats.create(model=selected_model, config=config)
@@ -258,7 +295,7 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-if user_prompt := st.chat_input("Magtanong tungkol sa visitors sa Notion o magpa-send ng follow-up email..."):
+if user_prompt := st.chat_input("Magtanong tungkol sa records sa Excel o magpa-send ng email..."):
     st.session_state.messages.append({"role": "user", "content": user_prompt})
     with st.chat_message("user"):
         st.markdown(user_prompt)
