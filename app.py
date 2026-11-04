@@ -59,7 +59,7 @@ PARISH_ORDER = [
 # 👥 ACCOUNTS NG ADMIN AT MGA PAROKYA (1-10)
 # ==========================================
 PARISH_ACCOUNTS = {
-    "admin": {"password": "ctg2026", "parish": "Lahat ng Parokya", "role": "Master Admin"},
+    "ctg.ministry.master.admin": {"password": "Church#Temple#God$2026!Admin", "parish": "Lahat ng Parokya", "role": "Master Admin"},
     
     "lipay norte parish": {"password": "ctglipaynorte1", "parish": "LIPAY NORTE PARISH", "role": "Parish Leader"},
     "lipaynorteparish": {"password": "ctglipaynorte1", "parish": "LIPAY NORTE PARISH", "role": "Parish Leader"},
