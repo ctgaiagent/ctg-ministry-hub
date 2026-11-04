@@ -59,7 +59,7 @@ PARISH_ORDER = [
 # 👥 ACCOUNTS NG ADMIN AT MGA PAROKYA (1-10)
 # ==========================================
 PARISH_ACCOUNTS = {
-    "ctg.ministry.master.admin": {"password": "Chrch#Temple#God$2026!Admin", "parish": "Lahat ng Parokya", "role": "Master Admin"},
+    "ctg.ministry.master.admin": {"password": "Church#Temple#God$2026!Admin", "parish": "Lahat ng Parokya", "role": "Master Admin"},
     
     "lipay norte parish": {"password": "ctglipaynorte1", "parish": "LIPAY NORTE PARISH", "role": "Parish Leader"},
     "lipaynorteparish": {"password": "ctglipaynorte1", "parish": "LIPAY NORTE PARISH", "role": "Parish Leader"},
@@ -348,7 +348,7 @@ def safe_generate_content(client, model, contents, config=None):
     raise Exception("Ang mga Gemini models ay kasalukuyang busy o hindi ma-access. Pakisuri ang iyong GEMINI_API_KEY.")
 
 # ==========================================
-# 🔑 LOGIN SCREEN (MAY OPISYAL NA LOGO)
+# 🔑 LOGIN SCREEN (MAY OPISYAL NA LOGO NA TAMA)
 # ==========================================
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
@@ -359,11 +359,18 @@ if "assigned_parish" not in st.session_state:
 
 if not st.session_state.authenticated:
     st.markdown("<br><br>", unsafe_allow_html=True)
-    col1, col2, col3 = st.columns([1, 1.2, 1])
+    col1, col2, col3 = st.columns([1, 1.3, 1])
     with col2:
         if os.path.exists("logo.jpg"):
-            st.image("logo.jpg", width=140)
-        st.title("⛪ CTG Ministry Hub Login")
+            st.image("logo.jpg", width=120)
+            
+        col_log_img, col_log_txt = st.columns([0.15, 0.85])
+        with col_log_img:
+            if os.path.exists("logo.jpg"):
+                st.image("logo.jpg", width=45)
+        with col_log_txt:
+            st.markdown("### CTG Ministry Hub Login")
+            
         st.caption("Ilagay ang iyong Username at Password.")
         with st.form("login_form"):
             username_input = st.text_input("Username").strip().lower()
