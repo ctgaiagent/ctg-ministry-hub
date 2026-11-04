@@ -59,7 +59,7 @@ PARISH_ORDER = [
 # 👥 ACCOUNTS NG ADMIN AT MGA PAROKYA (1-10)
 # ==========================================
 PARISH_ACCOUNTS = {
-    "ctg.ministry.master.admin": {"password": "Church#Temple#God$2026!Admin", "parish": "Lahat ng Parokya", "role": "Master Admin"},
+    "ctg.ministry.master.admin": {"password": "Chrch#Temple#God$2026!Admin", "parish": "Lahat ng Parokya", "role": "Master Admin"},
     
     "lipay norte parish": {"password": "ctglipaynorte1", "parish": "LIPAY NORTE PARISH", "role": "Parish Leader"},
     "lipaynorteparish": {"password": "ctglipaynorte1", "parish": "LIPAY NORTE PARISH", "role": "Parish Leader"},
@@ -101,10 +101,8 @@ def extract_id_from_url(url: str) -> str:
 
 @st.cache_data(ttl=600, show_spinner="Binabasa ang Excel database mula sa Google Drive...")
 def load_complete_parish_members():
-    """Direktang nagda-download at nagbabasa ng Excel file mula sa Google Drive / Sheets."""
     doc_id = extract_id_from_url(CLOUD_SPREADSHEET_URL)
     
-    # Sinusubukan ang iba't ibang Google export endpoints para siguradong makuha ang .xlsx binary
     download_urls = [
         f"https://docs.google.com/spreadsheets/d/{doc_id}/export?format=xlsx",
         f"https://drive.google.com/uc?export=download&id={doc_id}&confirm=t",
@@ -119,11 +117,9 @@ def load_complete_parish_members():
         try:
             res = session.get(url, headers=headers, timeout=30)
             if res.status_code == 200 and len(res.content) > 1000:
-                # Ang valid na .xlsx file ay isang ZIP archive na nagsisimula sa 'PK'
                 if res.content[:2] == b"PK":
                     excel_bytes = res.content
                     break
-                # Kung may Google Drive virus scan warning page para sa malalaking file
                 for k, v in res.cookies.items():
                     if k.startswith("download_warning"):
                         confirm_url = f"https://drive.google.com/uc?export=download&id={doc_id}&confirm={v}"
@@ -143,7 +139,6 @@ def load_complete_parish_members():
         except Exception:
             xls = None
 
-    # Fallback sa local file kung sakaling offline
     if xls is None:
         local_candidates = ["CTG_HEADS_TOTAL_UPDATED FIXED.xlsx", "uploaded_ctg_database.xlsx"]
         for lf in local_candidates:
@@ -157,14 +152,12 @@ def load_complete_parish_members():
     if xls is None:
         return pd.DataFrame(), "Hindi ma-download ang Excel file. Siguraduhing naka-set sa 'Anyone with the link' ang sharing permission sa Google Drive."
 
-    # I-map ang sheet names nang walang case/space sensitivity
     sheet_map = {str(s).strip().upper(): s for s in xls.sheet_names}
     all_rows = []
 
     for p_name in PARISH_ORDER:
         actual_sheet = sheet_map.get(p_name.upper())
         if not actual_sheet:
-            # Partial match fallback
             for s_up, s_orig in sheet_map.items():
                 if p_name.replace(" PARISH", "") in s_up:
                     actual_sheet = s_orig
@@ -173,7 +166,6 @@ def load_complete_parish_members():
             continue
 
         try:
-            # Hanapin kung saang row naroon ang header (default ay row index 3, pero kung nagbago ay hahanapin)
             df_preview = pd.read_excel(xls, sheet_name=actual_sheet, header=None, nrows=10)
             header_idx = 3
             for idx, row_vals in df_preview.iterrows():
@@ -328,12 +320,11 @@ def build_status_summary_and_lists(df):
     return summary_df, df_act_list, df_inact_list, df_non_list
 
 # ==========================================
-# 🤖 GEMINI AI HELPER (WITH SMART FALLBACK)
+# 🤖 GEMINI AI HELPER
 # ==========================================
 def safe_generate_content(client, model, contents, config=None):
     max_retries = 2
     delay = 2
-    # Sinusubukan muna ang piniling model (hal. gemini-3.8-flash), at automatic na magfa-fallback kung kailangan
     fallback_models = []
     for m in [model, "gemini-2.5-flash", "gemini-2.5-pro"]:
         if m not in fallback_models:
@@ -357,7 +348,7 @@ def safe_generate_content(client, model, contents, config=None):
     raise Exception("Ang mga Gemini models ay kasalukuyang busy o hindi ma-access. Pakisuri ang iyong GEMINI_API_KEY.")
 
 # ==========================================
-# 🔑 LOGIN SCREEN
+# 🔑 LOGIN SCREEN (MAY OPISYAL NA LOGO)
 # ==========================================
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
@@ -370,8 +361,8 @@ if not st.session_state.authenticated:
     st.markdown("<br><br>", unsafe_allow_html=True)
     col1, col2, col3 = st.columns([1, 1.2, 1])
     with col2:
-        # Idinagdag ang logo sa itaas ng login form
-        st.image("logo.jpg", width=140)
+        if os.path.exists("logo.jpg"):
+            st.image("logo.jpg", width=140)
         st.title("⛪ CTG Ministry Hub Login")
         st.caption("Ilagay ang iyong Username at Password.")
         with st.form("login_form"):
@@ -474,7 +465,6 @@ with st.sidebar:
     
     app_mode = st.radio("Pumili ng Pahina:", menu_options)
     
-    # Idinagdag ang gemini-3.8-flash bilang pangunahing pagpipilian
     selected_model = st.selectbox(
         "Gemini Model:",
         ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.5-pro"],
@@ -494,17 +484,15 @@ with st.sidebar:
 # 1. PARISH DIRECTORY & FAMILY SEARCH
 # =====================================================================
 if app_mode == "📊 Parish Directory & Family Search":
-    st.title("⛪ CHURCH OF THE TEMPLE OF GOD — SEARCH FAMILY / PARISH")
+    col_logo, col_title = st.columns([0.06, 0.94])
+    with col_logo:
+        if os.path.exists("logo.jpg"):
+            st.image("logo.jpg", width=50)
+    with col_title:
+        st.markdown("## CHURCH OF THE TEMPLE OF GOD — SEARCH FAMILY / PARISH")
     
     if master_members_df.empty:
         st.error(f"⚠️ {db_status_msg}")
-        st.info(
-            "💡 **Paano ayusin sa Google Drive:**\n"
-            "1. Buksan ang iyong file sa Google Drive / Google Sheets.\n"
-            "2. I-click ang **Share** button sa kanang itaas.\n"
-            "3. Sa ilalim ng *General access*, piliin ang **Anyone with the link** (Viewer).\n"
-            "4. I-click ang **🔄 I-refresh ang Data mula sa Cloud** button sa sidebar."
-        )
         st.stop()
         
     if st.session_state.user_role == "Master Admin":
@@ -554,14 +542,12 @@ if app_mode == "📊 Parish Directory & Family Search":
     
     summary_df, df_act_list, df_inact_list, df_non_list = build_status_summary_and_lists(final_df)
     
-    # SECTION A: MEMBER STATUS SUMMARY TABLE
     st.markdown("### 📋 MEMBER STATUS SUMMARY")
     st.caption(f"**Search:** {search_label}")
     st.dataframe(summary_df, use_container_width=True, hide_index=True)
     
     st.markdown("<br>", unsafe_allow_html=True)
     
-    # SECTION B: ACTIVE, INACTIVE, AT NON-MEMBERS TABLES (3 COLUMNS)
     col_act, col_inact, col_non = st.columns(3)
     
     with col_act:
@@ -578,7 +564,6 @@ if app_mode == "📊 Parish Directory & Family Search":
         
     st.divider()
     
-    # SECTION C: MATCHING MEMBERS FULL TABLE
     total_families = final_df["Family ID"].nunique()
     st.markdown(f"### 👨‍👩‍👧‍👦 Matching members: {len(final_df)} (Mula sa {total_families} Pamilya)")
     if not final_df.empty:
@@ -591,7 +576,12 @@ if app_mode == "📊 Parish Directory & Family Search":
 # 2. MAGDAGDAG NG MIYEMBRO & LITRATO
 # =====================================================================
 elif app_mode == "➕ Magdagdag ng Miyembro & Litrato":
-    st.title("➕ Magdagdag ng Miyembro at Mag-upload ng Litrato")
+    col_logo, col_title = st.columns([0.06, 0.94])
+    with col_logo:
+        if os.path.exists("logo.jpg"):
+            st.image("logo.jpg", width=50)
+    with col_title:
+        st.markdown("## Magdagdag ng Miyembro at Mag-upload ng Litrato")
     st.caption("Mag-input ng bagong miyembro sa ilalim ng iyong parokya.")
     
     with st.form("add_member_form"):
@@ -627,7 +617,13 @@ elif app_mode == "➕ Magdagdag ng Miyembro & Litrato":
 # 3. PRAYER WALL & CATEGORIZER
 # =====================================================================
 elif app_mode == "🙏 Prayer Wall & Categorizer":
-    st.title("🙏 AI Prayer Request & Needs Categorizer")
+    col_logo, col_title = st.columns([0.06, 0.94])
+    with col_logo:
+        if os.path.exists("logo.jpg"):
+            st.image("logo.jpg", width=50)
+    with col_title:
+        st.markdown("## AI Prayer Request & Needs Categorizer")
+    
     raw_prayer = st.text_area("Nilalaman ng Prayer Request o Mensahe:")
     if st.button("Suriin sa AI at I-categorize", type="primary"):
         if raw_prayer:
@@ -652,7 +648,13 @@ elif app_mode == "🙏 Prayer Wall & Categorizer":
 # 4. ANNOUNCEMENT BROADCASTER
 # =====================================================================
 elif app_mode == "📢 Announcement Broadcaster":
-    st.title("📢 AI Ministry Announcement Broadcaster")
+    col_logo, col_title = st.columns([0.06, 0.94])
+    with col_logo:
+        if os.path.exists("logo.jpg"):
+            st.image("logo.jpg", width=50)
+    with col_title:
+        st.markdown("## AI Ministry Announcement Broadcaster")
+        
     event_title = st.text_input("Pamagat ng Aktibidad / Event:")
     event_details = st.text_area("Mga Detalye (Petsa, Oras, Lugar, Mensahe):")
     target_email = st.text_input("Email ng Tatanggap:")
@@ -682,7 +684,13 @@ elif app_mode == "📢 Announcement Broadcaster":
 # 5. APP SETTINGS
 # =====================================================================
 elif app_mode == "🛠️ App Settings":
-    st.title("🛠️ App Configuration & Settings")
+    col_logo, col_title = st.columns([0.06, 0.94])
+    with col_logo:
+        if os.path.exists("logo.jpg"):
+            st.image("logo.jpg", width=50)
+    with col_title:
+        st.markdown("## App Configuration & Settings")
+        
     with st.form("settings_form"):
         st.subheader("🔑 API Keys & Integration")
         new_gemini = st.text_input("GEMINI_API_KEY", value=st.session_state.custom_secrets["GEMINI_API_KEY"], type="password")
@@ -706,7 +714,12 @@ elif app_mode == "🛠️ App Settings":
 # =====================================================================
 # 6. AI CHAT ASSISTANT
 # =====================================================================
-st.title("⛪ CTG Church AI Ministry Assistant")
+col_logo, col_title = st.columns([0.06, 0.94])
+with col_logo:
+    if os.path.exists("logo.jpg"):
+        st.image("logo.jpg", width=50)
+with col_title:
+    st.markdown("## CTG Church AI Ministry Assistant")
 st.caption("Katuwang ng mga Leaders sa paghahanap ng records sa Excel mula sa Google Drive at pamamahala ng mga parokya.")
 
 active_gemini_key = st.session_state.custom_secrets["GEMINI_API_KEY"]
@@ -740,7 +753,6 @@ if user_prompt := st.chat_input("Magtanong tungkol sa records o magpa-send ng em
             temperature=0.3,
         )
         
-        # Sinusubukan muna ang selected_model (hal. gemini-3.8-flash), at kung hindi pa available sa API ay automatic na gagamit ng gemini-2.5-flash
         models_to_try = []
         for m in [selected_model, "gemini-2.5-flash", "gemini-2.5-pro"]:
             if m not in models_to_try:
