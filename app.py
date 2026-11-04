@@ -4,7 +4,7 @@ import base64
 from email.message import EmailMessage
 import requests
 import streamlit as st
-from dotenv import load_dotenv, set_key
+from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 from google.oauth2.credentials import Credentials
@@ -42,7 +42,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# 3. Authentication / Login Gate (Nilagyan ng columns para hindi masyadong malaki/wide)
+# 3. Authentication / Login Gate (Compact view)
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 
@@ -86,11 +86,7 @@ def get_notion_crm_data(search_name: str = "") -> str:
     try:
         response = requests.post(url, headers=headers, json={"page_size": 50}, timeout=15)
         if response.status_code == 404:
-            return (
-                "Error 404 (object_not_found): Hindi makita ng Notion API ang database. "
-                "SOLUSYON: Buksan ang Notion database page -> i-click ang '...' sa kanang itaas -> "
-                "piliin ang 'Connections' -> i-add ang iyong integration (hal. CTG AI AGENT)."
-            )
+            return "Error 404: Hindi makita ang Notion database. I-check ang Integration connection sa Notion page."
         if response.status_code != 200:
             return f"Notion API Error ({response.status_code}): {response.text}"
 
@@ -119,9 +115,6 @@ def get_notion_crm_data(search_name: str = "") -> str:
                 elif ptype == "status":
                     stat = prop_val.get("status")
                     val_str = stat.get("name", "") if stat else ""
-                elif ptype == "date":
-                    dt = prop_val.get("date")
-                    val_str = dt.get("start", "") if dt else ""
 
                 if val_str:
                     row_info.append(f"{prop_name}: {val_str}")
@@ -131,18 +124,15 @@ def get_notion_crm_data(search_name: str = "") -> str:
                 if not search_name or search_name.lower() in line.lower():
                     records.append(f"- {line}")
 
-        if not records:
-            return f"Walang nahanap na record na tumutugma sa '{search_name}'."
-        return "Mga Rekord mula sa Notion CRM:\n" + "\n".join(records)
-
+        return "Mga Rekord mula sa Notion CRM:\n" + "\n".join(records) if records else f"Walang nahanap na record para sa '{search_name}'."
     except Exception as e:
-        return f"System Error sa pagkonekta sa Notion: {str(e)}"
+        return f"System Error sa Notion: {str(e)}"
 
 
 def add_visitor_to_notion(name: str, email: str = "", status: str = "New Visitor", notes: str = "") -> str:
     """Nagdadagdag ng bagong visitor o member record sa Notion CRM database."""
     if not NOTION_TOKEN or not NOTION_CRM_DB_ID:
-        return "Error: Kulang ang NOTION_TOKEN o NOTION_CRM_DB_ID."
+        return "Error: Kulang ang NOTION credentials."
 
     clean_db_id = NOTION_CRM_DB_ID.strip().replace("-", "")
     headers = {
@@ -153,7 +143,7 @@ def add_visitor_to_notion(name: str, email: str = "", status: str = "New Visitor
 
     db_resp = requests.get(f"https://api.notion.com/v1/databases/{clean_db_id}", headers=headers, timeout=15)
     if db_resp.status_code != 200:
-        return f"Hindi mabasa ang Notion database schema ({db_resp.status_code}): {db_resp.text}"
+        return f"Hindi mabasa ang Notion database schema ({db_resp.status_code})."
 
     db_props = db_resp.json().get("properties", {})
     new_props = {}
@@ -164,18 +154,15 @@ def add_visitor_to_notion(name: str, email: str = "", status: str = "New Visitor
             new_props[prop_name] = {"title": [{"text": {"content": name}}]}
         elif ptype == "email" and email:
             new_props[prop_name] = {"email": email}
-        elif ptype == "rich_text" and notes and ("note" in prop_name.lower() or "remark" in prop_name.lower()):
+        elif ptype == "rich_text" and notes:
             new_props[prop_name] = {"rich_text": [{"text": {"content": notes}}]}
 
-    payload = {
-        "parent": {"database_id": clean_db_id},
-        "properties": new_props
-    }
-
+    payload = {"parent": {"database_id": clean_db_id}, "properties": new_props}
     create_resp = requests.post("https://api.notion.com/v1/pages", headers=headers, json=payload, timeout=15)
+    
     if create_resp.status_code in [200, 201]:
         return f"Matagumpay na naidagdag si '{name}' sa Notion CRM!"
-    return f"Nabigong idagdag sa Notion ({create_resp.status_code}): {create_resp.text}"
+    return f"Nabigong idagdag sa Notion: {create_resp.text}"
 
 
 def send_email_via_gmail(recipient_email: str, subject: str, body_text: str) -> str:
@@ -200,17 +187,13 @@ def send_email_via_gmail(recipient_email: str, subject: str, body_text: str) -> 
 
         encoded_msg = base64.urlsafe_b64encode(msg.as_bytes()).decode()
         send_result = service.users().messages().send(userId="me", body={"raw": encoded_msg}).execute()
-        return f"Matagumpay na naipadala ang email kay {recipient_email}! (Message ID: {send_result.get('id')})"
-
+        return f"Matagumpay na naipadala ang email kay {recipient_email}! (ID: {send_result.get('id')})"
     except Exception as e:
-        err_str = str(e)
-        if "403" in err_str or "insufficientPermissions" in err_str:
-            return "Error 403 (Gmail Permission): Kailangan ng bagong Refresh Token na may mail.google.com scope."
-        return f"Error sa pag-send ng Gmail: {err_str}"
+        return f"Error sa pag-send ng Gmail: {str(e)}"
 
 
 # ==========================================
-# 5. NAVIGATION & APP SETTINGS (BAGONG MENU)
+# 5. SIDEBAR & NAVIGATION (MENU)
 # ==========================================
 if "custom_secrets" not in st.session_state:
     st.session_state.custom_secrets = {
@@ -228,11 +211,12 @@ with st.sidebar:
     st.header("⚙️ Ministry Control Panel")
     st.write(f"👤 Naka-login bilang: **{APP_USER}**")
     
-    app_mode = st.radio("Pumili ng Pahina:", ["💬 AI Chat Assistant", "🛠️ App Settings"])
+    app_mode = st.radio("Pumili ng Pahina:", ["💬 AI Chat Assistant", "🙏 Prayer Wall & Categorizer", "📢 Announcement Broadcaster", "🛠️ App Settings"])
     
+    # Naidagdag na ang gemini-3.8-flash sa listahan
     selected_model = st.selectbox(
         "Gemini Model:",
-        ["gemini-2.5-flash", "gemini-2.5-pro"],
+        ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.5-pro"],
         index=0
     )
     
@@ -248,11 +232,63 @@ with st.sidebar:
 
 
 # ==========================================
-# 6. APP SETTINGS PAGE (MAG-ADJUST NG KEYS)
+# 6. FEATURE: PRAYER REQUEST CATEGORIZER
+# ==========================================
+if app_mode == "🙏 Prayer Wall & Categorizer":
+    st.title("🙏 AI Prayer Request & Needs Categorizer")
+    st.caption("I-paste dito ang mga prayer requests o pangangailangan para awtomatikong ma-classify ng AI.")
+    
+    raw_prayer = st.text_area("Nilalaman ng Prayer Request o Mensahe:")
+    
+    if st.button("Suriin at I-categorize", type="primary"):
+        if raw_prayer:
+            active_key = st.session_state.custom_secrets["GEMINI_API_KEY"]
+            client = genai.Client(api_key=active_key)
+            with st.spinner("Sinusuri ng AI ang kahilingan..."):
+                prompt = f"Suriin ang sumusunod na prayer request. Ibigay ang Kategorya (Kalusugan, Pananalapi, Pamilya, Espirituwal, o Iba pa), Urgency Level, at comforting Bible verse:\n\n{raw_prayer}"
+                res = client.models.generate_content(model=selected_model, contents=prompt)
+                st.success("Tapos na ang Pagsusuri!")
+                st.markdown(res.text)
+        else:
+            st.warning("Maglagay muna ng mensahe.")
+    st.stop()
+
+
+# ==========================================
+# 7. FEATURE: ANNOUNCEMENT BROADCASTER
+# ==========================================
+if app_mode == "📢 Announcement Broadcaster":
+    st.title("📢 AI Ministry Announcement Broadcaster")
+    st.caption("Gumawa ng pormal na announcement para sa mga miyembro at ipadala via email.")
+    
+    event_title = st.text_input("Pamagat ng Aktibidad / Event:")
+    event_details = st.text_area("Mga Detalye (Petsa, Oras, Lugar, Mensahe):")
+    target_email = st.text_input("Email ng Tatanggap:")
+    
+    if st.button("Bumuo at Magpadala ng Email Broadcast", type="primary"):
+        if event_title and event_details and target_email:
+            active_key = st.session_state.custom_secrets["GEMINI_API_KEY"]
+            client = genai.Client(api_key=active_key)
+            with st.spinner("Gumagawa at nagpapadala ng broadcast..."):
+                p_prompt = f"Gumawa ng pormal, nakaka-inspire, at malinaw na simbahan announcement email tungkol sa: {event_title}. Mga detalye: {event_details}. Isulat sa Tagalog."
+                ai_res = client.models.generate_content(model=selected_model, contents=p_prompt)
+                email_body = ai_res.text
+                
+                res_send = send_email_via_gmail(target_email, f"CTG Announcement: {event_title}", email_body)
+                st.success(res_send)
+                with st.expander("Tingnan ang Mensahe"):
+                    st.markdown(email_body)
+        else:
+            st.warning("Punan ang lahat ng kailangan.")
+    st.stop()
+
+
+# ==========================================
+# 8. APP SETTINGS PAGE
 # ==========================================
 if app_mode == "🛠️ App Settings":
     st.title("🛠️ App Configuration & Settings")
-    st.markdown("Dito mo maaaring i-update ang iyong mga API keys, database IDs, at login password nang direkta.")
+    st.markdown("Dito mo maaaring i-update ang iyong mga API keys at password.")
     
     with st.form("settings_form"):
         st.subheader("🔑 API Keys & Integration")
@@ -269,9 +305,7 @@ if app_mode == "🛠️ App Settings":
         new_user = st.text_input("APP_USER", value=st.session_state.custom_secrets["APP_USER"])
         new_pass = st.text_input("APP_PASSWORD", value=st.session_state.custom_secrets["APP_PASSWORD"], type="password")
         
-        save_settings = st.form_submit_button("I-save ang mga Pagbabago")
-        
-        if save_settings:
+        if st.form_submit_button("I-save ang mga Pagbabago"):
             st.session_state.custom_secrets = {
                 "GEMINI_API_KEY": new_gemini,
                 "NOTION_TOKEN": new_notion_token,
@@ -282,22 +316,21 @@ if app_mode == "🛠️ App Settings":
                 "APP_USER": new_user,
                 "APP_PASSWORD": new_pass
             }
-            st.success("Matagumpay na na-update ang mga settings ng app!")
+            st.success("Matagumpay na na-update!")
             time.sleep(1)
             st.rerun()
-            
     st.stop()
 
 
 # ==========================================
-# 7. MAIN AI CHAT INTERFACE
+# 9. MAIN AI CHAT INTERFACE
 # ==========================================
 st.title("⛪ CTG Church AI Ministry Assistant")
 st.caption("Katuwang ng mga Leaders at Priests sa pamamahala ng Visitors CRM, Follow-up Emails, at Iskedyul.")
 
 active_gemini_key = st.session_state.custom_secrets["GEMINI_API_KEY"]
 if not active_gemini_key:
-    st.warning("⚠️ Wala pang GEMINI_API_KEY. Pumunta sa **App Settings** sa sidebar para ilagay ito.")
+    st.warning("⚠️ Wala pang GEMINI_API_KEY. Pumunta sa **App Settings** sa sidebar.")
     st.stop()
 
 if "messages" not in st.session_state:
@@ -306,16 +339,14 @@ if "messages" not in st.session_state:
 if "current_model" not in st.session_state:
     st.session_state.current_model = selected_model
 
-# Initialize Gemini Client at Chat Session
 if "chat_session" not in st.session_state or st.session_state.current_model != selected_model:
     st.session_state.current_model = selected_model
     client = genai.Client(api_key=active_gemini_key)
     
     system_instruction = (
         "Ikaw ang opisyal na AI Ministry Assistant ng CTG Church. "
-        "Tinutulungan mo ang mga church leaders at mga pari sa pag-check ng Notion CRM database "
-        "(gamit ang `get_notion_crm_data` at `add_visitor_to_notion`) at sa pagpapadala ng follow-up emails "
-        "sa pamamagitan ng Gmail (gamit ang `send_email_via_gmail`). "
+        "Tinutulungan mo ang mga church leaders sa pag-check ng Notion CRM database "
+        "at sa pagpapadala ng follow-up emails sa pamamagitan ng Gmail. "
         "Maging magalang, malinaw, at tumugon sa wikang Tagalog o Taglish."
     )
     
@@ -326,12 +357,10 @@ if "chat_session" not in st.session_state or st.session_state.current_model != s
     )
     st.session_state.chat_session = client.chats.create(model=selected_model, config=config)
 
-# Ipakita ang nakaraang pag-uusap
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# Chat Input Box
 if user_prompt := st.chat_input("Magtanong tungkol sa visitors sa Notion o magpa-send ng follow-up email..."):
     st.session_state.messages.append({"role": "user", "content": user_prompt})
     with st.chat_message("user"):
@@ -351,10 +380,8 @@ if user_prompt := st.chat_input("Magtanong tungkol sa visitors sa Notion o magpa
             except Exception as e:
                 err_str = str(e)
                 if ("503" in err_str or "UNAVAILABLE" in err_str or "429" in err_str) and attempt < max_retries - 1:
-                    wait_sec = 3
-                    status_box.write(f"⏳ Busy ang server. Uulitin sa loob ng {wait_sec} segundo...")
-                    time.sleep(wait_sec)
+                    time.sleep(3)
                     continue
-                status_box.update(label="❌ May Error sa Pagkonekta", state="error", expanded=True)
-                st.error(f"Detalye ng Error: {err_str}")
+                status_box.update(label="❌ May Error", state="error", expanded=True)
+                st.error(f"Detalye: {err_str}")
                 break
