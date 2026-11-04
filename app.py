@@ -370,6 +370,8 @@ if not st.session_state.authenticated:
     st.markdown("<br><br>", unsafe_allow_html=True)
     col1, col2, col3 = st.columns([1, 1.2, 1])
     with col2:
+        # Idinagdag ang logo sa itaas ng login form
+        st.image("logo.jpg", width=140)
         st.title("⛪ CTG Ministry Hub Login")
         st.caption("Ilagay ang iyong Username at Password.")
         with st.form("login_form"):
