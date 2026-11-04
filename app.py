@@ -348,7 +348,7 @@ def safe_generate_content(client, model, contents, config=None):
     raise Exception("Ang mga Gemini models ay kasalukuyang busy o hindi ma-access. Pakisuri ang iyong GEMINI_API_KEY.")
 
 # ==========================================
-# 🔑 LOGIN SCREEN (MAY OPISYAL NA LOGO NA TAMA)
+# 🔑 LOGIN SCREEN (MALINIS AT PROPESYONAL NA MAY ISANG LOGO LAMANG)
 # ==========================================
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
@@ -361,9 +361,7 @@ if not st.session_state.authenticated:
     st.markdown("<br><br>", unsafe_allow_html=True)
     col1, col2, col3 = st.columns([1, 1.3, 1])
     with col2:
-        if os.path.exists("logo.jpg"):
-            st.image("logo.jpg", width=120)
-            
+        # Tanging ang maliit at eleganteng logo na lamang sa tabi ng pamagat
         col_log_img, col_log_txt = st.columns([0.15, 0.85])
         with col_log_img:
             if os.path.exists("logo.jpg"):
