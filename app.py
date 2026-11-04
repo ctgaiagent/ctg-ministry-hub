@@ -1,6 +1,9 @@
 import os
+import re
 import time
 import base64
+import io
+import requests
 from email.message import EmailMessage
 import streamlit as st
 import pandas as pd
@@ -12,6 +15,9 @@ from googleapiclient.discovery import build
 
 load_dotenv()
 
+# ==========================================
+# 🔐 SECRETS & CONFIGURATION HELPER
+# ==========================================
 def get_secret(key, default=""):
     if "custom_secrets" in st.session_state and key in st.session_state.custom_secrets:
         val = st.session_state.custom_secrets[key]
@@ -26,15 +32,15 @@ def get_secret(key, default=""):
 
 GEMINI_API_KEY = get_secret("GEMINI_API_KEY")
 NOTION_TOKEN = get_secret("NOTION_TOKEN")
-NOTION_CRM_DB_ID = get_secret("NOTION_CRM_DB_ID", "409fff68-03d7-80be-abbe-000bcf7585fd")
+NOTION_CRM_DB_ID = get_secret("NOTION_CRM_DB_ID")
 GMAIL_CLIENT_ID = get_secret("GMAIL_CLIENT_ID")
 GMAIL_CLIENT_SECRET = get_secret("GMAIL_CLIENT_SECRET")
 GMAIL_REFRESH_TOKEN = get_secret("GMAIL_REFRESH_TOKEN")
 
 st.set_page_config(page_title="CTG Ministry Hub - AI Agent", page_icon="⛪", layout="wide")
 
-UPLOADED_DB_PATH = "uploaded_ctg_database.xlsx"
-DEFAULT_DB_PATH = "CTG_HEADS_TOTAL_UPDATED FIXED.xlsx"
+# Direktang link sa iyong Google Drive / Google Sheets file
+CLOUD_SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/15_znwPmjK95vTgf5lStbKKPCjEGw6oDp/edit?usp=sharing&ouid=107511419052324683693&rtpof=true&sd=true"
 
 PARISH_ORDER = [
     "LIPAY NORTE PARISH",
@@ -50,7 +56,7 @@ PARISH_ORDER = [
 ]
 
 # ==========================================
-# 🔐 MGA USERNAME AT PASSWORD NG ADMIN AT PAROKYA (1-10)
+# 👥 ACCOUNTS NG ADMIN AT MGA PAROKYA (1-10)
 # ==========================================
 PARISH_ACCOUNTS = {
     "admin": {"password": "ctg2026", "parish": "Lahat ng Parokya", "role": "Master Admin"},
@@ -86,84 +92,145 @@ PARISH_ACCOUNTS = {
     "hongkongparish": {"password": "ctghongkong10", "parish": "HONGKONG PARISH", "role": "Parish Leader"},
 }
 
-def get_active_excel_path():
-    """Hinahanap kung may in-upload nang Excel file sa server o kung nasa local folder."""
-    if os.path.exists(UPLOADED_DB_PATH):
-        return UPLOADED_DB_PATH
-    if os.path.exists(DEFAULT_DB_PATH):
-        return DEFAULT_DB_PATH
-    excel_files = [f for f in os.listdir('.') if f.endswith('.xlsx') and 'CTG' in f]
-    if excel_files:
-        return excel_files[0]
-    return None
+# ==========================================
+# ☁️ GOOGLE DRIVE / SHEETS EXCEL DOWNLOADER
+# ==========================================
+def extract_id_from_url(url: str) -> str:
+    match = re.search(r"/d/([a-zA-Z0-9-_]+)", url)
+    return match.group(1) if match else url
 
-@st.cache_data
-def load_complete_parish_members(excel_path, file_mtime):
-    """Binabasa lamang ang mga kumpletong record na may valid Family ID (CTG-...) at Full Name."""
-    if not excel_path or not os.path.exists(excel_path):
-        return pd.DataFrame()
-        
-    try:
-        xls = pd.ExcelFile(excel_path)
-    except Exception:
-        return pd.DataFrame()
-        
-    all_rows = []
-    for p_name in PARISH_ORDER:
-        if p_name in xls.sheet_names:
-            try:
-                df_raw = pd.read_excel(xls, sheet_name=p_name, header=3)
-                df_raw.columns = [str(c).strip() for c in df_raw.columns]
-                
-                rename_map = {
-                    "Member / Record ID": "Family ID",
-                    "Employment / Work": "Student/Working",
-                    "Address (HK or Philippines)": "Current Address (If living separately)",
-                    "Church Member Status": "Church Member"
-                }
-                df_raw = df_raw.rename(columns=rename_map)
-                
-                if "Family ID" not in df_raw.columns or "Full Name" not in df_raw.columns:
+@st.cache_data(ttl=600, show_spinner="Binabasa ang Excel database mula sa Google Drive...")
+def load_complete_parish_members():
+    """Direktang nagda-download at nagbabasa ng Excel file mula sa Google Drive / Sheets."""
+    doc_id = extract_id_from_url(CLOUD_SPREADSHEET_URL)
+    
+    # Sinusubukan ang iba't ibang Google export endpoints para siguradong makuha ang .xlsx binary
+    download_urls = [
+        f"https://docs.google.com/spreadsheets/d/{doc_id}/export?format=xlsx",
+        f"https://drive.google.com/uc?export=download&id={doc_id}&confirm=t",
+        f"https://drive.google.com/uc?export=download&id={doc_id}"
+    ]
+    
+    excel_bytes = None
+    session = requests.Session()
+    headers = {"User-Agent": "Mozilla/5.0"}
+    
+    for url in download_urls:
+        try:
+            res = session.get(url, headers=headers, timeout=30)
+            if res.status_code == 200 and len(res.content) > 1000:
+                # Ang valid na .xlsx file ay isang ZIP archive na nagsisimula sa 'PK'
+                if res.content[:2] == b"PK":
+                    excel_bytes = res.content
+                    break
+                # Kung may Google Drive virus scan warning page para sa malalaking file
+                for k, v in res.cookies.items():
+                    if k.startswith("download_warning"):
+                        confirm_url = f"https://drive.google.com/uc?export=download&id={doc_id}&confirm={v}"
+                        res2 = session.get(confirm_url, headers=headers, timeout=30)
+                        if res2.status_code == 200 and res2.content[:2] == b"PK":
+                            excel_bytes = res2.content
+                            break
+                if excel_bytes:
+                    break
+        except Exception:
+            continue
+
+    xls = None
+    if excel_bytes is not None:
+        try:
+            xls = pd.ExcelFile(io.BytesIO(excel_bytes))
+        except Exception:
+            xls = None
+
+    # Fallback sa local file kung sakaling offline
+    if xls is None:
+        local_candidates = ["CTG_HEADS_TOTAL_UPDATED FIXED.xlsx", "uploaded_ctg_database.xlsx"]
+        for lf in local_candidates:
+            if os.path.exists(lf):
+                try:
+                    xls = pd.ExcelFile(lf)
+                    break
+                except Exception:
                     continue
-                
-                valid_mask = (
-                    df_raw["Family ID"].astype(str).str.strip().str.startswith("CTG-", na=False) &
-                    df_raw["Full Name"].notna() &
-                    (df_raw["Full Name"].astype(str).str.strip() != "") &
-                    (df_raw["Full Name"].astype(str).str.strip().str.lower() != "nan")
-                )
-                df_valid = df_raw[valid_mask].copy()
-                df_valid["Parish"] = p_name
-                
-                standard_cols = [
-                    "Parish", "Family ID", "Head of Family", "Full Name", "Relationship",
-                    "Sex", "Age", "Status", "Contact No.", "Current Address (If living separately)",
-                    "Birthdate", "Category", "Civil Status", "Student/Working",
-                    "Church Member", "Baptized", "Baptism Date", "Remarks"
-                ]
-                for col in standard_cols:
-                    if col not in df_valid.columns:
-                        df_valid[col] = ""
-                
-                df_valid["Family ID"] = df_valid["Family ID"].astype(str).str.strip()
-                df_valid["Full Name"] = df_valid["Full Name"].astype(str).str.strip()
-                df_valid["Head of Family"] = df_valid["Head of Family"].fillna("").astype(str).str.strip()
-                df_valid["Category"] = df_valid["Category"].fillna("").astype(str).str.strip()
-                df_valid["Status"] = df_valid["Status"].fillna("").astype(str).str.strip()
-                df_valid["Church Member"] = df_valid["Church Member"].fillna("").astype(str).str.strip()
-                
-                all_rows.append(df_valid[standard_cols])
-            except Exception:
+
+    if xls is None:
+        return pd.DataFrame(), "Hindi ma-download ang Excel file. Siguraduhing naka-set sa 'Anyone with the link' ang sharing permission sa Google Drive."
+
+    # I-map ang sheet names nang walang case/space sensitivity
+    sheet_map = {str(s).strip().upper(): s for s in xls.sheet_names}
+    all_rows = []
+
+    for p_name in PARISH_ORDER:
+        actual_sheet = sheet_map.get(p_name.upper())
+        if not actual_sheet:
+            # Partial match fallback
+            for s_up, s_orig in sheet_map.items():
+                if p_name.replace(" PARISH", "") in s_up:
+                    actual_sheet = s_orig
+                    break
+        if not actual_sheet:
+            continue
+
+        try:
+            # Hanapin kung saang row naroon ang header (default ay row index 3, pero kung nagbago ay hahanapin)
+            df_preview = pd.read_excel(xls, sheet_name=actual_sheet, header=None, nrows=10)
+            header_idx = 3
+            for idx, row_vals in df_preview.iterrows():
+                row_text = " ".join([str(v).upper() for v in row_vals.dropna()])
+                if ("FAMILY ID" in row_text or "RECORD ID" in row_text) and "FULL NAME" in row_text:
+                    header_idx = idx
+                    break
+
+            df_raw = pd.read_excel(xls, sheet_name=actual_sheet, header=header_idx)
+            df_raw.columns = [str(c).strip() for c in df_raw.columns]
+
+            rename_map = {
+                "Member / Record ID": "Family ID",
+                "Employment / Work": "Student/Working",
+                "Address (HK or Philippines)": "Current Address (If living separately)",
+                "Church Member Status": "Church Member",
+            }
+            df_raw = df_raw.rename(columns=rename_map)
+
+            if "Family ID" not in df_raw.columns or "Full Name" not in df_raw.columns:
                 continue
-                
+
+            valid_mask = (
+                df_raw["Family ID"].astype(str).str.strip().str.upper().str.startswith("CTG-", na=False)
+                & df_raw["Full Name"].notna()
+                & (df_raw["Full Name"].astype(str).str.strip() != "")
+                & (df_raw["Full Name"].astype(str).str.strip().str.lower() != "nan")
+            )
+            df_valid = df_raw[valid_mask].copy()
+            df_valid["Parish"] = p_name
+
+            standard_cols = [
+                "Parish", "Family ID", "Head of Family", "Full Name", "Relationship",
+                "Sex", "Age", "Status", "Contact No.", "Current Address (If living separately)",
+                "Birthdate", "Category", "Civil Status", "Student/Working",
+                "Church Member", "Baptized", "Baptism Date", "Remarks"
+            ]
+            for col in standard_cols:
+                if col not in df_valid.columns:
+                    df_valid[col] = ""
+
+            for str_col in ["Family ID", "Full Name", "Head of Family", "Category", "Status", "Church Member"]:
+                df_valid[str_col] = df_valid[str_col].fillna("").astype(str).str.strip()
+
+            all_rows.append(df_valid[standard_cols])
+        except Exception:
+            continue
+
     if all_rows:
-        return pd.concat(all_rows, ignore_index=True)
-    return pd.DataFrame()
+        return pd.concat(all_rows, ignore_index=True), "OK"
+    return pd.DataFrame(), "Nabuksan ang file ngunit walang nabasang miyembro. Pakisuri ang pangalan ng mga sheets."
 
-active_excel_path = get_active_excel_path()
-active_mtime = os.path.getmtime(active_excel_path) if active_excel_path and os.path.exists(active_excel_path) else 0
-master_members_df = load_complete_parish_members(active_excel_path, active_mtime)
+master_members_df, db_status_msg = load_complete_parish_members()
 
+# ==========================================
+# 📊 SUMMARY & CLASSIFICATION HELPERS
+# ==========================================
 def classify_member_status(status_val, church_member_val):
     st_up = str(status_val).upper().strip()
     cm_up = str(church_member_val).upper().strip()
@@ -260,10 +327,18 @@ def build_status_summary_and_lists(df):
     
     return summary_df, df_act_list, df_inact_list, df_non_list
 
+# ==========================================
+# 🤖 GEMINI AI HELPER (WITH SMART FALLBACK)
+# ==========================================
 def safe_generate_content(client, model, contents, config=None):
-    max_retries = 3
+    max_retries = 2
     delay = 2
-    fallback_models = [model, "gemini-2.5-flash", "gemini-2.5-pro"]
+    # Sinusubukan muna ang piniling model (hal. gemini-3.8-flash), at automatic na magfa-fallback kung kailangan
+    fallback_models = []
+    for m in [model, "gemini-2.5-flash", "gemini-2.5-pro"]:
+        if m not in fallback_models:
+            fallback_models.append(m)
+
     for current_model in fallback_models:
         for attempt in range(max_retries):
             try:
@@ -279,8 +354,11 @@ def safe_generate_content(client, model, contents, config=None):
                         delay *= 2
                         continue
                 break
-    raise Exception("Ang mga Gemini models ay kasalukuyang busy o naabot ang quota limit. Subukan muli makalipas ang ilang sandali.")
+    raise Exception("Ang mga Gemini models ay kasalukuyang busy o hindi ma-access. Pakisuri ang iyong GEMINI_API_KEY.")
 
+# ==========================================
+# 🔑 LOGIN SCREEN
+# ==========================================
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 if "user_role" not in st.session_state:
@@ -310,9 +388,12 @@ if not st.session_state.authenticated:
                     st.error("Maling Username o Password. Pakisuri ang iyong mga detalye.")
     st.stop()
 
+# ==========================================
+# 🛠️ AI AGENT TOOLS
+# ==========================================
 def query_excel_database(search_query: str) -> str:
     if master_members_df.empty:
-        return "Error: Walang laman o hindi makita ang Excel database."
+        return "Error: Walang laman o hindi mabasa ang Excel database mula sa Google Drive."
     try:
         df_scope = master_members_df.copy()
         if st.session_state.user_role == "Parish Leader":
@@ -361,87 +442,67 @@ if "custom_secrets" not in st.session_state:
         "GMAIL_CLIENT_SECRET": GMAIL_CLIENT_SECRET, "GMAIL_REFRESH_TOKEN": GMAIL_REFRESH_TOKEN,
     }
 
+# ==========================================
+# 🧭 SIDEBAR CONTROL PANEL
+# ==========================================
 with st.sidebar:
     st.header("⚙️ Ministry Control Panel")
     st.write(f"👤 Role: **{st.session_state.user_role}**")
     st.info(f"📍 Parish Access:\n**{st.session_state.assigned_parish}**")
     
-    if active_excel_path:
-        st.success(f"📁 Active DB: `{os.path.basename(active_excel_path)}`")
+    if not master_members_df.empty:
+        st.success(f"☁️ Cloud DB Active ({len(master_members_df)} Miyembro)")
     else:
-        st.warning("⚠️ Walang Excel File")
+        st.error("⚠️ Hindi Mabasa ang Cloud DB")
+        
+    if st.button("🔄 I-refresh ang Data mula sa Cloud", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
+        
     st.divider()
     
-    menu_options = ["📊 Parish Directory & Family Search"]
-    if st.session_state.user_role == "Master Admin":
-        menu_options.append("📂 Admin Excel Uploader")
-    menu_options.extend([
+    menu_options = [
+        "📊 Parish Directory & Family Search",
         "💬 AI Chat Assistant",
         "➕ Magdagdag ng Miyembro & Litrato",
         "🙏 Prayer Wall & Categorizer",
         "📢 Announcement Broadcaster",
         "🛠️ App Settings"
-    ])
+    ]
     
     app_mode = st.radio("Pumili ng Pahina:", menu_options)
-    selected_model = st.selectbox("Gemini Model:", ["gemini-2.5-flash", "gemini-2.5-pro"], index=0)
+    
+    # Idinagdag ang gemini-3.8-flash bilang pangunahing pagpipilian
+    selected_model = st.selectbox(
+        "Gemini Model:",
+        ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.5-pro"],
+        index=0
+    )
     st.divider()
     
-    if st.button("🗑️ I-clear ang Chat History"):
+    if st.button("🗑️ I-clear ang Chat History", use_container_width=True):
         st.session_state.messages = []
         st.session_state.pop("chat_session", None)
         st.rerun()
-    if st.button("🚪 Logout"):
+    if st.button("🚪 Logout", use_container_width=True):
         st.session_state.authenticated = False
         st.rerun()
 
 # =====================================================================
-# 1. ADMIN EXCEL UPLOADER (PARA SA STREAMLIT CLOUD AT LOCAL UPDATE)
-# =====================================================================
-if app_mode == "📂 Admin Excel Uploader":
-    st.title("📂 Admin Excel Database Uploader")
-    st.caption("Mag-upload ng bagong Excel file (.xlsx) upang ma-update ang database na ginagamit ng lahat ng Parokya sa app.")
-    
-    uploaded_file = st.file_uploader("Piliin ang iyong CTG Excel File (.xlsx):", type=["xlsx"])
-    
-    if uploaded_file is not None:
-        if st.button("💾 I-save at Gamitin ang Excel File na Ito", type="primary"):
-            try:
-                with open(UPLOADED_DB_PATH, "wb") as f:
-                    f.write(uploaded_file.getbuffer())
-                st.cache_data.clear()
-                st.success("✅ Matagumpay na na-save at na-load ang bagong Excel database! Maaari ka nang pumunta sa 'Parish Directory & Family Search'.")
-                time.sleep(1)
-                st.rerun()
-            except Exception as e:
-                st.error(f"Error sa pag-save ng Excel file: {str(e)}")
-                
-    if os.path.exists(UPLOADED_DB_PATH):
-        st.divider()
-        st.info(f"Kasalukuyang nakakonekta sa uploaded file: `{UPLOADED_DB_PATH}` ({len(master_members_df)} kumpletong miyembro ang nabasa).")
-    st.stop()
-
-# =====================================================================
-# 2. PARISH DIRECTORY & FAMILY SEARCH
+# 1. PARISH DIRECTORY & FAMILY SEARCH
 # =====================================================================
 if app_mode == "📊 Parish Directory & Family Search":
     st.title("⛪ CHURCH OF THE TEMPLE OF GOD — SEARCH FAMILY / PARISH")
     
-    # Kung wala pang Excel file sa Streamlit Cloud, magpakita ng quick upload box para sa Admin
     if master_members_df.empty:
-        st.warning("⚠️ Wala pang Excel database na naka-load sa server.")
-        if st.session_state.user_role == "Master Admin":
-            st.markdown("#### 📤 Mag-upload ng Excel File Ngayon:")
-            quick_upload = st.file_uploader("I-upload ang `CTG_HEADS_TOTAL_UPDATED FIXED.xlsx` dito:", type=["xlsx"], key="quick_up")
-            if quick_upload is not None:
-                with open(UPLOADED_DB_PATH, "wb") as f:
-                    f.write(quick_upload.getbuffer())
-                st.cache_data.clear()
-                st.success("✅ Na-upload na ang Excel file! Nagre-refresh...")
-                time.sleep(1)
-                st.rerun()
-        else:
-            st.info("Pakisuyo sa Master Admin na i-upload muna ang Excel database sa Admin Excel Uploader.")
+        st.error(f"⚠️ {db_status_msg}")
+        st.info(
+            "💡 **Paano ayusin sa Google Drive:**\n"
+            "1. Buksan ang iyong file sa Google Drive / Google Sheets.\n"
+            "2. I-click ang **Share** button sa kanang itaas.\n"
+            "3. Sa ilalim ng *General access*, piliin ang **Anyone with the link** (Viewer).\n"
+            "4. I-click ang **🔄 I-refresh ang Data mula sa Cloud** button sa sidebar."
+        )
         st.stop()
         
     if st.session_state.user_role == "Master Admin":
@@ -525,7 +586,7 @@ if app_mode == "📊 Parish Directory & Family Search":
     st.stop()
 
 # =====================================================================
-# 3. MAGDAGDAG NG MIYEMBRO & LITRATO
+# 2. MAGDAGDAG NG MIYEMBRO & LITRATO
 # =====================================================================
 elif app_mode == "➕ Magdagdag ng Miyembro & Litrato":
     st.title("➕ Magdagdag ng Miyembro at Mag-upload ng Litrato")
@@ -561,7 +622,7 @@ elif app_mode == "➕ Magdagdag ng Miyembro & Litrato":
     st.stop()
 
 # =====================================================================
-# 4. PRAYER WALL & CATEGORIZER
+# 3. PRAYER WALL & CATEGORIZER
 # =====================================================================
 elif app_mode == "🙏 Prayer Wall & Categorizer":
     st.title("🙏 AI Prayer Request & Needs Categorizer")
@@ -569,6 +630,9 @@ elif app_mode == "🙏 Prayer Wall & Categorizer":
     if st.button("Suriin sa AI at I-categorize", type="primary"):
         if raw_prayer:
             active_key = st.session_state.custom_secrets["GEMINI_API_KEY"]
+            if not active_key:
+                st.error("⚠️ Wala pang GEMINI_API_KEY. Pumunta sa App Settings sa sidebar.")
+                st.stop()
             client = genai.Client(api_key=active_key)
             with st.spinner("Sinusuri ng AI ang kahilingan..."):
                 prompt = f"Suriin ang sumusunod na prayer request. Ibigay ang Kategorya, Urgency Level, at comforting Bible verse:\n\n{raw_prayer}"
@@ -583,7 +647,7 @@ elif app_mode == "🙏 Prayer Wall & Categorizer":
     st.stop()
 
 # =====================================================================
-# 5. ANNOUNCEMENT BROADCASTER
+# 4. ANNOUNCEMENT BROADCASTER
 # =====================================================================
 elif app_mode == "📢 Announcement Broadcaster":
     st.title("📢 AI Ministry Announcement Broadcaster")
@@ -593,6 +657,9 @@ elif app_mode == "📢 Announcement Broadcaster":
     if st.button("Bumuo at Magpadala ng Email Broadcast", type="primary"):
         if event_title and event_details and target_email:
             active_key = st.session_state.custom_secrets["GEMINI_API_KEY"]
+            if not active_key:
+                st.error("⚠️ Wala pang GEMINI_API_KEY. Pumunta sa App Settings sa sidebar.")
+                st.stop()
             client = genai.Client(api_key=active_key)
             with st.spinner("Gumagawa at nagpapadala ng broadcast..."):
                 try:
@@ -610,7 +677,7 @@ elif app_mode == "📢 Announcement Broadcaster":
     st.stop()
 
 # =====================================================================
-# 6. APP SETTINGS
+# 5. APP SETTINGS
 # =====================================================================
 elif app_mode == "🛠️ App Settings":
     st.title("🛠️ App Configuration & Settings")
@@ -635,10 +702,10 @@ elif app_mode == "🛠️ App Settings":
     st.stop()
 
 # =====================================================================
-# 7. AI CHAT ASSISTANT
+# 6. AI CHAT ASSISTANT
 # =====================================================================
 st.title("⛪ CTG Church AI Ministry Assistant")
-st.caption("Katuwang ng mga Leaders sa paghahanap ng records sa Excel at pamamahala ng mga parokya.")
+st.caption("Katuwang ng mga Leaders sa paghahanap ng records sa Excel mula sa Google Drive at pamamahala ng mga parokya.")
 
 active_gemini_key = st.session_state.custom_secrets["GEMINI_API_KEY"]
 if not active_gemini_key:
@@ -648,49 +715,51 @@ if not active_gemini_key:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-if "current_model" not in st.session_state:
-    st.session_state.current_model = selected_model
-
-if "chat_session" not in st.session_state or st.session_state.current_model != selected_model:
-    st.session_state.current_model = selected_model
-    client = genai.Client(api_key=active_gemini_key)
-    system_instruction = (
-        f"Ikaw ang opisyal na AI Ministry Assistant ng CTG Church. "
-        f"Ang naka-login ay may access sa parokyang: {st.session_state.assigned_parish}. "
-        "Tulungan sila sa paghanap ng mga rekord ng pamilya at miyembro sa Excel database."
-    )
-    config = types.GenerateContentConfig(
-        system_instruction=system_instruction,
-        tools=[query_excel_database, send_email_via_gmail],
-        temperature=0.3,
-    )
-    st.session_state.chat_session = client.chats.create(model=selected_model, config=config)
-
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-if user_prompt := st.chat_input("Magtanong tungkol sa records sa Excel o magpa-send ng email..."):
+if user_prompt := st.chat_input("Magtanong tungkol sa records o magpa-send ng email..."):
     st.session_state.messages.append({"role": "user", "content": user_prompt})
     with st.chat_message("user"):
         st.markdown(user_prompt)
 
     with st.chat_message("assistant"):
         status_box = st.status(f"Pinoproseso gamit ang `{selected_model}`...", expanded=True)
-        max_retries = 3
-        for attempt in range(max_retries):
+        client = genai.Client(api_key=active_gemini_key)
+        system_instruction = (
+            f"Ikaw ang opisyal na AI Ministry Assistant ng CTG Church. "
+            f"Ang naka-login ay may access sa parokyang: {st.session_state.assigned_parish}. "
+            "Tulungan sila sa paghanap ng mga rekord ng pamilya at miyembro mula sa Google Drive database."
+        )
+        config = types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            tools=[query_excel_database, send_email_via_gmail],
+            temperature=0.3,
+        )
+        
+        # Sinusubukan muna ang selected_model (hal. gemini-3.8-flash), at kung hindi pa available sa API ay automatic na gagamit ng gemini-2.5-flash
+        models_to_try = []
+        for m in [selected_model, "gemini-2.5-flash", "gemini-2.5-pro"]:
+            if m not in models_to_try:
+                models_to_try.append(m)
+                
+        success = False
+        last_err = ""
+        for model_candidate in models_to_try:
             try:
-                status_box.write(f"🔄 Kumokonekta sa Gemini API (Attempt {attempt + 1}/{max_retries})...")
-                response = st.session_state.chat_session.send_message(user_prompt)
-                status_box.update(label="✅ Tapos na!", state="complete", expanded=False)
+                status_box.write(f"🔄 Kumokonekta sa `{model_candidate}`...")
+                chat = client.chats.create(model=model_candidate, config=config)
+                response = chat.send_message(user_prompt)
+                status_box.update(label=f"✅ Tapos na! (Model: `{model_candidate}`)", state="complete", expanded=False)
                 st.markdown(response.text)
                 st.session_state.messages.append({"role": "assistant", "content": response.text})
+                success = True
                 break
             except Exception as e:
-                err_str = str(e)
-                if ("503" in err_str or "UNAVAILABLE" in err_str or "429" in err_str) and attempt < max_retries - 1:
-                    time.sleep(3)
-                    continue
-                status_box.update(label="❌ May Error", state="error", expanded=True)
-                st.error(f"Detalye: {err_str}")
-                break
+                last_err = str(e)
+                continue
+                
+        if not success:
+            status_box.update(label="❌ May Error", state="error", expanded=True)
+            st.error(f"Detalye: {last_err}")

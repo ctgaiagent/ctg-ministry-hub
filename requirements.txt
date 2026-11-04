@@ -1,6 +1,8 @@
 streamlit
-google-genai
-notion-client
+pandas
+openpyxl
 requests
 python-dotenv
-pydantic
+google-genai
+google-auth
+google-api-python-client
