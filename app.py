@@ -4,7 +4,7 @@ import base64
 from email.message import EmailMessage
 import requests
 import streamlit as st
-from dotenv import load_dotenv
+from dotenv import load_dotenv, set_key
 from google import genai
 from google.genai import types
 from google.oauth2.credentials import Credentials
@@ -14,7 +14,11 @@ from googleapiclient.discovery import build
 load_dotenv()
 
 def get_secret(key, default=""):
-    """Kumukuha ng secret mula sa Streamlit Cloud Secrets o sa Local .env"""
+    """Kumukuha ng secret mula sa Session State (Settings), Streamlit Cloud Secrets, o Local .env"""
+    if "custom_secrets" in st.session_state and key in st.session_state.custom_secrets:
+        val = st.session_state.custom_secrets[key]
+        if val:
+            return val
     try:
         if key in st.secrets:
             return st.secrets[key]
@@ -38,25 +42,28 @@ st.set_page_config(
     layout="wide"
 )
 
-# 3. Authentication / Login Gate
+# 3. Authentication / Login Gate (Nilagyan ng columns para hindi masyadong malaki/wide)
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 
 if not st.session_state.authenticated:
-    st.title("⛪ CTG Ministry Hub Login")
-    st.markdown("Maligayang pagdating! Mag-login upang ma-access ang AI Assistant para sa mga Leaders at Priests.")
-    
-    with st.form("login_form"):
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-        submit = st.form_submit_button("Login")
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    col1, col2, col3 = st.columns([1, 1.2, 1])
+    with col2:
+        st.title("⛪ CTG Ministry Hub")
+        st.caption("Mag-login upang ma-access ang AI Assistant para sa mga Leaders at Priests.")
         
-        if submit:
-            if username == APP_USER and password == APP_PASSWORD:
-                st.session_state.authenticated = True
-                st.rerun()
-            else:
-                st.error("Maling Username o Password. Pakisubukan ulit.")
+        with st.form("login_form"):
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            submit = st.form_submit_button("Login", use_container_width=True)
+            
+            if submit:
+                if username == APP_USER and password == APP_PASSWORD:
+                    st.session_state.authenticated = True
+                    st.rerun()
+                else:
+                    st.error("Maling Username o Password.")
     st.stop()
 
 # ==========================================
@@ -144,7 +151,6 @@ def add_visitor_to_notion(name: str, email: str = "", status: str = "New Visitor
         "Content-Type": "application/json"
     }
 
-    # Kunin muna ang schema ng database para malaman ang tamang pangalan ng columns
     db_resp = requests.get(f"https://api.notion.com/v1/databases/{clean_db_id}", headers=headers, timeout=15)
     if db_resp.status_code != 200:
         return f"Hindi mabasa ang Notion database schema ({db_resp.status_code}): {db_resp.text}"
@@ -175,7 +181,7 @@ def add_visitor_to_notion(name: str, email: str = "", status: str = "New Visitor
 def send_email_via_gmail(recipient_email: str, subject: str, body_text: str) -> str:
     """Nagpapadala ng email gamit ang Gmail REST API at OAuth2 Refresh Token."""
     if not all([GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN]):
-        return "Error: Kulang ang GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, o GMAIL_REFRESH_TOKEN sa configuration."
+        return "Error: Kulang ang GMAIL credentials sa configuration."
 
     try:
         creds = Credentials(
@@ -198,58 +204,38 @@ def send_email_via_gmail(recipient_email: str, subject: str, body_text: str) -> 
 
     except Exception as e:
         err_str = str(e)
-        if "403" in err_str or "insufficientPermissions" in err_str or "Insufficient Permission" in err_str:
-            return (
-                "Error 403 (Insufficient Permission sa Gmail): Ang iyong GMAIL_REFRESH_TOKEN ay ginawa nang walang "
-                "pahintulot na mag-send ng email. Kailangan mong gumawa ng bagong Refresh Token na may scope na: "
-                "'https://www.googleapis.com/auth/gmail.send' o 'https://mail.google.com/'."
-            )
+        if "403" in err_str or "insufficientPermissions" in err_str:
+            return "Error 403 (Gmail Permission): Kailangan ng bagong Refresh Token na may mail.google.com scope."
         return f"Error sa pag-send ng Gmail: {err_str}"
 
 
 # ==========================================
-# 5. SIDEBAR CONTROLS & DIAGNOSTICS
+# 5. NAVIGATION & APP SETTINGS (BAGONG MENU)
 # ==========================================
+if "custom_secrets" not in st.session_state:
+    st.session_state.custom_secrets = {
+        "GEMINI_API_KEY": GEMINI_API_KEY,
+        "NOTION_TOKEN": NOTION_TOKEN,
+        "NOTION_CRM_DB_ID": NOTION_CRM_DB_ID,
+        "GMAIL_CLIENT_ID": GMAIL_CLIENT_ID,
+        "GMAIL_CLIENT_SECRET": GMAIL_CLIENT_SECRET,
+        "GMAIL_REFRESH_TOKEN": GMAIL_REFRESH_TOKEN,
+        "APP_USER": APP_USER,
+        "APP_PASSWORD": APP_PASSWORD
+    }
+
 with st.sidebar:
     st.header("⚙️ Ministry Control Panel")
     st.write(f"👤 Naka-login bilang: **{APP_USER}**")
     
+    app_mode = st.radio("Pumili ng Pahina:", ["💬 AI Chat Assistant", "🛠️ App Settings"])
+    
     selected_model = st.selectbox(
-        "Piliin ang Gemini Model:",
+        "Gemini Model:",
         ["gemini-2.5-flash", "gemini-2.5-pro"],
         index=0
     )
     
-    st.divider()
-    st.subheader("🔍 Tool Diagnostics (Subukan Dito)")
-    
-    if st.button("1. I-test ang Notion Connection"):
-        with st.spinner("Kinokonekta ang Notion..."):
-            res = get_notion_crm_data()
-            if "Error" in res:
-                st.error(res)
-            else:
-                st.success("Gumagana ang Notion!")
-                with st.expander("Tingnan ang Data"):
-                    st.text(res)
-
-    with st.expander("2. I-test ang Pag-send ng Gmail"):
-        test_to = st.text_input("Padadalhan (Email):", placeholder="halimbawa@gmail.com")
-        if st.button("Magpadala ng Test Email"):
-            if test_to:
-                with st.spinner("Nagpapadala ng email..."):
-                    gres = send_email_via_gmail(
-                        test_to,
-                        "CTG Ministry Hub - Test Email",
-                        "Pagbati! Ito ay test email mula sa iyong CTG Church AI App."
-                    )
-                    if "Error" in gres:
-                        st.error(gres)
-                    else:
-                        st.success(gres)
-            else:
-                st.warning("Maglagay muna ng email address.")
-
     st.divider()
     if st.button("🗑️ I-clear ang Chat History"):
         st.session_state.messages = []
@@ -262,13 +248,56 @@ with st.sidebar:
 
 
 # ==========================================
-# 6. MAIN AI CHAT INTERFACE
+# 6. APP SETTINGS PAGE (MAG-ADJUST NG KEYS)
+# ==========================================
+if app_mode == "🛠️ App Settings":
+    st.title("🛠️ App Configuration & Settings")
+    st.markdown("Dito mo maaaring i-update ang iyong mga API keys, database IDs, at login password nang direkta.")
+    
+    with st.form("settings_form"):
+        st.subheader("🔑 API Keys & Integration")
+        new_gemini = st.text_input("GEMINI_API_KEY", value=st.session_state.custom_secrets["GEMINI_API_KEY"], type="password")
+        new_notion_token = st.text_input("NOTION_TOKEN", value=st.session_state.custom_secrets["NOTION_TOKEN"], type="password")
+        new_notion_db = st.text_input("NOTION_CRM_DB_ID", value=st.session_state.custom_secrets["NOTION_CRM_DB_ID"])
+        
+        st.subheader("📧 Gmail OAuth2 Credentials")
+        new_g_client_id = st.text_input("GMAIL_CLIENT_ID", value=st.session_state.custom_secrets["GMAIL_CLIENT_ID"])
+        new_g_client_sec = st.text_input("GMAIL_CLIENT_SECRET", value=st.session_state.custom_secrets["GMAIL_CLIENT_SECRET"], type="password")
+        new_g_token = st.text_input("GMAIL_REFRESH_TOKEN", value=st.session_state.custom_secrets["GMAIL_REFRESH_TOKEN"], type="password")
+        
+        st.subheader("🔐 Admin Login Credentials")
+        new_user = st.text_input("APP_USER", value=st.session_state.custom_secrets["APP_USER"])
+        new_pass = st.text_input("APP_PASSWORD", value=st.session_state.custom_secrets["APP_PASSWORD"], type="password")
+        
+        save_settings = st.form_submit_button("I-save ang mga Pagbabago")
+        
+        if save_settings:
+            st.session_state.custom_secrets = {
+                "GEMINI_API_KEY": new_gemini,
+                "NOTION_TOKEN": new_notion_token,
+                "NOTION_CRM_DB_ID": new_notion_db,
+                "GMAIL_CLIENT_ID": new_g_client_id,
+                "GMAIL_CLIENT_SECRET": new_g_client_sec,
+                "GMAIL_REFRESH_TOKEN": new_g_token,
+                "APP_USER": new_user,
+                "APP_PASSWORD": new_pass
+            }
+            st.success("Matagumpay na na-update ang mga settings ng app!")
+            time.sleep(1)
+            st.rerun()
+            
+    st.stop()
+
+
+# ==========================================
+# 7. MAIN AI CHAT INTERFACE
 # ==========================================
 st.title("⛪ CTG Church AI Ministry Assistant")
 st.caption("Katuwang ng mga Leaders at Priests sa pamamahala ng Visitors CRM, Follow-up Emails, at Iskedyul.")
 
-if not GEMINI_API_KEY:
-    st.warning("⚠️ Wala pang GEMINI_API_KEY. Pakilagay ito sa `.env` file o sa Streamlit Cloud Secrets.")
+active_gemini_key = st.session_state.custom_secrets["GEMINI_API_KEY"]
+if not active_gemini_key:
+    st.warning("⚠️ Wala pang GEMINI_API_KEY. Pumunta sa **App Settings** sa sidebar para ilagay ito.")
     st.stop()
 
 if "messages" not in st.session_state:
@@ -277,10 +306,10 @@ if "messages" not in st.session_state:
 if "current_model" not in st.session_state:
     st.session_state.current_model = selected_model
 
-# Initialize Gemini Client at Chat Session na may kasamang Tools
+# Initialize Gemini Client at Chat Session
 if "chat_session" not in st.session_state or st.session_state.current_model != selected_model:
     st.session_state.current_model = selected_model
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    client = genai.Client(api_key=active_gemini_key)
     
     system_instruction = (
         "Ikaw ang opisyal na AI Ministry Assistant ng CTG Church. "
