@@ -42,7 +42,31 @@ st.set_page_config(
     layout="wide"
 )
 
-# 3. Authentication / Login Gate (Compact view)
+# 3. Safe Gemini Execution Wrapper (Para iwas 503 Unavailable)
+def safe_generate_content(client, model, contents, config=None):
+    max_retries = 3
+    delay = 2
+    fallback_models = [model, "gemini-2.5-flash", "gemini-2.5-pro"]
+    
+    for current_model in fallback_models:
+        for attempt in range(max_retries):
+            try:
+                if config:
+                    return client.models.generate_content(model=current_model, contents=contents, config=config)
+                else:
+                    return client.models.generate_content(model=current_model, contents=contents)
+            except Exception as e:
+                err_str = str(e)
+                if "503" in err_str or "UNAVAILABLE" in err_str or "429" in err_str:
+                    if attempt < max_retries - 1:
+                        time.sleep(delay)
+                        delay *= 2
+                        continue
+                break
+    raise Exception("Ang mga Gemini models ay kasalukuyang busy o naabot ang quota limit. Subukan muli makalipas ang ilang sandali.")
+
+
+# 4. Authentication / Login Gate (Compact view)
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 
@@ -67,7 +91,7 @@ if not st.session_state.authenticated:
     st.stop()
 
 # ==========================================
-# 4. AI AGENT TOOLS (NOTION AT GMAIL)
+# 5. AI AGENT TOOLS (NOTION AT GMAIL)
 # ==========================================
 
 def get_notion_crm_data(search_name: str = "") -> str:
@@ -193,7 +217,7 @@ def send_email_via_gmail(recipient_email: str, subject: str, body_text: str) -> 
 
 
 # ==========================================
-# 5. SIDEBAR & NAVIGATION (MENU)
+# 6. SIDEBAR & NAVIGATION (MENU)
 # ==========================================
 if "custom_secrets" not in st.session_state:
     st.session_state.custom_secrets = {
@@ -213,7 +237,6 @@ with st.sidebar:
     
     app_mode = st.radio("Pumili ng Pahina:", ["💬 AI Chat Assistant", "🙏 Prayer Wall & Categorizer", "📢 Announcement Broadcaster", "🛠️ App Settings"])
     
-    # Naidagdag na ang gemini-3.8-flash sa listahan
     selected_model = st.selectbox(
         "Gemini Model:",
         ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.5-pro"],
@@ -232,7 +255,7 @@ with st.sidebar:
 
 
 # ==========================================
-# 6. FEATURE: PRAYER REQUEST CATEGORIZER
+# 7. FEATURE: PRAYER REQUEST CATEGORIZER
 # ==========================================
 if app_mode == "🙏 Prayer Wall & Categorizer":
     st.title("🙏 AI Prayer Request & Needs Categorizer")
@@ -246,16 +269,19 @@ if app_mode == "🙏 Prayer Wall & Categorizer":
             client = genai.Client(api_key=active_key)
             with st.spinner("Sinusuri ng AI ang kahilingan..."):
                 prompt = f"Suriin ang sumusunod na prayer request. Ibigay ang Kategorya (Kalusugan, Pananalapi, Pamilya, Espirituwal, o Iba pa), Urgency Level, at comforting Bible verse:\n\n{raw_prayer}"
-                res = client.models.generate_content(model=selected_model, contents=prompt)
-                st.success("Tapos na ang Pagsusuri!")
-                st.markdown(res.text)
+                try:
+                    res = safe_generate_content(client, selected_model, prompt)
+                    st.success("Tapos na ang Pagsusuri!")
+                    st.markdown(res.text)
+                except Exception as ex:
+                    st.error(str(ex))
         else:
             st.warning("Maglagay muna ng mensahe.")
     st.stop()
 
 
 # ==========================================
-# 7. FEATURE: ANNOUNCEMENT BROADCASTER
+# 8. FEATURE: ANNOUNCEMENT BROADCASTER
 # ==========================================
 if app_mode == "📢 Announcement Broadcaster":
     st.title("📢 AI Ministry Announcement Broadcaster")
@@ -270,21 +296,24 @@ if app_mode == "📢 Announcement Broadcaster":
             active_key = st.session_state.custom_secrets["GEMINI_API_KEY"]
             client = genai.Client(api_key=active_key)
             with st.spinner("Gumagawa at nagpapadala ng broadcast..."):
-                p_prompt = f"Gumawa ng pormal, nakaka-inspire, at malinaw na simbahan announcement email tungkol sa: {event_title}. Mga detalye: {event_details}. Isulat sa Tagalog."
-                ai_res = client.models.generate_content(model=selected_model, contents=p_prompt)
-                email_body = ai_res.text
-                
-                res_send = send_email_via_gmail(target_email, f"CTG Announcement: {event_title}", email_body)
-                st.success(res_send)
-                with st.expander("Tingnan ang Mensahe"):
-                    st.markdown(email_body)
+                try:
+                    p_prompt = f"Gumawa ng pormal, nakaka-inspire, at malinaw na simbahan announcement email tungkol sa: {event_title}. Mga detalye: {event_details}. Isulat sa Tagalog."
+                    ai_res = safe_generate_content(client, selected_model, p_prompt)
+                    email_body = ai_res.text
+                    
+                    res_send = send_email_via_gmail(target_email, f"CTG Announcement: {event_title}", email_body)
+                    st.success(res_send)
+                    with st.expander("Tingnan ang Mensahe"):
+                        st.markdown(email_body)
+                except Exception as ex:
+                    st.error(str(ex))
         else:
             st.warning("Punan ang lahat ng kailangan.")
     st.stop()
 
 
 # ==========================================
-# 8. APP SETTINGS PAGE
+# 9. APP SETTINGS PAGE
 # ==========================================
 if app_mode == "🛠️ App Settings":
     st.title("🛠️ App Configuration & Settings")
@@ -323,7 +352,7 @@ if app_mode == "🛠️ App Settings":
 
 
 # ==========================================
-# 9. MAIN AI CHAT INTERFACE
+# 10. MAIN AI CHAT INTERFACE
 # ==========================================
 st.title("⛪ CTG Church AI Ministry Assistant")
 st.caption("Katuwang ng mga Leaders at Priests sa pamamahala ng Visitors CRM, Follow-up Emails, at Iskedyul.")
