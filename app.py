@@ -32,7 +32,8 @@ def get_secret(key, default=""):
 
 GEMINI_API_KEY = get_secret("GEMINI_API_KEY")
 NOTION_TOKEN = get_secret("NOTION_TOKEN")
-NOTION_CRM_DB_ID = get_secret("NOTION_CRM_DB_ID")
+# Default Notion DB ID mula sa iyong Church CRM screenshot
+NOTION_CRM_DB_ID = get_secret("NOTION_CRM_DB_ID", "409fff6803d78068bdaffcb10ce088ab")
 GMAIL_CLIENT_ID = get_secret("GMAIL_CLIENT_ID")
 GMAIL_CLIENT_SECRET = get_secret("GMAIL_CLIENT_SECRET")
 GMAIL_REFRESH_TOKEN = get_secret("GMAIL_REFRESH_TOKEN")
@@ -59,7 +60,7 @@ PARISH_ORDER = [
 # 👥 ACCOUNTS NG ADMIN AT MGA PAROKYA (1-10)
 # ==========================================
 PARISH_ACCOUNTS = {
-    "ctg.ministry.master.admin": {"password": "Church#Temple#God$2026!Admin", "parish": "Lahat ng Parokya", "role": "Master Admin"},
+    "ctg.ministry.master.admin": {"password": "Chrch#Temple#God$2026!Admin", "parish": "Lahat ng Parokya", "role": "Master Admin"},
     
     "lipay norte parish": {"password": "ctglipaynorte1", "parish": "LIPAY NORTE PARISH", "role": "Parish Leader"},
     "lipaynorteparish": {"password": "ctglipaynorte1", "parish": "LIPAY NORTE PARISH", "role": "Parish Leader"},
@@ -221,6 +222,78 @@ def load_complete_parish_members():
 master_members_df, db_status_msg = load_complete_parish_members()
 
 # ==========================================
+# 📓 NOTION CRM READER (VISITORS & MEMBERS)
+# ==========================================
+def fetch_notion_crm_df():
+    notion_token = get_secret("NOTION_TOKEN")
+    raw_db_id = get_secret("NOTION_CRM_DB_ID", "409fff6803d78068bdaffcb10ce088ab")
+    
+    if not notion_token:
+        return pd.DataFrame(), "Wala pang NOTION_TOKEN. Ilagay ito sa App Settings o sa Streamlit Secrets."
+        
+    clean_id = raw_db_id.strip().split("?")[0].split("-")[-1]
+    url = f"https://api.notion.com/v1/databases/{clean_id}/query"
+    headers = {
+        "Authorization": f"Bearer {notion_token.strip()}",
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        res = requests.post(url, headers=headers, json={"page_size": 100}, timeout=20)
+        if res.status_code != 200:
+            return pd.DataFrame(), f"Notion API Error ({res.status_code}): Siguraduhing naka-connect ang iyong Notion Integration sa 'Church CRM: Visitors & Members' page."
+            
+        data = res.json()
+        rows = []
+        for page in data.get("results", []):
+            props = page.get("properties", {})
+            
+            def parse_prop(p):
+                if not p:
+                    return ""
+                ptype = p.get("type")
+                if ptype == "title":
+                    return "".join([t.get("plain_text", "") for t in p.get("title", [])])
+                elif ptype == "rich_text":
+                    return "".join([t.get("plain_text", "") for t in p.get("rich_text", [])])
+                elif ptype == "phone_number":
+                    return str(p.get("phone_number") or "")
+                elif ptype == "email":
+                    return str(p.get("email") or "")
+                elif ptype == "number":
+                    val = p.get("number")
+                    return str(val) if val is not None else ""
+                elif ptype == "select":
+                    sel = p.get("select")
+                    return sel.get("name", "") if sel else ""
+                elif ptype == "status":
+                    st_obj = p.get("status")
+                    return st_obj.get("name", "") if st_obj else ""
+                elif ptype == "date":
+                    dt = p.get("date")
+                    return dt.get("start", "") if dt else ""
+                return ""
+
+            row_dict = {
+                "Full Name": parse_prop(props.get("Full Name")),
+                "Contact Number": parse_prop(props.get("Contact Number")),
+                "Email": parse_prop(props.get("Email")),
+                "Pipeline Stage": parse_prop(props.get("Pipeline Stage")),
+                "Member Type": parse_prop(props.get("Member Type")),
+                "Age": parse_prop(props.get("Age")),
+                "First Visit Date": parse_prop(props.get("First Visit Date")),
+            }
+            for k, v in props.items():
+                if k not in row_dict:
+                    row_dict[k] = parse_prop(v)
+            rows.append(row_dict)
+            
+        return pd.DataFrame(rows), "OK"
+    except Exception as e:
+        return pd.DataFrame(), f"Error sa pagkonekta sa Notion: {str(e)}"
+
+# ==========================================
 # 📊 SUMMARY & CLASSIFICATION HELPERS
 # ==========================================
 def classify_member_status(status_val, church_member_val):
@@ -361,7 +434,6 @@ if not st.session_state.authenticated:
     st.markdown("<br><br>", unsafe_allow_html=True)
     col1, col2, col3 = st.columns([1, 1.3, 1])
     with col2:
-        # Tanging ang maliit at eleganteng logo na lamang sa tabi ng pamagat
         col_log_img, col_log_txt = st.columns([0.15, 0.85])
         with col_log_img:
             if os.path.exists("logo.jpg"):
@@ -387,9 +459,10 @@ if not st.session_state.authenticated:
     st.stop()
 
 # ==========================================
-# 🛠️ AI AGENT TOOLS
+# 🛠️ AI AGENT TOOLS (EXCEL + NOTION CRM + GMAIL)
 # ==========================================
 def query_excel_database(search_query: str) -> str:
+    """Hahanapin ang mga miyembro o pamilya sa Google Drive Excel Database ng parokya."""
     if master_members_df.empty:
         return "Error: Walang laman o hindi mabasa ang Excel database mula sa Google Drive."
     try:
@@ -407,20 +480,55 @@ def query_excel_database(search_query: str) -> str:
                     f"Category: {row['Category']} | Status: {row['Status']}"
                 )
             return "Mga nahanap sa Excel Database:\n" + "\n".join(results)
-        return f"Walang nahanap na record para sa '{search_query}'."
+        return f"Walang nahanap na record sa Excel para sa '{search_query}'."
     except Exception as e:
         return f"Error sa pagbasa ng Excel: {str(e)}"
 
+def query_notion_crm_database(search_query: str = "") -> str:
+    """
+    Hahanapin ang mga bisita at miyembro sa Notion database na 'Church CRM: Visitors & Members'
+    na nag-fill up sa Google Form. Kung walang partikular na pangalan o 'all' ang search_query, ibabalik ang lahat ng bisita.
+    """
+    df_notion, status = fetch_notion_crm_df()
+    if status != "OK":
+        return status
+    if df_notion.empty:
+        return "Walang nakitang laman sa Notion CRM database."
+        
+    q = search_query.strip()
+    if q and q.lower() not in ["all", "lahat", "visitors", "bisita", "new guest", "first-time visitor"]:
+        mask = df_notion.astype(str).apply(lambda x: x.str.contains(q, case=False, na=False)).any(axis=1)
+        df_filtered = df_notion[mask]
+    else:
+        df_filtered = df_notion
+        
+    if df_filtered.empty:
+        return f"Walang nahanap na bisita sa Notion CRM para sa '{search_query}'."
+        
+    results = []
+    for _, row in df_filtered.head(20).iterrows():
+        results.append(
+            f"Full Name: {row.get('Full Name', '')} | Contact: {row.get('Contact Number', '')} | "
+            f"Email: {row.get('Email', '')} | Stage: {row.get('Pipeline Stage', '')} | "
+            f"Type: {row.get('Member Type', '')} | Age: {row.get('Age', '')} | "
+            f"First Visit: {row.get('First Visit Date', '')}"
+        )
+    return "Mga nahanap sa Notion Church CRM (Visitors & Members):\n" + "\n".join(results)
+
 def send_email_via_gmail(recipient_email: str, subject: str, body_text: str) -> str:
-    if not all([GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN]):
-        return "Error: Kulang ang GMAIL credentials."
+    """Magpapadala ng follow-up email, welcome message, o prayer response gamit ang Gmail API."""
+    g_id = get_secret("GMAIL_CLIENT_ID")
+    g_sec = get_secret("GMAIL_CLIENT_SECRET")
+    g_ref = get_secret("GMAIL_REFRESH_TOKEN")
+    if not all([g_id, g_sec, g_ref]):
+        return "Error: Kulang ang GMAIL credentials sa App Settings."
     try:
         creds = Credentials(
             token=None,
-            refresh_token=GMAIL_REFRESH_TOKEN.strip(),
+            refresh_token=g_ref.strip(),
             token_uri="https://oauth2.googleapis.com/token",
-            client_id=GMAIL_CLIENT_ID.strip(),
-            client_secret=GMAIL_CLIENT_SECRET.strip()
+            client_id=g_id.strip(),
+            client_secret=g_sec.strip()
         )
         service = build("gmail", "v1", credentials=creds)
         msg = EmailMessage()
@@ -461,6 +569,7 @@ with st.sidebar:
     
     menu_options = [
         "📊 Parish Directory & Family Search",
+        "🌟 Notion CRM: Visitors & Members",
         "💬 AI Chat Assistant",
         "➕ Magdagdag ng Miyembro & Litrato",
         "🙏 Prayer Wall & Categorizer",
@@ -578,7 +687,65 @@ if app_mode == "📊 Parish Directory & Family Search":
     st.stop()
 
 # =====================================================================
-# 2. MAGDAGDAG NG MIYEMBRO & LITRATO
+# 2. NOTION CRM: VISITORS & MEMBERS (GALING SA GOOGLE FORM & MAKE.COM)
+# =====================================================================
+elif app_mode == "🌟 Notion CRM: Visitors & Members":
+    col_logo, col_title = st.columns([0.06, 0.94])
+    with col_logo:
+        if os.path.exists("logo.jpg"):
+            st.image("logo.jpg", width=50)
+    with col_title:
+        st.markdown("## Church CRM: Visitors & Members (Notion Sync)")
+    st.caption("Direktang konektado sa Google Form -> Make.com -> Notion CRM Database.")
+    
+    df_notion, status = fetch_notion_crm_df()
+    if status != "OK":
+        st.warning(f"⚠️ {status}")
+        st.info("💡 Pumunta sa **🛠️ App Settings** sa kaliwang menu at ilagay ang iyong `NOTION_TOKEN` at `NOTION_CRM_DB_ID` (`409fff6803d78068bdaffcb10ce088ab`).")
+    else:
+        st.success(f"✅ Konektado sa Notion CRM! Kabuuang nakatala: **{len(df_notion)}**")
+        st.dataframe(df_notion, use_container_width=True, hide_index=True)
+        
+        st.divider()
+        st.subheader("📧 AI Follow-Up & Prayer Encouragement Sender")
+        if not df_notion.empty and "Full Name" in df_notion.columns:
+            visitor_names = df_notion["Full Name"].tolist()
+            selected_visitor = st.selectbox("Pumili ng Bisita para padalhan ng AI Follow-up Email:", visitor_names)
+            v_row = df_notion[df_notion["Full Name"] == selected_visitor].iloc[0]
+            v_email = v_row.get("Email", "")
+            
+            st.write(f"**Email:** `{v_email}` | **Stage:** `{v_row.get('Pipeline Stage', '')}` | **Type:** `{v_row.get('Member Type', '')}`")
+            custom_note = st.text_area("Karagdagang mensahe o Prayer Request ng bisita (Optional):")
+            
+            if st.button("✨ Bumuo ng AI Follow-Up at I-send sa Gmail", type="primary"):
+                active_key = get_secret("GEMINI_API_KEY")
+                if not active_key:
+                    st.error("Wala pang GEMINI_API_KEY sa App Settings.")
+                elif not v_email:
+                    st.error("Walang email address ang napiling bisita.")
+                else:
+                    client = genai.Client(api_key=active_key)
+                    with st.spinner("Sinusulat ng Gemini AI at ipinapadala sa Gmail..."):
+                        prompt = (
+                            f"Sumulat ng isang mainit at nakaka-inspire na Welcome at Follow-up Email mula sa "
+                            f"Church of the Temple of God (CTG) para sa aming bisita na si {selected_visitor} "
+                            f"({v_row.get('Member Type', 'First-Time Visitor')}). "
+                            f"Karagdagang detalye/prayer request: {custom_note}. "
+                            f"Magbigay ng comforting Bible verse at panalangin sa Tagalog."
+                        )
+                        try:
+                            ai_res = safe_generate_content(client, selected_model, prompt)
+                            email_body = ai_res.text
+                            send_status = send_email_via_gmail(v_email, f"Maligayang Pagdating sa CTG Church, {selected_visitor}!", email_body)
+                            st.success(send_status)
+                            with st.expander("Tingnan ang Naipadalang Email"):
+                                st.markdown(email_body)
+                        except Exception as e:
+                            st.error(str(e))
+    st.stop()
+
+# =====================================================================
+# 3. MAGDAGDAG NG MIYEMBRO & LITRATO
 # =====================================================================
 elif app_mode == "➕ Magdagdag ng Miyembro & Litrato":
     col_logo, col_title = st.columns([0.06, 0.94])
@@ -619,7 +786,7 @@ elif app_mode == "➕ Magdagdag ng Miyembro & Litrato":
     st.stop()
 
 # =====================================================================
-# 3. PRAYER WALL & CATEGORIZER
+# 4. PRAYER WALL & CATEGORIZER
 # =====================================================================
 elif app_mode == "🙏 Prayer Wall & Categorizer":
     col_logo, col_title = st.columns([0.06, 0.94])
@@ -650,7 +817,7 @@ elif app_mode == "🙏 Prayer Wall & Categorizer":
     st.stop()
 
 # =====================================================================
-# 4. ANNOUNCEMENT BROADCASTER
+# 5. ANNOUNCEMENT BROADCASTER
 # =====================================================================
 elif app_mode == "📢 Announcement Broadcaster":
     col_logo, col_title = st.columns([0.06, 0.94])
@@ -686,7 +853,7 @@ elif app_mode == "📢 Announcement Broadcaster":
     st.stop()
 
 # =====================================================================
-# 5. APP SETTINGS
+# 6. APP SETTINGS
 # =====================================================================
 elif app_mode == "🛠️ App Settings":
     col_logo, col_title = st.columns([0.06, 0.94])
@@ -697,7 +864,7 @@ elif app_mode == "🛠️ App Settings":
         st.markdown("## App Configuration & Settings")
         
     with st.form("settings_form"):
-        st.subheader("🔑 API Keys & Integration")
+        st.subheader("🔑 API Keys & Notion CRM Integration")
         new_gemini = st.text_input("GEMINI_API_KEY", value=st.session_state.custom_secrets["GEMINI_API_KEY"], type="password")
         new_notion_token = st.text_input("NOTION_TOKEN", value=st.session_state.custom_secrets["NOTION_TOKEN"], type="password")
         new_notion_db = st.text_input("NOTION_CRM_DB_ID", value=st.session_state.custom_secrets["NOTION_CRM_DB_ID"])
@@ -717,7 +884,7 @@ elif app_mode == "🛠️ App Settings":
     st.stop()
 
 # =====================================================================
-# 6. AI CHAT ASSISTANT
+# 7. AI CHAT ASSISTANT (CHURCH AGENT: EXCEL + NOTION CRM + GMAIL)
 # =====================================================================
 col_logo, col_title = st.columns([0.06, 0.94])
 with col_logo:
@@ -725,7 +892,7 @@ with col_logo:
         st.image("logo.jpg", width=50)
 with col_title:
     st.markdown("## CTG Church AI Ministry Assistant")
-st.caption("Katuwang ng mga Leaders sa paghahanap ng records sa Excel mula sa Google Drive at pamamahala ng mga parokya.")
+st.caption("Katuwang ng mga Leaders sa paghahanap ng records sa Google Drive Excel, Notion CRM (Visitors & Members), at pagpapadala ng Gmail follow-up.")
 
 active_gemini_key = st.session_state.custom_secrets["GEMINI_API_KEY"]
 if not active_gemini_key:
@@ -739,7 +906,7 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-if user_prompt := st.chat_input("Magtanong tungkol sa records o magpa-send ng email..."):
+if user_prompt := st.chat_input("Magtanong tungkol sa Notion CRM visitors, Excel records, o magpa-send ng email..."):
     st.session_state.messages.append({"role": "user", "content": user_prompt})
     with st.chat_message("user"):
         st.markdown(user_prompt)
@@ -750,11 +917,13 @@ if user_prompt := st.chat_input("Magtanong tungkol sa records o magpa-send ng em
         system_instruction = (
             f"Ikaw ang opisyal na AI Ministry Assistant ng CTG Church. "
             f"Ang naka-login ay may access sa parokyang: {st.session_state.assigned_parish}. "
-            "Tulungan sila sa paghanap ng mga rekord ng pamilya at miyembro mula sa Google Drive database."
+            "Gamitin ang `query_notion_crm_database` kapag nagtatanong tungkol sa mga bisita (visitors), New Guest, First-Time Visitor, o Notion CRM. "
+            "Gamitin ang `query_excel_database` kapag nagtatanong tungkol sa mga miyembro at Family ID sa parokya. "
+            "Gamitin ang `send_email_via_gmail` kapag inutusang magpadala ng follow-up o prayer email."
         )
         config = types.GenerateContentConfig(
             system_instruction=system_instruction,
-            tools=[query_excel_database, send_email_via_gmail],
+            tools=[query_excel_database, query_notion_crm_database, send_email_via_gmail],
             temperature=0.3,
         )
         
