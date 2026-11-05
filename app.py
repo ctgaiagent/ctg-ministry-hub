@@ -3,7 +3,6 @@ import io
 import re
 import time
 import base64
-import hashlib
 import requests
 from email.message import EmailMessage
 import streamlit as st
@@ -85,7 +84,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Custom CSS para mas malinaw at hindi maputol ang mga text sa table at cards
+# Custom CSS para sa full-text cards at PAGTATAGO ng Top-Right Toolbar (Share, Star, Edit, GitHub, 3-dots)
 st.markdown("""
     <style>
     .full-text-card {
@@ -98,6 +97,32 @@ st.markdown("""
         white-space: pre-wrap;
         word-wrap: break-word;
         font-size: 0.95rem;
+    }
+    
+    /* Itago ang Share, Star, Edit, GitHub icon, at 3-dots menu sa taas */
+    [data-testid="stToolbar"] {
+        display: none !important;
+        visibility: hidden !important;
+    }
+    [data-testid="stAppDeployButton"] {
+        display: none !important;
+    }
+    [data-testid="stHeaderActionElements"] {
+        display: none !important;
+    }
+    #MainMenu {
+        visibility: hidden !important;
+        display: none !important;
+    }
+    footer {
+        visibility: hidden !important;
+        display: none !important;
+    }
+    .viewerBadge_container__1QSob,
+    .styles_viewerBadge__1yB5_,
+    .viewerBadge_link__1S137,
+    .viewerBadge_text__1JaDK {
+        display: none !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -605,7 +630,6 @@ with st.sidebar:
     if st.button("🗑️ I-clear ang Chat History"):
         st.session_state.messages = []
         st.session_state.pop("chat_session", None)
-        st.session_state.pop("last_processed_audio_hash", None)
         st.rerun()
     if st.button("🚪 Logout"):
         st.session_state.authenticated = False
@@ -910,11 +934,11 @@ elif app_mode == "🛠️ App Settings":
     st.stop()
 
 # =====================================================================
-# 6. AI CHAT ASSISTANT — CTG GABAY AI (VOICE & MULTILINGUAL SUPPORT)
+# 6. AI CHAT ASSISTANT — CTG GABAY AI (TEXT MULTILINGUAL SUPPORT)
 # =====================================================================
 render_title_with_logo(
     "CTG Gabay AI — Ministry Assistant",
-    "Magsalita o mag-type sa Tagalog, Ilokano, o English para maghanap sa Excel, Notion CRM, o magpadala ng email."
+    "Mag-type sa Tagalog, Ilokano, o English para maghanap sa Excel, Notion CRM, o magpadala ng email."
 )
 
 valid_keys = get_valid_gemini_keys()
@@ -928,25 +952,16 @@ if "messages" not in st.session_state:
 if "current_model" not in st.session_state:
     st.session_state.current_model = selected_model
 
-if "last_processed_audio_hash" not in st.session_state:
-    st.session_state.last_processed_audio_hash = None
-
-# Multilingual & Voice Input Bar
-col_lang, col_voice = st.columns([1, 1.8], vertical_alignment="center")
-with col_lang:
-    preferred_language = st.selectbox(
-        "🌐 Wika ng Sagot ni Gabay AI:",
-        ["Awto (Kung ano ang gamit ng nagtanong)", "Tagalog", "Ilokano", "English"],
-        index=0
-    )
-with col_voice:
-    voice_recording = st.audio_input("🎤 Magsalita rito (Tagalog / Ilokano / English):")
+preferred_language = st.selectbox(
+    "🌐 Wika ng Sagot ni Gabay AI:",
+    ["Awto (Kung ano ang gamit ng nagtanong)", "Tagalog", "Ilokano", "English"],
+    index=0
+)
 
 system_instruction = (
     f"Ikaw si CTG Gabay AI, ang opisyal, magalang, at matulunging AI Ministry Assistant ng Church of the Temple of God (CTG). "
     f"Ang kasalukuyang naka-login ay may access sa parokyang: {st.session_state.assigned_parish}. "
-    "Matatas kang umintindi at magsalita ng Tagalog, Ilokano (Ilocano), at English. "
-    "Kung ang user ay nagpadala ng voice audio o nag-type sa Ilokano, Tagalog, o English, intindihin ito nang buong husay. "
+    "Matatas kang umintindi at sumagot sa Tagalog, Ilokano (Ilocano), at English. "
     "Tulungan sila sa paghanap ng mga rekord ng pamilya at miyembro sa Excel database gamit ang `query_excel_database`, "
     "paghanap ng mga bisita sa Notion CRM gamit ang `query_notion_crm`, at pagpapadala ng email gamit ang `send_email_via_gmail`."
 )
@@ -964,86 +979,10 @@ if "chat_session" not in st.session_state or st.session_state.current_model != s
     st.session_state.current_model = selected_model
     st.session_state.chat_session = create_chat_with_key(valid_keys[0], selected_model)
 
-# Ipakita ang Chat History
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
-        if msg.get("audio_bytes"):
-            st.audio(msg["audio_bytes"], format=msg.get("audio_mime", "audio/wav"))
         st.markdown(msg["content"])
 
-# ---------------------------------------------------------------------
-# A. PROSESO PARA SA VOICE INPUT (KAPAG NAG-RECORD NG BOSES ANG USER)
-# ---------------------------------------------------------------------
-if voice_recording is not None:
-    audio_bytes = voice_recording.getvalue()
-    audio_hash = hashlib.md5(audio_bytes).hexdigest()
-    audio_mime = voice_recording.type or "audio/wav"
-
-    if audio_hash != st.session_state.last_processed_audio_hash:
-        st.session_state.last_processed_audio_hash = audio_hash
-
-        lang_directive = (
-            "Sumagot sa parehong wika na ginamit sa boses (Tagalog, Ilokano, o English)."
-            if preferred_language.startswith("Awto")
-            else f"Sumagot gamit ang wikang {preferred_language}."
-        )
-
-        voice_label = "🎤 *[Nagpadala ng Voice Question (Tagalog / Ilokano / English)]*"
-        st.session_state.messages.append({
-            "role": "user",
-            "content": voice_label,
-            "audio_bytes": audio_bytes,
-            "audio_mime": audio_mime
-        })
-
-        with st.chat_message("user"):
-            st.audio(audio_bytes, format=audio_mime)
-            st.markdown(voice_label)
-
-        with st.chat_message("assistant"):
-            status_box = st.status(f"Pinapakinggan at pinoproseso ni Gabay AI (`{selected_model}`)...", expanded=True)
-            max_retries = 3
-            success = False
-            last_error = ""
-
-            audio_part = types.Part.from_bytes(data=audio_bytes, mime_type=audio_mime)
-            voice_instruction = (
-                "Pakinggan ang audio recording na ito. "
-                "1. Isulat muna sa unahan ang eksaktong sinabi ng user bilang '**🗣️ Narinig ko:** [transcription]'. "
-                "2. Kung nagtatanong tungkol sa miyembro, pamilya, parokya, o Notion CRM, gamitin ang iyong tools (`query_excel_database` o `query_notion_crm`). "
-                f"3. Sagutin nang malinaw at magalang. {lang_directive}"
-            )
-
-            for key_idx, api_key in enumerate(valid_keys, start=1):
-                if key_idx > 1:
-                    st.session_state.chat_session = create_chat_with_key(api_key, selected_model)
-
-                for attempt in range(max_retries):
-                    try:
-                        status_box.write(f"🔄 Pinoproseso ang boses sa Gemini API (Key #{key_idx} — Attempt {attempt + 1}/{max_retries})...")
-                        response = st.session_state.chat_session.send_message([audio_part, voice_instruction])
-                        status_box.update(label="✅ Tapos na!", state="complete", expanded=False)
-                        st.markdown(response.text)
-                        st.session_state.messages.append({"role": "assistant", "content": response.text})
-                        success = True
-                        break
-                    except Exception as e:
-                        err_str = str(e)
-                        last_error = err_str
-                        if ("503" in err_str or "UNAVAILABLE" in err_str or "429" in err_str) and attempt < max_retries - 1:
-                            time.sleep(3)
-                            continue
-                        break
-                if success:
-                    break
-
-            if not success:
-                status_box.update(label="❌ May Error sa pagproseso ng boses", state="error", expanded=True)
-                st.error(f"Detalye: {last_error}")
-
-# ---------------------------------------------------------------------
-# B. PROSESO PARA SA TEXT INPUT (KAPAG NAG-TYPE ANG USER)
-# ---------------------------------------------------------------------
 if user_prompt := st.chat_input("Magtanong sa Tagalog, Ilokano, o English (hal. Mano ti miyembro idiay Lipay Norte?)..."):
     st.session_state.messages.append({"role": "user", "content": user_prompt})
     with st.chat_message("user"):
