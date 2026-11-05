@@ -61,6 +61,9 @@ GEMINI_API_KEY_2 = get_secret_or_env("GEMINI_API_KEY_2")
 NOTION_TOKEN = get_secret_or_env("NOTION_TOKEN")
 NOTION_CRM_DB_ID = get_secret_or_env("NOTION_CRM_DB_ID", "409fff6803d780e1ab25f2c80b562ddf")
 
+APP_USER = get_secret_or_env("APP_USER", "ctg.ministry.master.admin")
+APP_PASSWORD = get_secret_or_env("APP_PASSWORD", "Church#Temple#God$2026!Admin")
+
 CLOUD_SPREADSHEET_URL = (
     "https://docs.google.com/spreadsheets/d/15_znwPmjK95vTgf5lStbKKPCjEGw6oDp/"
     "edit?usp=sharing&ouid=107511419052324683693&rtpof=true&sd=true"
@@ -79,19 +82,39 @@ PARISH_ORDER = [
     "HONGKONG PARISH"
 ]
 
-# Parish Login Accounts (with corrected "Church" spelling)
+# Eksaktong PARISH_ACCOUNTS structure
 PARISH_ACCOUNTS = {
-    "ADMIN": {"password": "CTGAdminChurch2026", "role": "ALL", "name": "National / Central Admin"},
-    "LIPAY NORTE PARISH": {"password": "LipayChurch2026", "role": "LIPAY NORTE PARISH", "name": "Lipay Norte Parish"},
-    "MALANAS PARISH": {"password": "MalanasChurch2026", "role": "MALANAS PARISH", "name": "Malanas Parish"},
-    "POBLACION PARISH": {"password": "PoblacionChurch2026", "role": "POBLACION PARISH", "name": "Poblacion Parish"},
-    "DUPLAS PARISH": {"password": "DuplasChurch2026", "role": "DUPLAS PARISH", "name": "Duplas Parish"},
-    "SANTIAGO PARISH": {"password": "SantiagoChurch2026", "role": "SANTIAGO PARISH", "name": "Santiago Parish"},
-    "CABA PARISH": {"password": "CabaChurch2026", "role": "CABA PARISH", "name": "Caba Parish"},
-    "MANILA PARISH": {"password": "ManilaChurch2026", "role": "MANILA PARISH", "name": "Manila Parish"},
-    "ANDABUEN PARISH": {"password": "AndabuenChurch2026", "role": "ANDABUEN PARISH", "name": "Andabuen Parish"},
-    "APAYAO PARISH": {"password": "ApayaoChurch2026", "role": "APAYAO PARISH", "name": "Apayao Parish"},
-    "HONGKONG PARISH": {"password": "HongkongChurch2026", "role": "HONGKONG PARISH", "name": "Hongkong Parish"},
+    "ctg.ministry.master.admin": {"password": "Church#Temple#God$2026!Admin", "parish": "Lahat ng Parokya", "role": "Master Admin"},
+    
+    "lipay norte parish": {"password": "ctglipaynorte1", "parish": "LIPAY NORTE PARISH", "role": "Parish Leader"},
+    "lipaynorteparish": {"password": "ctglipaynorte1", "parish": "LIPAY NORTE PARISH", "role": "Parish Leader"},
+    
+    "malanas parish": {"password": "ctgmalanas2", "parish": "MALANAS PARISH", "role": "Parish Leader"},
+    "malanasparish": {"password": "ctgmalanas2", "parish": "MALANAS PARISH", "role": "Parish Leader"},
+    
+    "poblacion parish": {"password": "ctgpoblacion3", "parish": "POBLACION PARISH", "role": "Parish Leader"},
+    "poblacionparish": {"password": "ctgpoblacion3", "parish": "POBLACION PARISH", "role": "Parish Leader"},
+    
+    "duplas parish": {"password": "ctgduplas4", "parish": "DUPLAS PARISH", "role": "Parish Leader"},
+    "duplasparish": {"password": "ctgduplas4", "parish": "DUPLAS PARISH", "role": "Parish Leader"},
+    
+    "santiago parish": {"password": "ctgsantiago5", "parish": "SANTIAGO PARISH", "role": "Parish Leader"},
+    "santiagoparish": {"password": "ctgsantiago5", "parish": "SANTIAGO PARISH", "role": "Parish Leader"},
+    
+    "caba parish": {"password": "ctgcaba6", "parish": "CABA PARISH", "role": "Parish Leader"},
+    "cabaparish": {"password": "ctgcaba6", "parish": "CABA PARISH", "role": "Parish Leader"},
+    
+    "manila parish": {"password": "ctgmanila7", "parish": "MANILA PARISH", "role": "Parish Leader"},
+    "manilaparish": {"password": "ctgmanila7", "parish": "MANILA PARISH", "role": "Parish Leader"},
+    
+    "andabuen parish": {"password": "ctgandabuen8", "parish": "ANDABUEN PARISH", "role": "Parish Leader"},
+    "andabuenparish": {"password": "ctgandabuen8", "parish": "ANDABUEN PARISH", "role": "Parish Leader"},
+    
+    "apayao parish": {"password": "ctgapayao9", "parish": "APAYAO PARISH", "role": "Parish Leader"},
+    "apayaoparish": {"password": "ctgapayao9", "parish": "APAYAO PARISH", "role": "Parish Leader"},
+    
+    "hongkong parish": {"password": "ctghongkong10", "parish": "HONGKONG PARISH", "role": "Parish Leader"},
+    "hongkongparish": {"password": "ctghongkong10", "parish": "HONGKONG PARISH", "role": "Parish Leader"},
 }
 
 # ==========================================
@@ -213,7 +236,6 @@ def ask_gemini_ai(prompt: str, context_text: str) -> str:
         GEMINI_API_KEY_1,
         GEMINI_API_KEY_2
     ]
-    # Alisin ang mga walang laman at duplicate keys
     valid_keys = []
     for k in raw_keys:
         if k and k.strip() and k.strip() not in valid_keys:
@@ -252,20 +274,17 @@ Kung wala sa datos ang sagot, sabihin nang magalang kung ano lang ang makikita s
                 except Exception as e:
                     err_str = str(e)
                     last_error = f"[Key #{key_idx} | {model_name} | Attempt {attempt+1}]: {err_str}"
-                    # Kung 404 (Not Found), lumipat agad sa susunod na model
                     if "404" in err_str or "NOT_FOUND" in err_str:
                         break
-                    # Kung 429 (Quota Exceeded), lumipat agad sa susunod na model o API key
                     if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
                         break
-                    # Kung 503 (High Demand), maghintay at ulitin
                     if attempt < max_retries - 1:
                         time.sleep(delay)
                         delay *= 2
 
     return f"❌ Pansamantalang abala ang mga server ng Gemini AI. Pakisubukan ulit pagkalipas ng ilang segundo.\n\n*(Huling Error: {last_error})*"
 
-def build_ai_context(excel_sheets: dict, notion_df: pd.DataFrame, active_role: str) -> str:
+def build_ai_context(excel_sheets: dict, notion_df: pd.DataFrame, active_parish: str, active_role: str) -> str:
     """Gumagawa ng malinis na text summary ng data para mabasa ng Gemini AI."""
     parts = []
     
@@ -278,7 +297,7 @@ def build_ai_context(excel_sheets: dict, notion_df: pd.DataFrame, active_role: s
 
     # 2. Excel Context
     if excel_sheets:
-        if active_role == "ALL":
+        if active_role == "Master Admin" or active_parish == "Lahat ng Parokya":
             if "PARISH SUMMARY" in excel_sheets:
                 parts.append("--- EXCEL: PARISH SUMMARY ---")
                 parts.append(excel_sheets["PARISH SUMMARY"].head(50).to_csv(index=False))
@@ -288,9 +307,9 @@ def build_ai_context(excel_sheets: dict, notion_df: pd.DataFrame, active_role: s
                     parts.append(f"--- EXCEL: {p_name} (Rows: {len(df_p)}) ---")
                     parts.append(df_p.head(60).to_csv(index=False))
         else:
-            if active_role in excel_sheets:
-                df_p = excel_sheets[active_role]
-                parts.append(f"--- EXCEL: {active_role} (Rows: {len(df_p)}) ---")
+            if active_parish in excel_sheets:
+                df_p = excel_sheets[active_parish]
+                parts.append(f"--- EXCEL: {active_parish} (Rows: {len(df_p)}) ---")
                 parts.append(df_p.head(150).to_csv(index=False))
                 
     return "\n\n".join(parts)
@@ -302,30 +321,53 @@ if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 if "user_account" not in st.session_state:
     st.session_state.user_account = None
+if "user_parish" not in st.session_state:
+    st.session_state.user_parish = "Lahat ng Parokya"
+if "user_role" not in st.session_state:
+    st.session_state.user_role = ""
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
+def verify_credentials(username_in: str, password_in: str):
+    """Sinusuri kung tama ang tinayp na Username at Password base sa PARISH_ACCOUNTS."""
+    u_clean = username_in.strip().lower()
+    p_clean = password_in.strip()
+    
+    # Check kung tugma sa APP_USER / APP_PASSWORD mula sa .env o Secrets
+    if u_clean == APP_USER.lower() and p_clean == APP_PASSWORD:
+        return True, APP_USER, "Lahat ng Parokya", "Master Admin"
+        
+    # Check sa PARISH_ACCOUNTS dictionary
+    if u_clean in PARISH_ACCOUNTS:
+        acc_info = PARISH_ACCOUNTS[u_clean]
+        if p_clean == acc_info["password"]:
+            return True, u_clean, acc_info["parish"], acc_info["role"]
+            
+    return False, None, None, None
+
 def render_login():
     st.markdown('<div class="main-header">⛪ CTG Ministry Hub</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-header">Mag-login gamit ang iyong opisyal na Parish o Admin Account</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-header">Administrative Portal & AI Ministry Assistant</div>', unsafe_allow_html=True)
     
     col1, col2, col3 = st.columns([1, 1.2, 1])
     with col2:
         with st.form("login_form", clear_on_submit=False):
-            st.subheader("🔐 Account Login")
-            selected_account = st.selectbox("Piliin ang Account / Parish:", list(PARISH_ACCOUNTS.keys()))
-            password_input = st.text_input("Password:", type="password")
+            st.subheader("🔐 Admin / Parish Login")
+            username_input = st.text_input("Username:", placeholder="Ilagay ang iyong Username")
+            password_input = st.text_input("Password:", type="password", placeholder="Ilagay ang iyong Password")
             submit_btn = st.form_submit_button("Mag-login", use_container_width=True)
             
             if submit_btn:
-                correct_pw = PARISH_ACCOUNTS[selected_account]["password"]
-                if password_input.strip() == correct_pw:
+                ok, acc_key, parish_val, role_val = verify_credentials(username_input, password_input)
+                if ok:
                     st.session_state.authenticated = True
-                    st.session_state.user_account = selected_account
+                    st.session_state.user_account = acc_key
+                    st.session_state.user_parish = parish_val
+                    st.session_state.user_role = role_val
                     st.success("✅ Matagumpay na nakapasok!")
                     st.rerun()
                 else:
-                    st.error("❌ Mali ang password. Pakisubukan ulit.")
+                    st.error("❌ Mali ang Username o Password. Pakisubukan ulit.")
 
 if not st.session_state.authenticated:
     render_login()
@@ -334,14 +376,14 @@ if not st.session_state.authenticated:
 # ==========================================
 # 6. MAIN APPLICATION (AUTHENTICATED)
 # ==========================================
-current_user = st.session_state.user_account
-user_info = PARISH_ACCOUNTS[current_user]
-user_role = user_info["role"]
+user_parish = st.session_state.user_parish
+user_role = st.session_state.user_role
 
 # Sidebar Navigation & Controls
 with st.sidebar:
     st.title("⛪ CTG Ministry Hub")
-    st.markdown(f"**Account:** `{user_info['name']}`")
+    st.markdown(f"**Parokya:** `{user_parish}`")
+    st.markdown(f"**Role:** `{user_role}`")
     
     if st.button("🔄 I-refresh ang Database", use_container_width=True):
         st.cache_data.clear()
@@ -364,6 +406,8 @@ with st.sidebar:
     if st.button("🚪 Mag-logout", use_container_width=True):
         st.session_state.authenticated = False
         st.session_state.user_account = None
+        st.session_state.user_parish = "Lahat ng Parokya"
+        st.session_state.user_role = ""
         st.session_state.chat_history = []
         st.rerun()
 
@@ -386,7 +430,7 @@ with st.spinner("Binabasa ang Google Drive Excel at Notion CRM database..."):
         notion_error = str(e)
 
 # Header
-st.markdown(f'<div class="main-header">⛪ CTG Ministry Hub — {user_info["name"]}</div>', unsafe_allow_html=True)
+st.markdown(f'<div class="main-header">⛪ CTG Ministry Hub — {user_parish} ({user_role})</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-header">Integrated Google Drive Excel Directory, Notion CRM & Gemini AI Assistant</div>', unsafe_allow_html=True)
 
 # Status Alerts
@@ -421,10 +465,10 @@ with tab_dir:
     if not excel_data:
         st.warning("Walang nabasang datos mula sa Google Drive Excel.")
     else:
-        if user_role == "ALL":
+        if user_role == "Master Admin" or user_parish == "Lahat ng Parokya":
             available_sheets = list(excel_data.keys())
         else:
-            available_sheets = [s for s in excel_data.keys() if s in [user_role, "PARISH SUMMARY", "SEARCH DATABASE", "HEAD OF FAMILY MASTER"]]
+            available_sheets = [s for s in excel_data.keys() if s in [user_parish, "PARISH SUMMARY", "SEARCH DATABASE", "HEAD OF FAMILY MASTER"]]
             if not available_sheets:
                 available_sheets = list(excel_data.keys())
 
@@ -480,7 +524,7 @@ with tab_ai:
 
         with st.chat_message("assistant"):
             with st.spinner("Nag-iisip at binabasa ang rekord ng simbahan..."):
-                context_str = build_ai_context(excel_data, notion_df, user_role)
+                context_str = build_ai_context(excel_data, notion_df, user_parish, user_role)
                 ai_reply = ask_gemini_ai(user_prompt, context_str)
                 st.markdown(ai_reply)
                 st.session_state.chat_history.append({"role": "assistant", "content": ai_reply})
