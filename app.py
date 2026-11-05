@@ -2,72 +2,48 @@ import os
 import io
 import re
 import time
+import base64
 import requests
-import pandas as pd
+from email.message import EmailMessage
 import streamlit as st
+import pandas as pd
 from dotenv import load_dotenv
 from google import genai
+from google.genai import types
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
 
-# Load local environment variables (.env)
 load_dotenv()
 
-# ==========================================
-# 1. PAGE CONFIGURATION & STYLING
-# ==========================================
-st.set_page_config(
-    page_title="CTG Ministry Hub",
-    page_icon="⛪",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-st.markdown("""
-    <style>
-    .main-header {
-        font-size: 2.2rem;
-        font-weight: 700;
-        color: #1E3A8A;
-        margin-bottom: 0.2rem;
-    }
-    .sub-header {
-        font-size: 1rem;
-        color: #4B5563;
-        margin-bottom: 1.5rem;
-    }
-    .stMetric {
-        background-color: #F8FAFC;
-        padding: 15px;
-        border-radius: 10px;
-        border: 1px solid #E2E8F0;
-    }
-    </style>
-""", unsafe_allow_html=True)
-
-# ==========================================
-# 2. CREDENTIALS & CONFIG HELPER
-# ==========================================
-def get_secret_or_env(key: str, default: str = "") -> str:
-    """Kinukuha ang secret mula sa Streamlit Cloud Secrets o local .env file."""
+def get_secret(key, default=""):
+    if "custom_secrets" in st.session_state and key in st.session_state.custom_secrets:
+        val = st.session_state.custom_secrets[key]
+        if val:
+            return str(val).strip()
     try:
         if key in st.secrets:
             return str(st.secrets[key]).strip()
     except Exception:
         pass
     val = os.getenv(key, default)
-    return val.strip() if val else default
+    return str(val).strip() if val else default
 
-GEMINI_API_KEY_1 = get_secret_or_env("GEMINI_API_KEY")
-GEMINI_API_KEY_2 = get_secret_or_env("GEMINI_API_KEY_2")
-NOTION_TOKEN = get_secret_or_env("NOTION_TOKEN")
-NOTION_CRM_DB_ID = get_secret_or_env("NOTION_CRM_DB_ID", "409fff6803d780e1ab25f2c80b562ddf")
-
-APP_USER = get_secret_or_env("APP_USER", "ctg.ministry.master.admin")
-APP_PASSWORD = get_secret_or_env("APP_PASSWORD", "Church#Temple#God$2026!Admin")
+GEMINI_API_KEY = get_secret("GEMINI_API_KEY")
+GEMINI_API_KEY_2 = get_secret("GEMINI_API_KEY_2")
+NOTION_TOKEN = get_secret("NOTION_TOKEN")
+NOTION_CRM_DB_ID = get_secret("NOTION_CRM_DB_ID", "409fff6803d780e1ab25f2c80b562ddf")
+GMAIL_CLIENT_ID = get_secret("GMAIL_CLIENT_ID")
+GMAIL_CLIENT_SECRET = get_secret("GMAIL_CLIENT_SECRET")
+GMAIL_REFRESH_TOKEN = get_secret("GMAIL_REFRESH_TOKEN")
+APP_USER = get_secret("APP_USER", "ctg.ministry.master.admin")
+APP_PASSWORD = get_secret("APP_PASSWORD", "Church#Temple#God$2026!Admin")
 
 CLOUD_SPREADSHEET_URL = (
     "https://docs.google.com/spreadsheets/d/15_znwPmjK95vTgf5lStbKKPCjEGw6oDp/"
     "edit?usp=sharing&ouid=107511419052324683693&rtpof=true&sd=true"
 )
+
+st.set_page_config(page_title="CTG Ministry Hub - AI Agent", page_icon="⛪", layout="wide")
 
 PARISH_ORDER = [
     "LIPAY NORTE PARISH",
@@ -79,12 +55,15 @@ PARISH_ORDER = [
     "MANILA PARISH",
     "ANDABUEN PARISH",
     "APAYAO PARISH",
-    "HONGKONG PARISH"
+    "HONGKONG PARISH",
 ]
 
-# Eksaktong PARISH_ACCOUNTS structure
+# ==========================================
+# 🔐 MGA USERNAME AT PASSWORD NG ADMIN AT PAROKYA (1-10)
+# ==========================================
 PARISH_ACCOUNTS = {
     "ctg.ministry.master.admin": {"password": "Church#Temple#God$2026!Admin", "parish": "Lahat ng Parokya", "role": "Master Admin"},
+    APP_USER.lower(): {"password": APP_PASSWORD, "parish": "Lahat ng Parokya", "role": "Master Admin"},
     
     "lipay norte parish": {"password": "ctglipaynorte1", "parish": "LIPAY NORTE PARISH", "role": "Parish Leader"},
     "lipaynorteparish": {"password": "ctglipaynorte1", "parish": "LIPAY NORTE PARISH", "role": "Parish Leader"},
@@ -117,49 +96,119 @@ PARISH_ACCOUNTS = {
     "hongkongparish": {"password": "ctghongkong10", "parish": "HONGKONG PARISH", "role": "Parish Leader"},
 }
 
-# ==========================================
-# 3. DATA FETCHING FUNCTIONS (EXCEL & NOTION)
-# ==========================================
 def extract_id_from_url(url: str) -> str:
     match = re.search(r"/d/([a-zA-Z0-9-_]+)", url)
     return match.group(1) if match else url
 
-@st.cache_data(ttl=300)
-def load_excel_data():
-    """Binabasa ang buong Google Drive Excel file at ibinabalik bilang dictionary ng DataFrames."""
-    doc_id = extract_id_from_url(CLOUD_SPREADSHEET_URL)
-    download_url = f"https://docs.google.com/spreadsheets/d/{doc_id}/export?format=xlsx"
-    
-    res = requests.get(download_url, timeout=30)
-    if res.status_code != 200 or len(res.content) < 1000:
-        raise Exception(f"Hindi ma-download ang Excel file. Status Code: {res.status_code}")
+@st.cache_resource(ttl=300)
+def load_excel_file():
+    # 1. Subukan muna kung may local Excel file sa folder
+    excel_files = [f for f in os.listdir('.') if f.endswith('.xlsx') and 'CTG' in f]
+    if not excel_files and os.path.exists("CTG_HEADS_TOTAL_UPDATED FIXED.xlsx"):
+        excel_files = ["CTG_HEADS_TOTAL_UPDATED FIXED.xlsx"]
         
-    xls = pd.ExcelFile(io.BytesIO(res.content))
-    sheets_dict = {}
-    for sheet in xls.sheet_names:
-        df = pd.read_excel(xls, sheet_name=sheet)
-        df = df.dropna(how="all").fillna("")
-        sheets_dict[sheet] = df
-    return sheets_dict
+    if excel_files:
+        filename = excel_files[0]
+        try:
+            xls = pd.ExcelFile(filename)
+            return xls, filename
+        except Exception:
+            pass
+            
+    # 2. Fallback: I-download mula sa Google Drive Excel link (para sa Streamlit Cloud)
+    try:
+        doc_id = extract_id_from_url(CLOUD_SPREADSHEET_URL)
+        download_url = f"https://docs.google.com/spreadsheets/d/{doc_id}/export?format=xlsx"
+        res = requests.get(download_url, timeout=30)
+        if res.status_code == 200 and len(res.content) > 1000:
+            xls = pd.ExcelFile(io.BytesIO(res.content))
+            return xls, "Google Drive Cloud Excel"
+        return None, f"Hindi ma-download ang Excel (Status {res.status_code})."
+    except Exception as e:
+        return None, str(e)
 
+excel_xls, excel_filename = load_excel_file()
+
+@st.cache_data(ttl=300)
+def load_complete_parish_members():
+    """Binabasa lamang ang mga kumpletong record na may valid Family ID (CTG-...) at Full Name mula sa lahat ng Parish Sheets."""
+    if excel_xls is None:
+        return pd.DataFrame()
+    
+    all_rows = []
+    for p_name in PARISH_ORDER:
+        if p_name in excel_xls.sheet_names:
+            try:
+                df_raw = pd.read_excel(excel_xls, sheet_name=p_name, header=3)
+                df_raw.columns = [str(c).strip() for c in df_raw.columns]
+                
+                # I-standardize ang iba't ibang pangalan ng column (hal. sa Hongkong Parish)
+                rename_map = {
+                    "Member / Record ID": "Family ID",
+                    "Employment / Work": "Student/Working",
+                    "Address (HK or Philippines)": "Current Address (If living separately)",
+                    "Church Member Status": "Church Member"
+                }
+                df_raw = df_raw.rename(columns=rename_map)
+                
+                if "Family ID" not in df_raw.columns or "Full Name" not in df_raw.columns:
+                    continue
+                
+                # Kunin lamang ang mga rows na may valid na Family ID (hal. CTG-LN-FAM-0001) at may Full Name
+                valid_mask = (
+                    df_raw["Family ID"].astype(str).str.strip().str.startswith("CTG-", na=False) &
+                    df_raw["Full Name"].notna() &
+                    (df_raw["Full Name"].astype(str).str.strip() != "") &
+                    (df_raw["Full Name"].astype(str).str.strip().str.lower() != "nan")
+                )
+                df_valid = df_raw[valid_mask].copy()
+                df_valid["Parish"] = p_name
+                
+                # Siguraduhing kumpleto ang 18 standard columns tulad ng nasa Excel Search Database
+                standard_cols = [
+                    "Parish", "Family ID", "Head of Family", "Full Name", "Relationship",
+                    "Sex", "Age", "Status", "Contact No.", "Current Address (If living separately)",
+                    "Birthdate", "Category", "Civil Status", "Student/Working",
+                    "Church Member", "Baptized", "Baptism Date", "Remarks"
+                ]
+                for col in standard_cols:
+                    if col not in df_valid.columns:
+                        df_valid[col] = ""
+                
+                # Linisin ang formatting ng mga texto at petsa
+                df_valid["Family ID"] = df_valid["Family ID"].astype(str).str.strip()
+                df_valid["Full Name"] = df_valid["Full Name"].astype(str).str.strip()
+                df_valid["Head of Family"] = df_valid["Head of Family"].fillna("").astype(str).str.strip()
+                df_valid["Category"] = df_valid["Category"].fillna("").astype(str).str.strip()
+                df_valid["Status"] = df_valid["Status"].fillna("").astype(str).str.strip()
+                df_valid["Church Member"] = df_valid["Church Member"].fillna("").astype(str).str.strip()
+                
+                all_rows.append(df_valid[standard_cols])
+            except Exception:
+                continue
+                
+    if all_rows:
+        return pd.concat(all_rows, ignore_index=True)
+    return pd.DataFrame()
+
+master_members_df = load_complete_parish_members()
+
+# ==========================================
+# 🗂️ NOTION CRM FUNCTIONS
+# ==========================================
 def extract_notion_property(prop_data: dict) -> str:
-    """Kinukuha ang plain text value mula sa iba't ibang uri ng Notion property."""
     if not prop_data:
         return ""
     p_type = prop_data.get("type", "")
-    
     if p_type == "title":
-        arr = prop_data.get("title", [])
-        return "".join([x.get("plain_text", "") for x in arr])
+        return "".join([x.get("plain_text", "") for x in prop_data.get("title", [])])
     elif p_type == "rich_text":
-        arr = prop_data.get("rich_text", [])
-        return "".join([x.get("plain_text", "") for x in arr])
+        return "".join([x.get("plain_text", "") for x in prop_data.get("rich_text", [])])
     elif p_type == "select":
         sel = prop_data.get("select")
         return sel.get("name", "") if sel else ""
     elif p_type == "multi_select":
-        arr = prop_data.get("multi_select", [])
-        return ", ".join([x.get("name", "") for x in arr])
+        return ", ".join([x.get("name", "") for x in prop_data.get("multi_select", [])])
     elif p_type == "status":
         st_obj = prop_data.get("status")
         return st_obj.get("name", "") if st_obj else ""
@@ -179,10 +228,8 @@ def extract_notion_property(prop_data: dict) -> str:
 
 @st.cache_data(ttl=180)
 def load_notion_crm_data(token: str, db_id: str) -> pd.DataFrame:
-    """Kumukuha ng mga rekord mula sa Notion CRM Database."""
     if not token or not db_id:
         return pd.DataFrame()
-        
     clean_id = db_id.strip().split("?")[0].split("-")[-1]
     url = f"https://api.notion.com/v1/databases/{clean_id}/query"
     headers = {
@@ -190,341 +237,632 @@ def load_notion_crm_data(token: str, db_id: str) -> pd.DataFrame:
         "Notion-Version": "2022-06-28",
         "Content-Type": "application/json"
     }
-    
     rows = []
     has_more = True
     next_cursor = None
-    
     while has_more:
         payload = {"page_size": 100}
         if next_cursor:
             payload["start_cursor"] = next_cursor
-            
         res = requests.post(url, headers=headers, json=payload, timeout=25)
         if res.status_code != 200:
             raise Exception(f"Notion API Error ({res.status_code}): {res.text}")
-            
         data = res.json()
-        results = data.get("results", [])
-        
-        for page in results:
+        for page in data.get("results", []):
             props = page.get("properties", {})
-            row_data = {}
-            for col_name, col_val in props.items():
-                row_data[col_name] = extract_notion_property(col_val)
+            row_data = {col_name: extract_notion_property(col_val) for col_name, col_val in props.items()}
             rows.append(row_data)
-            
         has_more = data.get("has_more", False)
         next_cursor = data.get("next_cursor", None)
-        
     df = pd.DataFrame(rows)
     if not df.empty and "Full Name" in df.columns:
         cols = ["Full Name"] + [c for c in df.columns if c != "Full Name"]
         df = df[cols]
     return df
 
-# ==========================================
-# 4. GEMINI AI HELPER (MULTI-KEY + RETRY)
-# ==========================================
-def ask_gemini_ai(prompt: str, context_text: str) -> str:
-    """
-    Tumatawag sa Gemini API gamit ang multi-key rotation (Key #1 at Key #2)
-    at automatic retry para malampasan ang 503 high demand errors.
-    """
-    raw_keys = [
-        st.session_state.get("custom_gemini_key", ""),
-        GEMINI_API_KEY_1,
-        GEMINI_API_KEY_2
-    ]
-    valid_keys = []
-    for k in raw_keys:
-        if k and k.strip() and k.strip() not in valid_keys:
-            valid_keys.append(k.strip())
+def classify_member_status(status_val, church_member_val):
+    st_up = str(status_val).upper().strip()
+    cm_up = str(church_member_val).upper().strip()
+    if "NON-MEMBER" in st_up or "NON MEMBER" in st_up or cm_up == "NO":
+        if "INACTIVE" in st_up:
+            return "INACTIVE"
+        elif "ACTIVE" in st_up and cm_up != "NO":
+            return "ACTIVE"
+        elif "NON" in st_up:
+            return "NON-MEMBER"
+    if "INACTIVE" in st_up:
+        return "INACTIVE"
+    if "ACTIVE" in st_up:
+        return "ACTIVE"
+    if "NON-MEMBER" in st_up or "NON MEMBER" in st_up:
+        return "NON-MEMBER"
+    return "OTHER"
+
+def classify_category(cat_val):
+    c_up = str(cat_val).upper().strip()
+    if "SENIOR" in c_up:
+        return "Seniors"
+    if "ADULT" in c_up:
+        return "Adults"
+    if "YOUTH" in c_up:
+        return "Youth"
+    if "KID" in c_up or "CHILD" in c_up:
+        return "Kids"
+    return "No category"
+
+def build_status_summary_and_lists(df):
+    categories = ["Seniors", "Adults", "Youth", "Kids", "No category"]
+    counts = {
+        "ACTIVE": {c: 0 for c in categories},
+        "INACTIVE": {c: 0 for c in categories},
+        "NON-MEMBER": {c: 0 for c in categories},
+        "OTHER": {c: 0 for c in categories},
+    }
+    
+    active_rows = []
+    inactive_rows = []
+    non_member_rows = []
+    
+    for _, row in df.iterrows():
+        st_group = classify_member_status(row.get("Status", ""), row.get("Church Member", ""))
+        cat_group = classify_category(row.get("Category", ""))
+        counts[st_group][cat_group] += 1
+        
+        mini_rec = {
+            "Full name": row.get("Full Name", ""),
+            "Family ID": row.get("Family ID", ""),
+            "Category": row.get("Category", ""),
+            "Status": row.get("Status", ""),
+            "Church member": row.get("Church Member", "")
+        }
+        if st_group == "ACTIVE":
+            active_rows.append(mini_rec)
+        elif st_group == "INACTIVE":
+            inactive_rows.append(mini_rec)
+        elif st_group == "NON-MEMBER":
+            non_member_rows.append(mini_rec)
             
-    if not valid_keys:
-        return "❌ Walang nahanap na GEMINI_API_KEY. Mangyaring ilagay ito sa Streamlit Secrets o sa `.env` file."
+    def make_summary_row(label, grp_key):
+        c = counts[grp_key]
+        s, a, y, k, nc = c["Seniors"], c["Adults"], c["Youth"], c["Kids"], c["No category"]
+        say = s + a + y
+        tot = say + k + nc
+        return [label, s, a, y, say, k, nc, tot]
+        
+    r_act = make_summary_row("Active members", "ACTIVE")
+    r_inact = make_summary_row("Inactive members", "INACTIVE")
+    r_non = make_summary_row("Non-members", "NON-MEMBER")
+    r_oth = make_summary_row("Other / No status", "OTHER")
+    
+    tot_row = [
+        "TOTAL PERSONS",
+        r_act[1] + r_inact[1] + r_non[1] + r_oth[1],
+        r_act[2] + r_inact[2] + r_non[2] + r_oth[2],
+        r_act[3] + r_inact[3] + r_non[3] + r_oth[3],
+        r_act[4] + r_inact[4] + r_non[4] + r_oth[4],
+        r_act[5] + r_inact[5] + r_non[5] + r_oth[5],
+        r_act[6] + r_inact[6] + r_non[6] + r_oth[6],
+        r_act[7] + r_inact[7] + r_non[7] + r_oth[7],
+    ]
+    
+    summary_cols = [
+        "Status", "Seniors", "Adults", "Youth", 
+        "Seniors + Adults + Youth", "Kids", "No category", "Total persons"
+    ]
+    summary_df = pd.DataFrame([r_act, r_inact, r_non, r_oth, tot_row], columns=summary_cols)
+    
+    mini_cols = ["Full name", "Family ID", "Category", "Status", "Church member"]
+    df_act_list = pd.DataFrame(active_rows, columns=mini_cols) if active_rows else pd.DataFrame(columns=mini_cols)
+    df_inact_list = pd.DataFrame(inactive_rows, columns=mini_cols) if inactive_rows else pd.DataFrame(columns=mini_cols)
+    df_non_list = pd.DataFrame(non_member_rows, columns=mini_cols) if non_member_rows else pd.DataFrame(columns=mini_cols)
+    
+    return summary_df, df_act_list, df_inact_list, df_non_list
 
-    models_to_try = ["gemini-3.8-flash", "gemini-3.1-pro-preview"]
+# ==========================================
+# 🤖 MULTI-KEY GEMINI HELPER & RETRY LOGIC
+# ==========================================
+def get_valid_gemini_keys():
+    raw_keys = [
+        st.session_state.get("custom_secrets", {}).get("GEMINI_API_KEY", ""),
+        st.session_state.get("custom_secrets", {}).get("GEMINI_API_KEY_2", ""),
+        GEMINI_API_KEY,
+        GEMINI_API_KEY_2,
+    ]
+    valid = []
+    for k in raw_keys:
+        if k and str(k).strip() and str(k).strip() not in valid:
+            valid.append(str(k).strip())
+    return valid
+
+def safe_generate_content(client, model, contents, config=None):
     max_retries = 3
-    last_error = ""
-
-    full_prompt = f"""Ikaw ay isang matulungin, magalang, at tumpak na AI Church Ministry Assistant para sa CTG Ministry Hub.
-Gamitin ang sumusunod na opisyal na datos mula sa simbahan (Google Drive Excel at Notion CRM) upang sagutin ang tanong.
-Kung wala sa datos ang sagot, sabihin nang magalang kung ano lang ang makikita sa rekord. Sumagot sa Tagalog o English depende sa tanong ng user.
-
-=== DATOS NG SIMBAHAN ===
-{context_text}
-
-=== TANONG NG USER ===
-{prompt}
-"""
-
-    for key_idx, api_key in enumerate(valid_keys, start=1):
-        client = genai.Client(api_key=api_key)
-        for model_name in models_to_try:
+    valid_keys = get_valid_gemini_keys()
+    fallback_models = []
+    for m in [model, "gemini-3.8-flash", "gemini-3.1-pro-preview"]:
+        if m not in fallback_models:
+            fallback_models.append(m)
+            
+    last_err = ""
+    for api_key in valid_keys:
+        active_client = genai.Client(api_key=api_key)
+        for current_model in fallback_models:
             delay = 2
             for attempt in range(max_retries):
                 try:
-                    response = client.models.generate_content(
-                        model=model_name,
-                        contents=full_prompt
-                    )
-                    if response and response.text:
-                        return response.text
+                    if config:
+                        return active_client.models.generate_content(model=current_model, contents=contents, config=config)
+                    else:
+                        return active_client.models.generate_content(model=current_model, contents=contents)
                 except Exception as e:
                     err_str = str(e)
-                    last_error = f"[Key #{key_idx} | {model_name} | Attempt {attempt+1}]: {err_str}"
+                    last_err = err_str
                     if "404" in err_str or "NOT_FOUND" in err_str:
                         break
                     if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
                         break
-                    if attempt < max_retries - 1:
-                        time.sleep(delay)
-                        delay *= 2
-
-    return f"❌ Pansamantalang abala ang mga server ng Gemini AI. Pakisubukan ulit pagkalipas ng ilang segundo.\n\n*(Huling Error: {last_error})*"
-
-def build_ai_context(excel_sheets: dict, notion_df: pd.DataFrame, active_parish: str, active_role: str) -> str:
-    """Gumagawa ng malinis na text summary ng data para mabasa ng Gemini AI."""
-    parts = []
-    
-    # 1. Notion CRM Context
-    if not notion_df.empty:
-        parts.append(f"--- NOTION CRM: VISITORS & MEMBERS (Total: {len(notion_df)}) ---")
-        parts.append(notion_df.head(100).to_csv(index=False))
-    else:
-        parts.append("--- NOTION CRM: Walang nakitang rekord o hindi konektado ---")
-
-    # 2. Excel Context
-    if excel_sheets:
-        if active_role == "Master Admin" or active_parish == "Lahat ng Parokya":
-            if "PARISH SUMMARY" in excel_sheets:
-                parts.append("--- EXCEL: PARISH SUMMARY ---")
-                parts.append(excel_sheets["PARISH SUMMARY"].head(50).to_csv(index=False))
-            for p_name in PARISH_ORDER:
-                if p_name in excel_sheets:
-                    df_p = excel_sheets[p_name]
-                    parts.append(f"--- EXCEL: {p_name} (Rows: {len(df_p)}) ---")
-                    parts.append(df_p.head(60).to_csv(index=False))
-        else:
-            if active_parish in excel_sheets:
-                df_p = excel_sheets[active_parish]
-                parts.append(f"--- EXCEL: {active_parish} (Rows: {len(df_p)}) ---")
-                parts.append(df_p.head(150).to_csv(index=False))
-                
-    return "\n\n".join(parts)
+                    if "503" in err_str or "UNAVAILABLE" in err_str:
+                        if attempt < max_retries - 1:
+                            time.sleep(delay)
+                            delay *= 2
+                            continue
+                    break
+    raise Exception(f"Ang mga Gemini models ay kasalukuyang busy o naabot ang quota limit. Detalye: {last_err}")
 
 # ==========================================
-# 5. SESSION STATE & LOGIN SCREEN
+# 🔐 LOGIN SESSION & AUTHENTICATION
 # ==========================================
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
-if "user_account" not in st.session_state:
-    st.session_state.user_account = None
-if "user_parish" not in st.session_state:
-    st.session_state.user_parish = "Lahat ng Parokya"
 if "user_role" not in st.session_state:
-    st.session_state.user_role = ""
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
-
-def verify_credentials(username_in: str, password_in: str):
-    """Sinusuri kung tama ang tinayp na Username at Password base sa PARISH_ACCOUNTS."""
-    u_clean = username_in.strip().lower()
-    p_clean = password_in.strip()
-    
-    # Check kung tugma sa APP_USER / APP_PASSWORD mula sa .env o Secrets
-    if u_clean == APP_USER.lower() and p_clean == APP_PASSWORD:
-        return True, APP_USER, "Lahat ng Parokya", "Master Admin"
-        
-    # Check sa PARISH_ACCOUNTS dictionary
-    if u_clean in PARISH_ACCOUNTS:
-        acc_info = PARISH_ACCOUNTS[u_clean]
-        if p_clean == acc_info["password"]:
-            return True, u_clean, acc_info["parish"], acc_info["role"]
-            
-    return False, None, None, None
-
-def render_login():
-    st.markdown('<div class="main-header">⛪ CTG Ministry Hub</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-header">Administrative Portal & AI Ministry Assistant</div>', unsafe_allow_html=True)
-    
-    col1, col2, col3 = st.columns([1, 1.2, 1])
-    with col2:
-        with st.form("login_form", clear_on_submit=False):
-            st.subheader("🔐 Admin / Parish Login")
-            username_input = st.text_input("Username:", placeholder="Ilagay ang iyong Username")
-            password_input = st.text_input("Password:", type="password", placeholder="Ilagay ang iyong Password")
-            submit_btn = st.form_submit_button("Mag-login", use_container_width=True)
-            
-            if submit_btn:
-                ok, acc_key, parish_val, role_val = verify_credentials(username_input, password_input)
-                if ok:
-                    st.session_state.authenticated = True
-                    st.session_state.user_account = acc_key
-                    st.session_state.user_parish = parish_val
-                    st.session_state.user_role = role_val
-                    st.success("✅ Matagumpay na nakapasok!")
-                    st.rerun()
-                else:
-                    st.error("❌ Mali ang Username o Password. Pakisubukan ulit.")
+    st.session_state.user_role = "Admin"
+if "assigned_parish" not in st.session_state:
+    st.session_state.assigned_parish = "Lahat ng Parokya"
 
 if not st.session_state.authenticated:
-    render_login()
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    col1, col2, col3 = st.columns([1, 1.2, 1])
+    with col2:
+        st.title("⛪ CTG Ministry Hub Login")
+        st.caption("Ilagay ang iyong Username at Password.")
+        with st.form("login_form"):
+            username_input = st.text_input("Username").strip().lower()
+            password_input = st.text_input("Password", type="password").strip()
+            submit = st.form_submit_button("Login", use_container_width=True)
+            
+            if submit:
+                if username_input in PARISH_ACCOUNTS and PARISH_ACCOUNTS[username_input]["password"] == password_input:
+                    acc_info = PARISH_ACCOUNTS[username_input]
+                    st.session_state.authenticated = True
+                    st.session_state.user_role = acc_info["role"]
+                    st.session_state.assigned_parish = acc_info["parish"]
+                    st.rerun()
+                else:
+                    st.error("Maling Username o Password. Pakisuri ang iyong mga detalye.")
     st.stop()
 
 # ==========================================
-# 6. MAIN APPLICATION (AUTHENTICATED)
+# 🛠️ AI TOOLS (EXCEL, NOTION CRM, AT GMAIL)
 # ==========================================
-user_parish = st.session_state.user_parish
-user_role = st.session_state.user_role
+def query_excel_database(search_query: str) -> str:
+    """Hinahanap ang miyembro, pamilya, o parokya sa Google Drive / Local Excel Database."""
+    if master_members_df.empty:
+        return "Error: Walang laman o hindi makita ang Excel database."
+    try:
+        df_scope = master_members_df.copy()
+        if st.session_state.user_role == "Parish Leader":
+            df_scope = df_scope[df_scope["Parish"] == st.session_state.assigned_parish]
+            
+        match = df_scope[df_scope.astype(str).apply(lambda x: x.str.contains(search_query, case=False, na=False)).any(axis=1)]
+        if not match.empty:
+            results = []
+            for _, row in match.head(20).iterrows():
+                results.append(
+                    f"Parish: {row['Parish']} | Family ID: {row['Family ID']} | "
+                    f"Full Name: {row['Full Name']} | Relationship: {row['Relationship']} | "
+                    f"Category: {row['Category']} | Status: {row['Status']}"
+                )
+            return f"May {len(match)} na nahanap sa Excel Database (unang 20 resulta):\n" + "\n".join(results)
+        return f"Walang nahanap na record sa Excel para sa '{search_query}'."
+    except Exception as e:
+        return f"Error sa pagbasa ng Excel: {str(e)}"
 
-# Sidebar Navigation & Controls
+def query_notion_crm(search_query: str = "") -> str:
+    """Kumukuha at naghahanap ng mga bisita o miyembro mula sa Notion CRM Database."""
+    try:
+        n_tok = st.session_state.custom_secrets.get("NOTION_TOKEN", NOTION_TOKEN)
+        n_db = st.session_state.custom_secrets.get("NOTION_CRM_DB_ID", NOTION_CRM_DB_ID)
+        df_notion = load_notion_crm_data(n_tok, n_db)
+        if df_notion.empty:
+            return "Walang nakitang rekord sa Notion CRM database."
+        if search_query and search_query.strip():
+            mask = df_notion.astype(str).apply(lambda x: x.str.contains(search_query.strip(), case=False, na=False)).any(axis=1)
+            df_notion = df_notion[mask]
+        if df_notion.empty:
+            return f"Walang nahanap sa Notion CRM para sa '{search_query}'."
+        return "Mga rekord sa Notion CRM:\n" + df_notion.head(25).to_csv(index=False)
+    except Exception as e:
+        return f"Error sa pagbasa ng Notion CRM: {str(e)}"
+
+def send_email_via_gmail(recipient_email: str, subject: str, body_text: str) -> str:
+    """Nagpapadala ng email gamit ang Gmail OAuth2 API."""
+    g_id = st.session_state.custom_secrets.get("GMAIL_CLIENT_ID", GMAIL_CLIENT_ID)
+    g_sec = st.session_state.custom_secrets.get("GMAIL_CLIENT_SECRET", GMAIL_CLIENT_SECRET)
+    g_ref = st.session_state.custom_secrets.get("GMAIL_REFRESH_TOKEN", GMAIL_REFRESH_TOKEN)
+    if not all([g_id, g_sec, g_ref]):
+        return "Error: Kulang ang GMAIL credentials."
+    try:
+        creds = Credentials(
+            token=None,
+            refresh_token=g_ref.strip(),
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=g_id.strip(),
+            client_secret=g_sec.strip()
+        )
+        service = build("gmail", "v1", credentials=creds)
+        msg = EmailMessage()
+        msg.set_content(body_text)
+        msg["To"] = recipient_email
+        msg["Subject"] = subject
+        encoded_msg = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+        service.users().messages().send(userId="me", body={"raw": encoded_msg}).execute()
+        return f"Matagumpay na naipadala ang email kay {recipient_email}!"
+    except Exception as e:
+        return f"Error sa pag-send ng Gmail: {str(e)}"
+
+if "custom_secrets" not in st.session_state:
+    st.session_state.custom_secrets = {
+        "GEMINI_API_KEY": GEMINI_API_KEY,
+        "GEMINI_API_KEY_2": GEMINI_API_KEY_2,
+        "NOTION_TOKEN": NOTION_TOKEN,
+        "NOTION_CRM_DB_ID": NOTION_CRM_DB_ID,
+        "GMAIL_CLIENT_ID": GMAIL_CLIENT_ID,
+        "GMAIL_CLIENT_SECRET": GMAIL_CLIENT_SECRET,
+        "GMAIL_REFRESH_TOKEN": GMAIL_REFRESH_TOKEN,
+    }
+
 with st.sidebar:
-    st.title("⛪ CTG Ministry Hub")
-    st.markdown(f"**Parokya:** `{user_parish}`")
-    st.markdown(f"**Role:** `{user_role}`")
+    st.header("⚙️ Ministry Control Panel")
+    st.write(f"👤 Role: **{st.session_state.user_role}**")
+    st.info(f"📍 Parish Access:\n**{st.session_state.assigned_parish}**")
+    st.divider()
     
-    if st.button("🔄 I-refresh ang Database", use_container_width=True):
-        st.cache_data.clear()
-        st.toast("Na-refresh na ang data mula sa Excel at Notion!", icon="✅")
+    app_mode = st.radio("Pumili ng Pahina:", [
+        "📊 Parish Directory & Family Search",
+        "🤝 Notion CRM (Visitors & Members)",
+        "💬 AI Chat Assistant",
+        "➕ Magdagdag ng Miyembro & Litrato",
+        "🙏 Prayer Wall & Categorizer",
+        "📢 Announcement Broadcaster",
+        "🛠️ App Settings"
+    ])
+    
+    selected_model = st.selectbox("Gemini Model:", ["gemini-3.8-flash", "gemini-3.1-pro-preview"], index=0)
+    st.divider()
+    if st.button("🗑️ I-clear ang Chat History"):
+        st.session_state.messages = []
+        st.session_state.pop("chat_session", None)
         st.rerun()
-        
-    st.divider()
-    with st.expander("⚙️ API Settings (Optional Override)"):
-        st.session_state.custom_gemini_key = st.text_input(
-            "Custom Gemini API Key:",
-            value=st.session_state.get("custom_gemini_key", ""),
-            type="password"
-        )
-        custom_notion_db = st.text_input(
-            "Notion CRM DB ID:",
-            value=NOTION_CRM_DB_ID
-        )
-        
-    st.divider()
-    if st.button("🚪 Mag-logout", use_container_width=True):
+    if st.button("🚪 Logout"):
         st.session_state.authenticated = False
-        st.session_state.user_account = None
-        st.session_state.user_parish = "Lahat ng Parokya"
-        st.session_state.user_role = ""
-        st.session_state.chat_history = []
         st.rerun()
 
-# Load Data
-excel_data = {}
-notion_df = pd.DataFrame()
-excel_error = None
-notion_error = None
-
-with st.spinner("Binabasa ang Google Drive Excel at Notion CRM database..."):
-    try:
-        excel_data = load_excel_data()
-    except Exception as e:
-        excel_error = str(e)
+# =====================================================================
+# 1. PARISH DIRECTORY & FAMILY SEARCH (KATULAD NG EXCEL SEARCH DATABASE)
+# =====================================================================
+if app_mode == "📊 Parish Directory & Family Search":
+    st.title("⛪ CHURCH OF THE TEMPLE OF GOD — SEARCH FAMILY / PARISH")
+    
+    if master_members_df.empty:
+        st.error(f"Hindi makita o mabasa ang Excel file ({excel_filename}).")
+        st.stop()
         
+    # Restriction: Admin nakikita lahat; Parish Leader ay ang sariling parokya lang
+    if st.session_state.user_role == "Master Admin":
+        parish_options = ["Lahat ng Parokya"] + PARISH_ORDER
+    else:
+        parish_options = [st.session_state.assigned_parish]
+        
+    col_p, col_f, col_s = st.columns([1.2, 1.2, 1.6])
+    
+    with col_p:
+        selected_parish = st.selectbox("1. Pumili ng Parish:", parish_options)
+        
+    # I-filter muna ayon sa napiling parokya
+    if selected_parish == "Lahat ng Parokya":
+        parish_filtered_df = master_members_df.copy()
+    else:
+        parish_filtered_df = master_members_df[master_members_df["Parish"] == selected_parish].copy()
+        
+    # Kunin ang mga available na Family ID sa kasalukuyang parokya (hal. CTG-LN-FAM-0001)
+    available_family_ids = ["Lahat ng Family ID"] + sorted(parish_filtered_df["Family ID"].unique().tolist())
+    
+    with col_f:
+        selected_family_id = st.selectbox("2. Pumili ng Family ID:", available_family_ids)
+        
+    with col_s:
+        keyword_search = st.text_input(
+            "3. Search Family ID o Pangalan (Optional):",
+            placeholder="Hal. CTG-LN-FAM-0001 o Juan Reyes"
+        ).strip()
+        
+    # Apply Family ID filter
+    final_df = parish_filtered_df.copy()
+    if selected_family_id != "Lahat ng Family ID":
+        final_df = final_df[final_df["Family ID"] == selected_family_id]
+        
+    # Apply Keyword Search filter (Family ID, Head of Family, o Full Name)
+    if keyword_search:
+        final_df = final_df[
+            final_df["Family ID"].astype(str).str.contains(keyword_search, case=False, na=False) |
+            final_df["Full Name"].astype(str).str.contains(keyword_search, case=False, na=False) |
+            final_df["Head of Family"].astype(str).str.contains(keyword_search, case=False, na=False)
+        ]
+        
+    # Tukuyin ang Search Title Header
+    search_label = selected_parish
+    if selected_family_id != "Lahat ng Family ID":
+        search_label += f" • {selected_family_id}"
+    if keyword_search:
+        search_label += f" • Search: '{keyword_search}'"
+        
+    st.divider()
+    
+    # Kalkulahin ang Member Status Summary at ang 3 Status Lists
+    summary_df, df_act_list, df_inact_list, df_non_list = build_status_summary_and_lists(final_df)
+    
+    # SECTION A: MEMBER STATUS SUMMARY TABLE
+    st.markdown("### 📋 MEMBER STATUS SUMMARY")
+    st.caption(f"**Search:** {search_label}")
+    st.dataframe(summary_df, use_container_width=True, hide_index=True)
+    
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    # SECTION B: ACTIVE, INACTIVE, AT NON-MEMBERS TABLES (3 COLUMNS)
+    col_act, col_inact, col_non = st.columns(3)
+    
+    with col_act:
+        st.success(f"**ACTIVE MEMBERS ({len(df_act_list)})**")
+        st.dataframe(df_act_list, use_container_width=True, hide_index=True)
+        
+    with col_inact:
+        st.warning(f"**INACTIVE MEMBERS ({len(df_inact_list)})**")
+        st.dataframe(df_inact_list, use_container_width=True, hide_index=True)
+        
+    with col_non:
+        st.info(f"**NON-MEMBERS ({len(df_non_list)})**")
+        st.dataframe(df_non_list, use_container_width=True, hide_index=True)
+        
+    st.divider()
+    
+    # SECTION C: MATCHING MEMBERS FULL TABLE
+    total_families = final_df["Family ID"].nunique()
+    st.markdown(f"### 👨‍👩‍👧‍👦 Matching members: {len(final_df)} (Mula sa {total_families} Pamilya)")
+    if not final_df.empty:
+        st.dataframe(final_df, use_container_width=True, hide_index=True)
+    else:
+        st.warning("Walang nahanap na kumpletong record para sa iyong hinahanap.")
+    st.stop()
+
+# =====================================================================
+# 1B. NOTION CRM (VISITORS & MEMBERS)
+# =====================================================================
+elif app_mode == "🤝 Notion CRM (Visitors & Members)":
+    st.title("🤝 Church CRM: Visitors & Members (Notion)")
+    col_r1, col_r2 = st.columns([3, 1])
+    with col_r2:
+        if st.button("🔄 I-refresh ang Notion CRM", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
     try:
-        active_db_id = custom_notion_db if "custom_notion_db" in locals() and custom_notion_db else NOTION_CRM_DB_ID
-        notion_df = load_notion_crm_data(NOTION_TOKEN, active_db_id)
-    except Exception as e:
-        notion_error = str(e)
-
-# Header
-st.markdown(f'<div class="main-header">⛪ CTG Ministry Hub — {user_parish} ({user_role})</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">Integrated Google Drive Excel Directory, Notion CRM & Gemini AI Assistant</div>', unsafe_allow_html=True)
-
-# Status Alerts
-col_stat1, col_stat2, col_stat3 = st.columns(3)
-with col_stat1:
-    if excel_error:
-        st.error(f"❌ Excel Error: {excel_error}")
-    else:
-        st.metric("📂 Google Drive Excel Sheets", f"{len(excel_data)} Sheets Loaded")
-with col_stat2:
-    if notion_error:
-        st.warning(f"⚠️ Notion CRM: {notion_error}")
-    else:
-        st.metric("🗂️ Notion CRM Records", f"{len(notion_df)} Visitors/Members")
-with col_stat3:
-    key_count = len([k for k in [GEMINI_API_KEY_1, GEMINI_API_KEY_2, st.session_state.get("custom_gemini_key", "")] if k and k.strip()])
-    st.metric("🤖 Active Gemini API Keys", f"{key_count} Key(s) Ready")
-
-st.divider()
-
-# Main Tabs
-tab_dir, tab_crm, tab_ai = st.tabs([
-    "📊 Parish Excel Directory",
-    "🤝 Notion CRM (Visitors & Members)",
-    "🤖 AI Ministry Assistant"
-])
-
-# ------------------------------------------
-# TAB 1: GOOGLE DRIVE EXCEL DIRECTORY
-# ------------------------------------------
-with tab_dir:
-    if not excel_data:
-        st.warning("Walang nabasang datos mula sa Google Drive Excel.")
-    else:
-        if user_role == "Master Admin" or user_parish == "Lahat ng Parokya":
-            available_sheets = list(excel_data.keys())
+        n_tok = st.session_state.custom_secrets.get("NOTION_TOKEN", NOTION_TOKEN)
+        n_db = st.session_state.custom_secrets.get("NOTION_CRM_DB_ID", NOTION_CRM_DB_ID)
+        notion_df = load_notion_crm_data(n_tok, n_db)
+        if notion_df.empty:
+            st.info("Walang nakitang rekord sa Notion CRM o walang nakalagay na NOTION_TOKEN.")
         else:
-            available_sheets = [s for s in excel_data.keys() if s in [user_parish, "PARISH SUMMARY", "SEARCH DATABASE", "HEAD OF FAMILY MASTER"]]
-            if not available_sheets:
-                available_sheets = list(excel_data.keys())
+            crm_q = st.text_input("🔍 Maghanap ng Bisita o Miyembro sa Notion CRM:")
+            if crm_q.strip():
+                mask = notion_df.astype(str).apply(lambda x: x.str.contains(crm_q.strip(), case=False, na=False)).any(axis=1)
+                notion_df = notion_df[mask]
+            st.success(f"Kabuuang nakita: **{len(notion_df)}** na bisita/rekord.")
+            st.dataframe(notion_df, use_container_width=True, hide_index=True)
+    except Exception as e:
+        st.error(f"Hindi makakonekta sa Notion CRM: {str(e)}")
+    st.stop()
 
-        col_s1, col_s2 = st.columns([1.2, 2])
-        with col_s1:
-            selected_sheet = st.selectbox("Piliin ang Sheet:", available_sheets)
-        with col_s2:
-            search_query = st.text_input("🔍 Maghanap ng Pangalan / Lugar / Detalye sa Sheet na ito:", "")
+# =====================================================================
+# 2. MAGDAGDAG NG MIYEMBRO & LITRATO
+# =====================================================================
+elif app_mode == "➕ Magdagdag ng Miyembro & Litrato":
+    st.title("➕ Magdagdag ng Miyembro at Mag-upload ng Litrato")
+    st.caption("Mag-input ng bagong miyembro sa ilalim ng iyong parokya.")
+    
+    with st.form("add_member_form"):
+        col1, col2 = st.columns(2)
+        with col1:
+            m_parish = st.selectbox(
+                "Parish:",
+                [st.session_state.assigned_parish] if st.session_state.user_role == "Parish Leader" else PARISH_ORDER
+            )
+            m_fam_id = st.text_input("Family ID (hal. CTG-LN-FAM-0001):")
+            m_head = st.text_input("Head of Family:")
+            m_fullname = st.text_input("Buong Pangalan ng Miyembro:")
+            m_relation = st.selectbox("Relasyon sa Pamilya:", ["HEAD OF FAMILY", "HUSBAND", "WIFE", "SON", "DAUGHTER", "RELATIVE", "OTHER"])
+        with col2:
+            m_sex = st.selectbox("Kasarian:", ["MALE", "FEMALE"])
+            m_category = st.selectbox("Kategorya:", ["KIDS", "YOUTH", "ADULT", "SENIOR CITIZEN"])
+            m_status = st.selectbox("Status:", ["ACTIVE", "INACTIVE", "NON-MEMBER"])
+            m_contact = st.text_input("Contact Number:")
+            uploaded_photo = st.file_uploader("Mag-upload ng Litrato ng Miyembro (JPG/PNG)", type=["jpg", "png", "jpeg"])
+            
+        submit_member = st.form_submit_button("I-save ang Miyembro", type="primary")
+        if submit_member:
+            if m_fam_id and m_fullname:
+                st.success(f"Matagumpay na naidagdag si **{m_fullname}** sa pamilyang `{m_fam_id}` ({m_parish})!")
+                if uploaded_photo is not None:
+                    st.image(uploaded_photo, caption=f"Litrato ni {m_fullname}", width=150)
+                    st.info("Na-save at na-attach ang litrato sa profile.")
+            else:
+                st.warning("Pakipunan ang Family ID at Buong Pangalan.")
+    st.stop()
 
-        df_display = excel_data[selected_sheet].copy()
-        if search_query.strip():
-            mask = df_display.astype(str).apply(lambda x: x.str.contains(search_query.strip(), case=False, na=False)).any(axis=1)
-            df_display = df_display[mask]
+# =====================================================================
+# 3. PRAYER WALL & CATEGORIZER
+# =====================================================================
+elif app_mode == "🙏 Prayer Wall & Categorizer":
+    st.title("🙏 AI Prayer Request & Needs Categorizer")
+    raw_prayer = st.text_area("Nilalaman ng Prayer Request o Mensahe:")
+    if st.button("Suriin sa AI at I-categorize", type="primary"):
+        if raw_prayer:
+            active_key = st.session_state.custom_secrets["GEMINI_API_KEY"]
+            client = genai.Client(api_key=active_key)
+            with st.spinner("Sinusuri ng AI ang kahilingan..."):
+                prompt = f"Suriin ang sumusunod na prayer request. Ibigay ang Kategorya, Urgency Level, at comforting Bible verse:\n\n{raw_prayer}"
+                try:
+                    res = safe_generate_content(client, selected_model, prompt)
+                    st.success("Tapos na ang Pagsusuri!")
+                    st.markdown(res.text)
+                except Exception as ex:
+                    st.error(str(ex))
+        else:
+            st.warning("Maglagay muna ng mensahe.")
+    st.stop()
 
-        st.caption(f"Nagpapakita ng **{len(df_display)}** na rekord mula sa `{selected_sheet}`.")
-        st.dataframe(df_display, use_container_width=True, height=480)
+# =====================================================================
+# 4. ANNOUNCEMENT BROADCASTER
+# =====================================================================
+elif app_mode == "📢 Announcement Broadcaster":
+    st.title("📢 AI Ministry Announcement Broadcaster")
+    event_title = st.text_input("Pamagat ng Aktibidad / Event:")
+    event_details = st.text_area("Mga Detalye (Petsa, Oras, Lugar, Mensahe):")
+    target_email = st.text_input("Email ng Tatanggap:")
+    if st.button("Bumuo at Magpadala ng Email Broadcast", type="primary"):
+        if event_title and event_details and target_email:
+            active_key = st.session_state.custom_secrets["GEMINI_API_KEY"]
+            client = genai.Client(api_key=active_key)
+            with st.spinner("Gumagawa at nagpapadala ng broadcast..."):
+                try:
+                    p_prompt = f"Gumawa ng pormal at nakaka-inspire na announcement email tungkol sa: {event_title}. Mga detalye: {event_details}. Isulat sa Tagalog."
+                    ai_res = safe_generate_content(client, selected_model, p_prompt)
+                    email_body = ai_res.text
+                    res_send = send_email_via_gmail(target_email, f"CTG Announcement: {event_title}", email_body)
+                    st.success(res_send)
+                    with st.expander("Tingnan ang Mensahe"):
+                        st.markdown(email_body)
+                except Exception as ex:
+                    st.error(str(ex))
+        else:
+            st.warning("Punan ang lahat ng kailangan.")
+    st.stop()
 
-# ------------------------------------------
-# TAB 2: NOTION CRM
-# ------------------------------------------
-with tab_crm:
-    st.subheader("🤝 Church CRM: Visitors & Members (Notion)")
-    if notion_error:
-        st.error(f"Hindi makakonekta sa Notion CRM: {notion_error}")
-    elif notion_df.empty:
-        st.info("Walang nakitang rekord sa Notion CRM o walang nakalagay na `NOTION_TOKEN` sa Secrets.")
-    else:
-        crm_search = st.text_input("🔍 Maghanap ng Bisita o Miyembro sa Notion CRM:", "")
-        crm_view = notion_df.copy()
-        if crm_search.strip():
-            mask = crm_view.astype(str).apply(lambda x: x.str.contains(crm_search.strip(), case=False, na=False)).any(axis=1)
-            crm_view = crm_view[mask]
+# =====================================================================
+# 5. APP SETTINGS
+# =====================================================================
+elif app_mode == "🛠️ App Settings":
+    st.title("🛠️ App Configuration & Settings")
+    with st.form("settings_form"):
+        st.subheader("🔑 API Keys & Integration")
+        new_gemini = st.text_input("GEMINI_API_KEY (Key #1)", value=st.session_state.custom_secrets.get("GEMINI_API_KEY", ""), type="password")
+        new_gemini_2 = st.text_input("GEMINI_API_KEY_2 (Fallback Key #2)", value=st.session_state.custom_secrets.get("GEMINI_API_KEY_2", ""), type="password")
+        new_notion_token = st.text_input("NOTION_TOKEN", value=st.session_state.custom_secrets.get("NOTION_TOKEN", ""), type="password")
+        new_notion_db = st.text_input("NOTION_CRM_DB_ID", value=st.session_state.custom_secrets.get("NOTION_CRM_DB_ID", "409fff6803d780e1ab25f2c80b562ddf"))
+        st.subheader("📧 Gmail OAuth2 Credentials")
+        new_g_client_id = st.text_input("GMAIL_CLIENT_ID", value=st.session_state.custom_secrets.get("GMAIL_CLIENT_ID", ""))
+        new_g_client_sec = st.text_input("GMAIL_CLIENT_SECRET", value=st.session_state.custom_secrets.get("GMAIL_CLIENT_SECRET", ""), type="password")
+        new_g_token = st.text_input("GMAIL_REFRESH_TOKEN", value=st.session_state.custom_secrets.get("GMAIL_REFRESH_TOKEN", ""), type="password")
+        if st.form_submit_button("I-save ang mga Pagbabago"):
+            st.session_state.custom_secrets = {
+                "GEMINI_API_KEY": new_gemini,
+                "GEMINI_API_KEY_2": new_gemini_2,
+                "NOTION_TOKEN": new_notion_token,
+                "NOTION_CRM_DB_ID": new_notion_db,
+                "GMAIL_CLIENT_ID": new_g_client_id,
+                "GMAIL_CLIENT_SECRET": new_g_client_sec,
+                "GMAIL_REFRESH_TOKEN": new_g_token,
+            }
+            st.session_state.pop("chat_session", None)
+            st.success("Matagumpay na na-update!")
+            time.sleep(1)
+            st.rerun()
+    st.stop()
 
-        st.caption(f"Kabuuang nakita: **{len(crm_view)}** na bisita/miyembro.")
-        st.dataframe(crm_view, use_container_width=True, height=450)
+# =====================================================================
+# 6. AI CHAT ASSISTANT
+# =====================================================================
+st.title("⛪ CTG Church AI Ministry Assistant")
+st.caption("Katuwang ng mga Leaders sa paghahanap ng records sa Excel, Notion CRM, at pagpapadala ng email.")
 
-# ------------------------------------------
-# TAB 3: GEMINI AI ASSISTANT
-# ------------------------------------------
-with tab_ai:
-    st.subheader("🤖 CTG Ministry AI Assistant")
-    st.caption("Magtanong tungkol sa bilang ng miyembro, pamilya, bisita sa Notion CRM, o detalye ng parokya.")
+valid_keys = get_valid_gemini_keys()
+if not valid_keys:
+    st.warning("⚠️ Wala pang GEMINI_API_KEY. Pumunta sa **App Settings** sa sidebar.")
+    st.stop()
 
-    for msg in st.session_state.chat_history:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-    user_prompt = st.chat_input("Magtanong sa AI Assistant (hal. Sino ang mga bisita sa Notion CRM? Ilan ang miyembro sa Lipay Norte?)...")
-    if user_prompt:
-        st.session_state.chat_history.append({"role": "user", "content": user_prompt})
-        with st.chat_message("user"):
-            st.markdown(user_prompt)
+if "current_model" not in st.session_state:
+    st.session_state.current_model = selected_model
 
-        with st.chat_message("assistant"):
-            with st.spinner("Nag-iisip at binabasa ang rekord ng simbahan..."):
-                context_str = build_ai_context(excel_data, notion_df, user_parish, user_role)
-                ai_reply = ask_gemini_ai(user_prompt, context_str)
-                st.markdown(ai_reply)
-                st.session_state.chat_history.append({"role": "assistant", "content": ai_reply})
+system_instruction = (
+    f"Ikaw ang opisyal na AI Ministry Assistant ng CTG Church. "
+    f"Ang naka-login ay may access sa parokyang: {st.session_state.assigned_parish}. "
+    "Tulungan sila sa paghanap ng mga rekord ng pamilya at miyembro sa Excel database gamit ang `query_excel_database`, "
+    "paghanap ng mga bisita sa Notion CRM gamit ang `query_notion_crm`, at pagpapadala ng email gamit ang `send_email_via_gmail`."
+)
+
+def create_chat_with_key(api_key: str, model_name: str):
+    client = genai.Client(api_key=api_key)
+    config = types.GenerateContentConfig(
+        system_instruction=system_instruction,
+        tools=[query_excel_database, query_notion_crm, send_email_via_gmail],
+        temperature=0.3,
+    )
+    return client.chats.create(model=model_name, config=config)
+
+if "chat_session" not in st.session_state or st.session_state.current_model != selected_model:
+    st.session_state.current_model = selected_model
+    st.session_state.chat_session = create_chat_with_key(valid_keys[0], selected_model)
+
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+
+if user_prompt := st.chat_input("Magtanong tungkol sa records sa Excel, Notion CRM, o magpa-send ng email..."):
+    st.session_state.messages.append({"role": "user", "content": user_prompt})
+    with st.chat_message("user"):
+        st.markdown(user_prompt)
+
+    with st.chat_message("assistant"):
+        status_box = st.status(f"Pinoproseso gamit ang `{selected_model}`...", expanded=True)
+        max_retries = 3
+        success = False
+        last_error = ""
+
+        # Subukan muna ang lahat ng valid API keys (Key #1 at Key #2)
+        for key_idx, api_key in enumerate(valid_keys, start=1):
+            if key_idx > 1:
+                # Kung nag-fail ang Key #1, gumawa ng bagong session gamit ang Key #2
+                st.session_state.chat_session = create_chat_with_key(api_key, selected_model)
+                
+            for attempt in range(max_retries):
+                try:
+                    status_box.write(f"🔄 Kumokonekta sa Gemini API (Key #{key_idx} — Attempt {attempt + 1}/{max_retries})...")
+                    response = st.session_state.chat_session.send_message(user_prompt)
+                    status_box.update(label="✅ Tapos na!", state="complete", expanded=False)
+                    st.markdown(response.text)
+                    st.session_state.messages.append({"role": "assistant", "content": response.text})
+                    success = True
+                    break
+                except Exception as e:
+                    err_str = str(e)
+                    last_error = err_str
+                    if ("503" in err_str or "UNAVAILABLE" in err_str or "429" in err_str) and attempt < max_retries - 1:
+                        time.sleep(3)
+                        continue
+                    break
+            if success:
+                break
+
+        if not success:
+            status_box.update(label="❌ May Error", state="error", expanded=True)
+            st.error(f"Detalye: {last_error}")
