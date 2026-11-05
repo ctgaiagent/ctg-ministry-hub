@@ -744,23 +744,105 @@ def render_workflow_queue_section(df_source: pd.DataFrame, category_label: str, 
 
 if app_mode == "📊 Parish Directory & Family Search":
     render_title_with_logo("CHURCH OF THE TEMPLE OF GOD — SEARCH FAMILY / PARISH")
-    if master_members_df.empty: st.error(f"Hindi mabasa ang Excel ({excel_filename})."); st.stop()
-    parish_options = ["Lahat ng Parokya"] + PARISH_ORDER if st.session_state.user_role == "Master Admin" else [st.session_state.assigned_parish]
+    if master_members_df.empty:
+        st.error(f"Hindi makita o mabasa ang Excel file ({excel_filename}).")
+        st.stop()
+        
+    if st.session_state.user_role == "Master Admin":
+        parish_options = ["Lahat ng Parokya"] + PARISH_ORDER
+    else:
+        parish_options = [st.session_state.assigned_parish]
+        
     col_p, col_f, col_s = st.columns([1.2, 1.2, 1.6])
-    with col_p: sel_parish = st.selectbox("1. Parish:", parish_options)
-    f_df = master_members_df.copy() if sel_parish == "Lahat ng Parokya" else master_members_df[master_members_df["Parish"] == sel_parish].copy()
-    fam_ids = ["Lahat ng Family ID"] + sorted(f_df["Family ID"].unique().tolist())
-    with col_f: sel_fam = st.selectbox("2. Family ID:", fam_ids)
-    with col_s: kw = st.text_input("3. Search:", placeholder="Pangalan o ID").strip()
-    if sel_fam != "Lahat ng Family ID": f_df = f_df[f_df["Family ID"] == sel_fam]
-    if kw: f_df = f_df[f_df.astype(str).apply(lambda x: x.str.contains(kw, case=False, na=False)).any(axis=1)]
+    with col_p:
+        selected_parish = st.selectbox("1. Pumili ng Parish:", parish_options)
+        
+    if selected_parish == "Lahat ng Parokya":
+        parish_filtered_df = master_members_df.copy()
+    else:
+        parish_filtered_df = master_members_df[master_members_df["Parish"] == selected_parish].copy()
+        
+    available_family_ids = ["Lahat ng Family ID"] + sorted(parish_filtered_df["Family ID"].unique().tolist())
+    with col_f:
+        selected_family_id = st.selectbox("2. Pumili ng Family ID:", available_family_ids)
+    with col_s:
+        keyword_search = st.text_input(
+            "3. Search Family ID o Pangalan (Optional):",
+            placeholder="Hal. CTG-LN-FAM-0001 o Juan Reyes"
+        ).strip()
+        
+    final_df = parish_filtered_df.copy()
+    if selected_family_id != "Lahat ng Family ID":
+        final_df = final_df[final_df["Family ID"] == selected_family_id]
+        
+    if keyword_search:
+        final_df = final_df[
+            final_df["Family ID"].astype(str).str.contains(keyword_search, case=False, na=False) |
+            final_df["Full Name"].astype(str).str.contains(keyword_search, case=False, na=False) |
+            final_df["Head of Family"].astype(str).str.contains(keyword_search, case=False, na=False) |
+            final_df["Remarks"].astype(str).str.contains(keyword_search, case=False, na=False)
+        ]
+        
+    search_label = selected_parish
+    if selected_family_id != "Lahat ng Family ID":
+        search_label += f" • {selected_family_id}"
+    if keyword_search:
+        search_label += f" • Search: '{keyword_search}'"
+        
     st.divider()
-    summary_df, act_l, inact_l, non_l = build_status_summary_and_lists(f_df)
+    
+    summary_df, df_act_list, df_inact_list, df_non_list = build_status_summary_and_lists(final_df)
+    
+    st.markdown("### 📋 MEMBER STATUS SUMMARY")
+    st.caption(f"**Search:** {search_label}")
     st.dataframe(summary_df, use_container_width=True, hide_index=True)
-    c1, c2, c3 = st.columns(3)
-    with c1: st.success(f"**ACTIVE ({len(act_l)})**"); st.dataframe(act_l, use_container_width=True, hide_index=True)
-    with c2: st.warning(f"**INACTIVE ({len(inact_l)})**"); st.dataframe(inact_l, use_container_width=True, hide_index=True)
-    with c3: st.info(f"**NON-MEMBERS ({len(non_l)})**"); st.dataframe(non_l, use_container_width=True, hide_index=True)
+    
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    col_act, col_inact, col_non = st.columns(3)
+    with col_act:
+        st.success(f"**ACTIVE MEMBERS ({len(df_act_list)})**")
+        st.dataframe(df_act_list, use_container_width=True, hide_index=True)
+    with col_inact:
+        st.warning(f"**INACTIVE MEMBERS ({len(df_inact_list)})**")
+        st.dataframe(df_inact_list, use_container_width=True, hide_index=True)
+    with col_non:
+        st.info(f"**NON-MEMBERS ({len(df_non_list)})**")
+        st.dataframe(df_non_list, use_container_width=True, hide_index=True)
+        
+    st.divider()
+    
+    total_families = final_df["Family ID"].nunique()
+    st.markdown(f"### 👨‍👩‍👧‍👦 Matching members: {len(final_df)} (Mula sa {total_families} Pamilya)")
+    if not final_df.empty:
+        st.dataframe(
+            final_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Remarks": st.column_config.TextColumn("Remarks (Full Note)", width="large"),
+                "Current Address (If living separately)": st.column_config.TextColumn("Current Address", width="large"),
+                "Full Name": st.column_config.TextColumn("Full Name", width="medium"),
+                "Head of Family": st.column_config.TextColumn("Head of Family", width="medium"),
+            }
+        )
+        
+        df_with_remarks = final_df[final_df["Remarks"].astype(str).str.strip() != ""]
+        with st.expander(f"📝 Basahin nang Buo ang Remarks at Detalye ng Miyembro ({len(df_with_remarks)} may Remarks)", expanded=True):
+            if not df_with_remarks.empty:
+                for _, r_row in df_with_remarks.iterrows():
+                    st.markdown(
+                        f"<div class='full-text-card'>"
+                        f"<b>👤 {r_row['Full Name']}</b> ({r_row['Parish']} • <code>{r_row['Family ID']}</code> • {r_row['Status']})<br>"
+                        f"📍 <b>Address:</b> {r_row['Current Address (If living separately)'] or 'N/A'}<br>"
+                        f"📝 <b>Buong Remarks:</b> {r_row['Remarks']}"
+                        f"</div>",
+                        unsafe_allow_html=True
+                    )
+            else:
+                st.caption("Walang nakalagay na espesyal na Remarks sa mga nakalistang miyembro sa itaas.")
+    else:
+        st.warning("Walang nahanap na kumpletong record para sa iyong hinahanap.")
     st.stop()
 
 elif app_mode in ["🛡️ Master Admin Controller & Approval Queue", "📥 Parish Assigned Requests & Counselling"]:
