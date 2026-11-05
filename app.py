@@ -15,6 +15,41 @@ from googleapiclient.discovery import build
 
 load_dotenv()
 
+# ==========================================
+# 🖼️ AUTOMATIC LOGO FINDER & HEADER HELPER
+# ==========================================
+def find_logo_file():
+    """Hinahanap ang logo image file sa loob ng project folder."""
+    preferred_names = [
+        "logo.png", "logo.jpg", "logo.jpeg",
+        "ctg_logo.png", "ctg_logo.jpg", "ctg_logo.jpeg",
+        "ctg.png", "ctg.jpg", "icon.png"
+    ]
+    for name in preferred_names:
+        if os.path.exists(name):
+            return name
+    for f in os.listdir("."):
+        if f.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+            return f
+    return None
+
+LOGO_PATH = find_logo_file()
+
+def render_title_with_logo(title_text: str, subtitle_text: str = ""):
+    """Nagpapakita ng Logo image sa kaliwa bago ang Title Header."""
+    if LOGO_PATH and os.path.exists(LOGO_PATH):
+        col_logo, col_text = st.columns([0.09, 0.91], vertical_alignment="center")
+        with col_logo:
+            st.image(LOGO_PATH, width=75)
+        with col_text:
+            st.title(title_text)
+            if subtitle_text:
+                st.caption(subtitle_text)
+    else:
+        st.title(title_text)
+        if subtitle_text:
+            st.caption(subtitle_text)
+
 def get_secret(key, default=""):
     if "custom_secrets" in st.session_state and key in st.session_state.custom_secrets:
         val = st.session_state.custom_secrets[key]
@@ -43,7 +78,28 @@ CLOUD_SPREADSHEET_URL = (
     "edit?usp=sharing&ouid=107511419052324683693&rtpof=true&sd=true"
 )
 
-st.set_page_config(page_title="CTG Ministry Hub - AI Agent", page_icon="⛪", layout="wide")
+st.set_page_config(
+    page_title="CTG Ministry Hub - AI Agent",
+    page_icon=LOGO_PATH if LOGO_PATH else "⛪",
+    layout="wide"
+)
+
+# Custom CSS para mas malinaw at hindi maputol ang mga text sa table at cards
+st.markdown("""
+    <style>
+    .full-text-card {
+        background-color: #F8FAFC;
+        border-left: 4px solid #1E3A8A;
+        padding: 12px 16px;
+        margin-bottom: 10px;
+        border-radius: 6px;
+        color: #1F2937;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        font-size: 0.95rem;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
 PARISH_ORDER = [
     "LIPAY NORTE PARISH",
@@ -102,7 +158,6 @@ def extract_id_from_url(url: str) -> str:
 
 @st.cache_resource(ttl=300)
 def load_excel_file():
-    # 1. Subukan muna kung may local Excel file sa folder
     excel_files = [f for f in os.listdir('.') if f.endswith('.xlsx') and 'CTG' in f]
     if not excel_files and os.path.exists("CTG_HEADS_TOTAL_UPDATED FIXED.xlsx"):
         excel_files = ["CTG_HEADS_TOTAL_UPDATED FIXED.xlsx"]
@@ -115,7 +170,6 @@ def load_excel_file():
         except Exception:
             pass
             
-    # 2. Fallback: I-download mula sa Google Drive Excel link (para sa Streamlit Cloud)
     try:
         doc_id = extract_id_from_url(CLOUD_SPREADSHEET_URL)
         download_url = f"https://docs.google.com/spreadsheets/d/{doc_id}/export?format=xlsx"
@@ -142,7 +196,6 @@ def load_complete_parish_members():
                 df_raw = pd.read_excel(excel_xls, sheet_name=p_name, header=3)
                 df_raw.columns = [str(c).strip() for c in df_raw.columns]
                 
-                # I-standardize ang iba't ibang pangalan ng column (hal. sa Hongkong Parish)
                 rename_map = {
                     "Member / Record ID": "Family ID",
                     "Employment / Work": "Student/Working",
@@ -154,7 +207,6 @@ def load_complete_parish_members():
                 if "Family ID" not in df_raw.columns or "Full Name" not in df_raw.columns:
                     continue
                 
-                # Kunin lamang ang mga rows na may valid na Family ID (hal. CTG-LN-FAM-0001) at may Full Name
                 valid_mask = (
                     df_raw["Family ID"].astype(str).str.strip().str.startswith("CTG-", na=False) &
                     df_raw["Full Name"].notna() &
@@ -164,7 +216,6 @@ def load_complete_parish_members():
                 df_valid = df_raw[valid_mask].copy()
                 df_valid["Parish"] = p_name
                 
-                # Siguraduhing kumpleto ang 18 standard columns tulad ng nasa Excel Search Database
                 standard_cols = [
                     "Parish", "Family ID", "Head of Family", "Full Name", "Relationship",
                     "Sex", "Age", "Status", "Contact No.", "Current Address (If living separately)",
@@ -175,13 +226,13 @@ def load_complete_parish_members():
                     if col not in df_valid.columns:
                         df_valid[col] = ""
                 
-                # Linisin ang formatting ng mga texto at petsa
                 df_valid["Family ID"] = df_valid["Family ID"].astype(str).str.strip()
                 df_valid["Full Name"] = df_valid["Full Name"].astype(str).str.strip()
                 df_valid["Head of Family"] = df_valid["Head of Family"].fillna("").astype(str).str.strip()
                 df_valid["Category"] = df_valid["Category"].fillna("").astype(str).str.strip()
                 df_valid["Status"] = df_valid["Status"].fillna("").astype(str).str.strip()
                 df_valid["Church Member"] = df_valid["Church Member"].fillna("").astype(str).str.strip()
+                df_valid["Remarks"] = df_valid["Remarks"].fillna("").astype(str).replace("nan", "").str.strip()
                 
                 all_rows.append(df_valid[standard_cols])
             except Exception:
@@ -224,6 +275,8 @@ def extract_notion_property(prop_data: dict) -> str:
         return str(num) if num is not None else ""
     elif p_type == "checkbox":
         return "Yes" if prop_data.get("checkbox") else "No"
+    elif p_type == "url":
+        return str(prop_data.get("url") or "")
     return ""
 
 @st.cache_data(ttl=180)
@@ -255,9 +308,14 @@ def load_notion_crm_data(token: str, db_id: str) -> pd.DataFrame:
         has_more = data.get("has_more", False)
         next_cursor = data.get("next_cursor", None)
     df = pd.DataFrame(rows)
-    if not df.empty and "Full Name" in df.columns:
-        cols = ["Full Name"] + [c for c in df.columns if c != "Full Name"]
-        df = df[cols]
+    if not df.empty:
+        df = df.fillna("")
+        # Ilagay sa unahan ang Full Name o Name column kung mayroon
+        for main_col in ["Full Name", "Name", "Pangalan", "Visitor Name"]:
+            if main_col in df.columns:
+                cols = [main_col] + [c for c in df.columns if c != main_col]
+                df = df[cols]
+                break
     return df
 
 def classify_member_status(status_val, church_member_val):
@@ -420,9 +478,13 @@ if "assigned_parish" not in st.session_state:
 
 if not st.session_state.authenticated:
     st.markdown("<br><br>", unsafe_allow_html=True)
-    col1, col2, col3 = st.columns([1, 1.2, 1])
+    col1, col2, col3 = st.columns([1, 1.3, 1])
     with col2:
-        st.title("⛪ CTG Ministry Hub Login")
+        if LOGO_PATH and os.path.exists(LOGO_PATH):
+            c_img1, c_img2, c_img3 = st.columns([1, 1, 1])
+            with c_img2:
+                st.image(LOGO_PATH, width=110)
+        st.title("CTG Ministry Hub Login")
         st.caption("Ilagay ang iyong Username at Password.")
         with st.form("login_form"):
             username_input = st.text_input("Username").strip().lower()
@@ -459,7 +521,7 @@ def query_excel_database(search_query: str) -> str:
                 results.append(
                     f"Parish: {row['Parish']} | Family ID: {row['Family ID']} | "
                     f"Full Name: {row['Full Name']} | Relationship: {row['Relationship']} | "
-                    f"Category: {row['Category']} | Status: {row['Status']}"
+                    f"Category: {row['Category']} | Status: {row['Status']} | Remarks: {row['Remarks']}"
                 )
             return f"May {len(match)} na nahanap sa Excel Database (unang 20 resulta):\n" + "\n".join(results)
         return f"Walang nahanap na record sa Excel para sa '{search_query}'."
@@ -521,6 +583,8 @@ if "custom_secrets" not in st.session_state:
     }
 
 with st.sidebar:
+    if LOGO_PATH and os.path.exists(LOGO_PATH):
+        st.image(LOGO_PATH, width=85)
     st.header("⚙️ Ministry Control Panel")
     st.write(f"👤 Role: **{st.session_state.user_role}**")
     st.info(f"📍 Parish Access:\n**{st.session_state.assigned_parish}**")
@@ -550,7 +614,7 @@ with st.sidebar:
 # 1. PARISH DIRECTORY & FAMILY SEARCH (KATULAD NG EXCEL SEARCH DATABASE)
 # =====================================================================
 if app_mode == "📊 Parish Directory & Family Search":
-    st.title("⛪ CHURCH OF THE TEMPLE OF GOD — SEARCH FAMILY / PARISH")
+    render_title_with_logo("CHURCH OF THE TEMPLE OF GOD — SEARCH FAMILY / PARISH")
     
     if master_members_df.empty:
         st.error(f"Hindi makita o mabasa ang Excel file ({excel_filename}).")
@@ -567,13 +631,11 @@ if app_mode == "📊 Parish Directory & Family Search":
     with col_p:
         selected_parish = st.selectbox("1. Pumili ng Parish:", parish_options)
         
-    # I-filter muna ayon sa napiling parokya
     if selected_parish == "Lahat ng Parokya":
         parish_filtered_df = master_members_df.copy()
     else:
         parish_filtered_df = master_members_df[master_members_df["Parish"] == selected_parish].copy()
         
-    # Kunin ang mga available na Family ID sa kasalukuyang parokya (hal. CTG-LN-FAM-0001)
     available_family_ids = ["Lahat ng Family ID"] + sorted(parish_filtered_df["Family ID"].unique().tolist())
     
     with col_f:
@@ -585,20 +647,18 @@ if app_mode == "📊 Parish Directory & Family Search":
             placeholder="Hal. CTG-LN-FAM-0001 o Juan Reyes"
         ).strip()
         
-    # Apply Family ID filter
     final_df = parish_filtered_df.copy()
     if selected_family_id != "Lahat ng Family ID":
         final_df = final_df[final_df["Family ID"] == selected_family_id]
         
-    # Apply Keyword Search filter (Family ID, Head of Family, o Full Name)
     if keyword_search:
         final_df = final_df[
             final_df["Family ID"].astype(str).str.contains(keyword_search, case=False, na=False) |
             final_df["Full Name"].astype(str).str.contains(keyword_search, case=False, na=False) |
-            final_df["Head of Family"].astype(str).str.contains(keyword_search, case=False, na=False)
+            final_df["Head of Family"].astype(str).str.contains(keyword_search, case=False, na=False) |
+            final_df["Remarks"].astype(str).str.contains(keyword_search, case=False, na=False)
         ]
         
-    # Tukuyin ang Search Title Header
     search_label = selected_parish
     if selected_family_id != "Lahat ng Family ID":
         search_label += f" • {selected_family_id}"
@@ -607,7 +667,6 @@ if app_mode == "📊 Parish Directory & Family Search":
         
     st.divider()
     
-    # Kalkulahin ang Member Status Summary at ang 3 Status Lists
     summary_df, df_act_list, df_inact_list, df_non_list = build_status_summary_and_lists(final_df)
     
     # SECTION A: MEMBER STATUS SUMMARY TABLE
@@ -634,20 +693,47 @@ if app_mode == "📊 Parish Directory & Family Search":
         
     st.divider()
     
-    # SECTION C: MATCHING MEMBERS FULL TABLE
+    # SECTION C: MATCHING MEMBERS FULL TABLE (MALAWAK NA REMARKS AT ADDRESS)
     total_families = final_df["Family ID"].nunique()
     st.markdown(f"### 👨‍👩‍👧‍👦 Matching members: {len(final_df)} (Mula sa {total_families} Pamilya)")
     if not final_df.empty:
-        st.dataframe(final_df, use_container_width=True, hide_index=True)
+        st.dataframe(
+            final_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Remarks": st.column_config.TextColumn("Remarks (Full Note)", width="large"),
+                "Current Address (If living separately)": st.column_config.TextColumn("Current Address", width="large"),
+                "Full Name": st.column_config.TextColumn("Full Name", width="medium"),
+                "Head of Family": st.column_config.TextColumn("Head of Family", width="medium"),
+            }
+        )
+        
+        # SECTION D: BUONG TEXT READER PARA SA MGA MAY REMARKS O DETALYE
+        df_with_remarks = final_df[final_df["Remarks"].astype(str).str.strip() != ""]
+        with st.expander(f"📝 Basahin nang Buo ang Remarks at Detalye ng Miyembro ({len(df_with_remarks)} may Remarks)", expanded=True):
+            if not df_with_remarks.empty:
+                for _, r_row in df_with_remarks.iterrows():
+                    st.markdown(
+                        f"<div class='full-text-card'>"
+                        f"<b>👤 {r_row['Full Name']}</b> ({r_row['Parish']} • <code>{r_row['Family ID']}</code> • {r_row['Status']})<br>"
+                        f"📍 <b>Address:</b> {r_row['Current Address (If living separately)'] or 'N/A'}<br>"
+                        f"📝 <b>Buong Remarks:</b> {r_row['Remarks']}"
+                        f"</div>",
+                        unsafe_allow_html=True
+                    )
+            else:
+                st.caption("Walang nakalagay na espesyal na Remarks sa mga nakalistang miyembro sa itaas.")
     else:
         st.warning("Walang nahanap na kumpletong record para sa iyong hinahanap.")
     st.stop()
 
 # =====================================================================
-# 1B. NOTION CRM (VISITORS & MEMBERS)
+# 1B. NOTION CRM (VISITORS & MEMBERS) — FULL READABLE TEXT & CARDS
 # =====================================================================
 elif app_mode == "🤝 Notion CRM (Visitors & Members)":
-    st.title("🤝 Church CRM: Visitors & Members (Notion)")
+    render_title_with_logo("Church CRM: Visitors & Members (Notion)")
+    
     col_r1, col_r2 = st.columns([3, 1])
     with col_r2:
         if st.button("🔄 I-refresh ang Notion CRM", use_container_width=True):
@@ -660,12 +746,42 @@ elif app_mode == "🤝 Notion CRM (Visitors & Members)":
         if notion_df.empty:
             st.info("Walang nakitang rekord sa Notion CRM o walang nakalagay na NOTION_TOKEN.")
         else:
-            crm_q = st.text_input("🔍 Maghanap ng Bisita o Miyembro sa Notion CRM:")
+            crm_q = st.text_input("🔍 Maghanap ng Bisita, Miyembro, o Detalye sa Notion CRM:")
             if crm_q.strip():
                 mask = notion_df.astype(str).apply(lambda x: x.str.contains(crm_q.strip(), case=False, na=False)).any(axis=1)
                 notion_df = notion_df[mask]
+                
             st.success(f"Kabuuang nakita: **{len(notion_df)}** na bisita/rekord.")
-            st.dataframe(notion_df, use_container_width=True, hide_index=True)
+            
+            # Dynamic column config para malapad at mabasa lahat ng columns sa Notion CRM
+            notion_col_cfg = {
+                col: st.column_config.TextColumn(col, width="large")
+                for col in notion_df.columns
+            }
+            st.dataframe(
+                notion_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config=notion_col_cfg
+            )
+            
+            st.divider()
+            st.subheader("📖 Buong Detalye ng Bawat Rekord sa Notion CRM (Full View)")
+            st.caption("Ipinapakita rito nang buo at hindi putol ang lahat ng text, notes, at impormasyon ng bawat bisita/miyembro.")
+            
+            for idx, row in notion_df.iterrows():
+                # Kunin ang pangalan sa unang column bilang title ng card
+                first_col = notion_df.columns[0]
+                title_val = str(row[first_col]).strip() or f"Record #{idx + 1}"
+                
+                details_html = f"<div class='full-text-card'><b>📌 {title_val}</b><br><hr style='margin:6px 0;'>"
+                for c_name in notion_df.columns:
+                    val_str = str(row[c_name]).strip()
+                    if val_str:
+                        details_html += f"<b>• {c_name}:</b> {val_str}<br>"
+                details_html += "</div>"
+                st.markdown(details_html, unsafe_allow_html=True)
+                
     except Exception as e:
         st.error(f"Hindi makakonekta sa Notion CRM: {str(e)}")
     st.stop()
@@ -674,8 +790,10 @@ elif app_mode == "🤝 Notion CRM (Visitors & Members)":
 # 2. MAGDAGDAG NG MIYEMBRO & LITRATO
 # =====================================================================
 elif app_mode == "➕ Magdagdag ng Miyembro & Litrato":
-    st.title("➕ Magdagdag ng Miyembro at Mag-upload ng Litrato")
-    st.caption("Mag-input ng bagong miyembro sa ilalim ng iyong parokya.")
+    render_title_with_logo(
+        "Magdagdag ng Miyembro at Mag-upload ng Litrato",
+        "Mag-input ng bagong miyembro sa ilalim ng iyong parokya."
+    )
     
     with st.form("add_member_form"):
         col1, col2 = st.columns(2)
@@ -710,7 +828,7 @@ elif app_mode == "➕ Magdagdag ng Miyembro & Litrato":
 # 3. PRAYER WALL & CATEGORIZER
 # =====================================================================
 elif app_mode == "🙏 Prayer Wall & Categorizer":
-    st.title("🙏 AI Prayer Request & Needs Categorizer")
+    render_title_with_logo("AI Prayer Request & Needs Categorizer")
     raw_prayer = st.text_area("Nilalaman ng Prayer Request o Mensahe:")
     if st.button("Suriin sa AI at I-categorize", type="primary"):
         if raw_prayer:
@@ -732,7 +850,7 @@ elif app_mode == "🙏 Prayer Wall & Categorizer":
 # 4. ANNOUNCEMENT BROADCASTER
 # =====================================================================
 elif app_mode == "📢 Announcement Broadcaster":
-    st.title("📢 AI Ministry Announcement Broadcaster")
+    render_title_with_logo("AI Ministry Announcement Broadcaster")
     event_title = st.text_input("Pamagat ng Aktibidad / Event:")
     event_details = st.text_area("Mga Detalye (Petsa, Oras, Lugar, Mensahe):")
     target_email = st.text_input("Email ng Tatanggap:")
@@ -759,7 +877,7 @@ elif app_mode == "📢 Announcement Broadcaster":
 # 5. APP SETTINGS
 # =====================================================================
 elif app_mode == "🛠️ App Settings":
-    st.title("🛠️ App Configuration & Settings")
+    render_title_with_logo("App Configuration & Settings")
     with st.form("settings_form"):
         st.subheader("🔑 API Keys & Integration")
         new_gemini = st.text_input("GEMINI_API_KEY (Key #1)", value=st.session_state.custom_secrets.get("GEMINI_API_KEY", ""), type="password")
@@ -789,8 +907,10 @@ elif app_mode == "🛠️ App Settings":
 # =====================================================================
 # 6. AI CHAT ASSISTANT
 # =====================================================================
-st.title("⛪ CTG Church AI Ministry Assistant")
-st.caption("Katuwang ng mga Leaders sa paghahanap ng records sa Excel, Notion CRM, at pagpapadala ng email.")
+render_title_with_logo(
+    "CTG Church AI Ministry Assistant",
+    "Katuwang ng mga Leaders sa paghahanap ng records sa Excel, Notion CRM, at pagpapadala ng email."
+)
 
 valid_keys = get_valid_gemini_keys()
 if not valid_keys:
@@ -838,10 +958,8 @@ if user_prompt := st.chat_input("Magtanong tungkol sa records sa Excel, Notion C
         success = False
         last_error = ""
 
-        # Subukan muna ang lahat ng valid API keys (Key #1 at Key #2)
         for key_idx, api_key in enumerate(valid_keys, start=1):
             if key_idx > 1:
-                # Kung nag-fail ang Key #1, gumawa ng bagong session gamit ang Key #2
                 st.session_state.chat_session = create_chat_with_key(api_key, selected_model)
                 
             for attempt in range(max_retries):
