@@ -3,6 +3,7 @@ import io
 import re
 import time
 import base64
+import hashlib
 import requests
 from email.message import EmailMessage
 import streamlit as st
@@ -79,7 +80,7 @@ CLOUD_SPREADSHEET_URL = (
 )
 
 st.set_page_config(
-    page_title="CTG Ministry Hub - AI Agent",
+    page_title="CTG Ministry Hub - Gabay AI",
     page_icon=LOGO_PATH if LOGO_PATH else "⛪",
     layout="wide"
 )
@@ -310,7 +311,6 @@ def load_notion_crm_data(token: str, db_id: str) -> pd.DataFrame:
     df = pd.DataFrame(rows)
     if not df.empty:
         df = df.fillna("")
-        # Ilagay sa unahan ang Full Name o Name column kung mayroon
         for main_col in ["Full Name", "Name", "Pangalan", "Visitor Name"]:
             if main_col in df.columns:
                 cols = [main_col] + [c for c in df.columns if c != main_col]
@@ -436,7 +436,7 @@ def safe_generate_content(client, model, contents, config=None):
     max_retries = 3
     valid_keys = get_valid_gemini_keys()
     fallback_models = []
-    for m in [model, "gemini-3.8-flash", "gemini-3.1-pro-preview"]:
+    for m in [model, "gemini-3.8-flash", "gemini-3.1-pro-preview", "gemini-2.5-flash"]:
         if m not in fallback_models:
             fallback_models.append(m)
             
@@ -605,6 +605,7 @@ with st.sidebar:
     if st.button("🗑️ I-clear ang Chat History"):
         st.session_state.messages = []
         st.session_state.pop("chat_session", None)
+        st.session_state.pop("last_processed_audio_hash", None)
         st.rerun()
     if st.button("🚪 Logout"):
         st.session_state.authenticated = False
@@ -620,7 +621,6 @@ if app_mode == "📊 Parish Directory & Family Search":
         st.error(f"Hindi makita o mabasa ang Excel file ({excel_filename}).")
         st.stop()
         
-    # Restriction: Admin nakikita lahat; Parish Leader ay ang sariling parokya lang
     if st.session_state.user_role == "Master Admin":
         parish_options = ["Lahat ng Parokya"] + PARISH_ORDER
     else:
@@ -693,7 +693,7 @@ if app_mode == "📊 Parish Directory & Family Search":
         
     st.divider()
     
-    # SECTION C: MATCHING MEMBERS FULL TABLE (MALAWAK NA REMARKS AT ADDRESS)
+    # SECTION C: MATCHING MEMBERS FULL TABLE
     total_families = final_df["Family ID"].nunique()
     st.markdown(f"### 👨‍👩‍👧‍👦 Matching members: {len(final_df)} (Mula sa {total_families} Pamilya)")
     if not final_df.empty:
@@ -709,7 +709,6 @@ if app_mode == "📊 Parish Directory & Family Search":
             }
         )
         
-        # SECTION D: BUONG TEXT READER PARA SA MGA MAY REMARKS O DETALYE
         df_with_remarks = final_df[final_df["Remarks"].astype(str).str.strip() != ""]
         with st.expander(f"📝 Basahin nang Buo ang Remarks at Detalye ng Miyembro ({len(df_with_remarks)} may Remarks)", expanded=True):
             if not df_with_remarks.empty:
@@ -753,7 +752,6 @@ elif app_mode == "🤝 Notion CRM (Visitors & Members)":
                 
             st.success(f"Kabuuang nakita: **{len(notion_df)}** na bisita/rekord.")
             
-            # Dynamic column config para malapad at mabasa lahat ng columns sa Notion CRM
             notion_col_cfg = {
                 col: st.column_config.TextColumn(col, width="large")
                 for col in notion_df.columns
@@ -770,7 +768,6 @@ elif app_mode == "🤝 Notion CRM (Visitors & Members)":
             st.caption("Ipinapakita rito nang buo at hindi putol ang lahat ng text, notes, at impormasyon ng bawat bisita/miyembro.")
             
             for idx, row in notion_df.iterrows():
-                # Kunin ang pangalan sa unang column bilang title ng card
                 first_col = notion_df.columns[0]
                 title_val = str(row[first_col]).strip() or f"Record #{idx + 1}"
                 
@@ -825,17 +822,21 @@ elif app_mode == "➕ Magdagdag ng Miyembro & Litrato":
     st.stop()
 
 # =====================================================================
-# 3. PRAYER WALL & CATEGORIZER
+# 3. PRAYER WALL & CATEGORIZER (WITH MULTILINGUAL SUPPORT)
 # =====================================================================
 elif app_mode == "🙏 Prayer Wall & Categorizer":
     render_title_with_logo("AI Prayer Request & Needs Categorizer")
-    raw_prayer = st.text_area("Nilalaman ng Prayer Request o Mensahe:")
+    prayer_lang = st.selectbox("Wika ng Tugon at Bible Verse:", ["Tagalog", "Ilokano", "English"], index=0)
+    raw_prayer = st.text_area("Nilalaman ng Prayer Request o Mensahe (Tagalog / Ilokano / English):")
     if st.button("Suriin sa AI at I-categorize", type="primary"):
         if raw_prayer:
             active_key = st.session_state.custom_secrets["GEMINI_API_KEY"]
             client = genai.Client(api_key=active_key)
             with st.spinner("Sinusuri ng AI ang kahilingan..."):
-                prompt = f"Suriin ang sumusunod na prayer request. Ibigay ang Kategorya, Urgency Level, at comforting Bible verse:\n\n{raw_prayer}"
+                prompt = (
+                    f"Suriin ang sumusunod na prayer request. Ibigay ang Kategorya, Urgency Level, "
+                    f"at comforting Bible verse at maikling panalangin gamit ang wikang {prayer_lang}:\n\n{raw_prayer}"
+                )
                 try:
                     res = safe_generate_content(client, selected_model, prompt)
                     st.success("Tapos na ang Pagsusuri!")
@@ -847,10 +848,11 @@ elif app_mode == "🙏 Prayer Wall & Categorizer":
     st.stop()
 
 # =====================================================================
-# 4. ANNOUNCEMENT BROADCASTER
+# 4. ANNOUNCEMENT BROADCASTER (WITH MULTILINGUAL SUPPORT)
 # =====================================================================
 elif app_mode == "📢 Announcement Broadcaster":
     render_title_with_logo("AI Ministry Announcement Broadcaster")
+    bcast_lang = st.selectbox("Wika ng Announcement Email:", ["Tagalog", "Ilokano", "English"], index=0)
     event_title = st.text_input("Pamagat ng Aktibidad / Event:")
     event_details = st.text_area("Mga Detalye (Petsa, Oras, Lugar, Mensahe):")
     target_email = st.text_input("Email ng Tatanggap:")
@@ -860,7 +862,10 @@ elif app_mode == "📢 Announcement Broadcaster":
             client = genai.Client(api_key=active_key)
             with st.spinner("Gumagawa at nagpapadala ng broadcast..."):
                 try:
-                    p_prompt = f"Gumawa ng pormal at nakaka-inspire na announcement email tungkol sa: {event_title}. Mga detalye: {event_details}. Isulat sa Tagalog."
+                    p_prompt = (
+                        f"Gumawa ng pormal at nakaka-inspire na announcement email tungkol sa: {event_title}. "
+                        f"Mga detalye: {event_details}. Isulat ito sa wikang {bcast_lang}."
+                    )
                     ai_res = safe_generate_content(client, selected_model, p_prompt)
                     email_body = ai_res.text
                     res_send = send_email_via_gmail(target_email, f"CTG Announcement: {event_title}", email_body)
@@ -905,11 +910,11 @@ elif app_mode == "🛠️ App Settings":
     st.stop()
 
 # =====================================================================
-# 6. AI CHAT ASSISTANT
+# 6. AI CHAT ASSISTANT — CTG GABAY AI (VOICE & MULTILINGUAL SUPPORT)
 # =====================================================================
 render_title_with_logo(
-    "CTG Church AI Ministry Assistant",
-    "Katuwang ng mga Leaders sa paghahanap ng records sa Excel, Notion CRM, at pagpapadala ng email."
+    "CTG Gabay AI — Ministry Assistant",
+    "Magsalita o mag-type sa Tagalog, Ilokano, o English para maghanap sa Excel, Notion CRM, o magpadala ng email."
 )
 
 valid_keys = get_valid_gemini_keys()
@@ -923,9 +928,25 @@ if "messages" not in st.session_state:
 if "current_model" not in st.session_state:
     st.session_state.current_model = selected_model
 
+if "last_processed_audio_hash" not in st.session_state:
+    st.session_state.last_processed_audio_hash = None
+
+# Multilingual & Voice Input Bar
+col_lang, col_voice = st.columns([1, 1.8], vertical_alignment="center")
+with col_lang:
+    preferred_language = st.selectbox(
+        "🌐 Wika ng Sagot ni Gabay AI:",
+        ["Awto (Kung ano ang gamit ng nagtanong)", "Tagalog", "Ilokano", "English"],
+        index=0
+    )
+with col_voice:
+    voice_recording = st.audio_input("🎤 Magsalita rito (Tagalog / Ilokano / English):")
+
 system_instruction = (
-    f"Ikaw ang opisyal na AI Ministry Assistant ng CTG Church. "
-    f"Ang naka-login ay may access sa parokyang: {st.session_state.assigned_parish}. "
+    f"Ikaw si CTG Gabay AI, ang opisyal, magalang, at matulunging AI Ministry Assistant ng Church of the Temple of God (CTG). "
+    f"Ang kasalukuyang naka-login ay may access sa parokyang: {st.session_state.assigned_parish}. "
+    "Matatas kang umintindi at magsalita ng Tagalog, Ilokano (Ilocano), at English. "
+    "Kung ang user ay nagpadala ng voice audio o nag-type sa Ilokano, Tagalog, o English, intindihin ito nang buong husay. "
     "Tulungan sila sa paghanap ng mga rekord ng pamilya at miyembro sa Excel database gamit ang `query_excel_database`, "
     "paghanap ng mga bisita sa Notion CRM gamit ang `query_notion_crm`, at pagpapadala ng email gamit ang `send_email_via_gmail`."
 )
@@ -943,17 +964,99 @@ if "chat_session" not in st.session_state or st.session_state.current_model != s
     st.session_state.current_model = selected_model
     st.session_state.chat_session = create_chat_with_key(valid_keys[0], selected_model)
 
+# Ipakita ang Chat History
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
+        if msg.get("audio_bytes"):
+            st.audio(msg["audio_bytes"], format=msg.get("audio_mime", "audio/wav"))
         st.markdown(msg["content"])
 
-if user_prompt := st.chat_input("Magtanong tungkol sa records sa Excel, Notion CRM, o magpa-send ng email..."):
+# ---------------------------------------------------------------------
+# A. PROSESO PARA SA VOICE INPUT (KAPAG NAG-RECORD NG BOSES ANG USER)
+# ---------------------------------------------------------------------
+if voice_recording is not None:
+    audio_bytes = voice_recording.getvalue()
+    audio_hash = hashlib.md5(audio_bytes).hexdigest()
+    audio_mime = voice_recording.type or "audio/wav"
+
+    if audio_hash != st.session_state.last_processed_audio_hash:
+        st.session_state.last_processed_audio_hash = audio_hash
+
+        lang_directive = (
+            "Sumagot sa parehong wika na ginamit sa boses (Tagalog, Ilokano, o English)."
+            if preferred_language.startswith("Awto")
+            else f"Sumagot gamit ang wikang {preferred_language}."
+        )
+
+        voice_label = "🎤 *[Nagpadala ng Voice Question (Tagalog / Ilokano / English)]*"
+        st.session_state.messages.append({
+            "role": "user",
+            "content": voice_label,
+            "audio_bytes": audio_bytes,
+            "audio_mime": audio_mime
+        })
+
+        with st.chat_message("user"):
+            st.audio(audio_bytes, format=audio_mime)
+            st.markdown(voice_label)
+
+        with st.chat_message("assistant"):
+            status_box = st.status(f"Pinapakinggan at pinoproseso ni Gabay AI (`{selected_model}`)...", expanded=True)
+            max_retries = 3
+            success = False
+            last_error = ""
+
+            audio_part = types.Part.from_bytes(data=audio_bytes, mime_type=audio_mime)
+            voice_instruction = (
+                "Pakinggan ang audio recording na ito. "
+                "1. Isulat muna sa unahan ang eksaktong sinabi ng user bilang '**🗣️ Narinig ko:** [transcription]'. "
+                "2. Kung nagtatanong tungkol sa miyembro, pamilya, parokya, o Notion CRM, gamitin ang iyong tools (`query_excel_database` o `query_notion_crm`). "
+                f"3. Sagutin nang malinaw at magalang. {lang_directive}"
+            )
+
+            for key_idx, api_key in enumerate(valid_keys, start=1):
+                if key_idx > 1:
+                    st.session_state.chat_session = create_chat_with_key(api_key, selected_model)
+
+                for attempt in range(max_retries):
+                    try:
+                        status_box.write(f"🔄 Pinoproseso ang boses sa Gemini API (Key #{key_idx} — Attempt {attempt + 1}/{max_retries})...")
+                        response = st.session_state.chat_session.send_message([audio_part, voice_instruction])
+                        status_box.update(label="✅ Tapos na!", state="complete", expanded=False)
+                        st.markdown(response.text)
+                        st.session_state.messages.append({"role": "assistant", "content": response.text})
+                        success = True
+                        break
+                    except Exception as e:
+                        err_str = str(e)
+                        last_error = err_str
+                        if ("503" in err_str or "UNAVAILABLE" in err_str or "429" in err_str) and attempt < max_retries - 1:
+                            time.sleep(3)
+                            continue
+                        break
+                if success:
+                    break
+
+            if not success:
+                status_box.update(label="❌ May Error sa pagproseso ng boses", state="error", expanded=True)
+                st.error(f"Detalye: {last_error}")
+
+# ---------------------------------------------------------------------
+# B. PROSESO PARA SA TEXT INPUT (KAPAG NAG-TYPE ANG USER)
+# ---------------------------------------------------------------------
+if user_prompt := st.chat_input("Magtanong sa Tagalog, Ilokano, o English (hal. Mano ti miyembro idiay Lipay Norte?)..."):
     st.session_state.messages.append({"role": "user", "content": user_prompt})
     with st.chat_message("user"):
         st.markdown(user_prompt)
 
+    lang_note = (
+        ""
+        if preferred_language.startswith("Awto")
+        else f"\n\n[Paalala: Pakisagot ito gamit ang wikang {preferred_language}.]"
+    )
+
     with st.chat_message("assistant"):
-        status_box = st.status(f"Pinoproseso gamit ang `{selected_model}`...", expanded=True)
+        status_box = st.status(f"Pinoproseso ni Gabay AI gamit ang `{selected_model}`...", expanded=True)
         max_retries = 3
         success = False
         last_error = ""
@@ -965,7 +1068,7 @@ if user_prompt := st.chat_input("Magtanong tungkol sa records sa Excel, Notion C
             for attempt in range(max_retries):
                 try:
                     status_box.write(f"🔄 Kumokonekta sa Gemini API (Key #{key_idx} — Attempt {attempt + 1}/{max_retries})...")
-                    response = st.session_state.chat_session.send_message(user_prompt)
+                    response = st.session_state.chat_session.send_message(user_prompt + lang_note)
                     status_box.update(label="✅ Tapos na!", state="complete", expanded=False)
                     st.markdown(response.text)
                     st.session_state.messages.append({"role": "assistant", "content": response.text})
