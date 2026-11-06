@@ -88,90 +88,177 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-st.markdown("""
-    <style>
-    .full-text-card {
-        background-color: #F8FAFC;
-        border-left: 4px solid #1E3A8A;
-        padding: 12px 16px;
-        margin-bottom: 10px;
-        border-radius: 6px;
-        color: #1F2937;
-        white-space: pre-wrap;
-        word-wrap: break-word;
-        font-size: 0.95rem;
-    }
-    .urgent-card {
-        background-color: #FEF2F2;
-        border-left: 4px solid #DC2626;
-        padding: 12px 16px;
-        margin-bottom: 10px;
-        border-radius: 6px;
-        color: #7F1D1D;
-        white-space: pre-wrap;
-        word-wrap: break-word;
-        font-size: 0.95rem;
-    }
-    .submitted-parish-badge {
-        background-color: #ECFDF5;
-        border: 1px solid #10B981;
-        color: #065F46;
-        padding: 6px 12px;
-        border-radius: 6px;
-        font-weight: 600;
-        font-size: 0.88rem;
-        margin-bottom: 8px;
-        display: inline-block;
-    }
-    .assigned-parish-badge {
-        background-color: #EFF6FF;
-        border: 1px solid #3B82F6;
-        color: #1E40AF;
-        padding: 6px 12px;
-        border-radius: 6px;
-        font-weight: 600;
-        font-size: 0.88rem;
-        margin-bottom: 8px;
-        display: inline-block;
-    }
-    .records-side-box {
-        background-color: #F9FAFB;
-        border: 1px solid #E5E7EB;
-        border-top: 4px solid #0F766E;
-        padding: 12px;
-        border-radius: 8px;
-        margin-bottom: 10px;
-        color: #111827;
-        font-size: 0.88rem;
-    }
-    .sidebar-log-card {
-        background-color: #1E293B;
-        border-left: 3px solid #38BDF8;
-        padding: 8px 10px;
-        border-radius: 5px;
-        margin-bottom: 6px;
-        color: #F8FAFC;
-        font-size: 0.80rem;
-    }
-    /* Siguraduhing laging litaw ang Sidebar Toggle Button sa Desktop at Phone */
-    [data-testid="collapsedControl"], [data-testid="stSidebarCollapseButton"] {
-        display: flex !important;
-        visibility: visible !important;
-        opacity: 1 !important;
-        z-index: 999999 !important;
-        background-color: #1E3A8A !important;
-        color: #FFFFFF !important;
-        border-radius: 8px !important;
-        padding: 4px !important;
-        margin: 6px !important;
-        box-shadow: 0 2px 6px rgba(0,0,0,0.45) !important;
-    }
-    [data-testid="stAppDeployButton"] { display: none !important; }
-    #MainMenu { visibility: hidden !important; display: none !important; }
-    footer { visibility: hidden !important; display: none !important; }
-    .viewerBadge_container__1QSob, .styles_viewerBadge__1yB5_, .viewerBadge_link__1S137, .viewerBadge_text__1JaDK { display: none !important; }
-    </style>
-""", unsafe_allow_html=True)
+# ==========================================
+# 🎛️ INITIALIZE UI & APP CONTROLLER STATES
+# ==========================================
+if "ui_theme" not in st.session_state:
+    st.session_state.ui_theme = "🌙 Dark Mode"
+if "ui_font_size" not in st.session_state:
+    st.session_state.ui_font_size = "Normal (100%)"
+if "ui_density" not in st.session_state:
+    st.session_state.ui_density = "Standard (Comfortable)"
+if "ui_default_lang" not in st.session_state:
+    st.session_state.ui_default_lang = "Tagalog"
+if "ui_show_side_records" not in st.session_state:
+    st.session_state.ui_show_side_records = True
+
+def apply_dynamic_app_styles():
+    theme = st.session_state.get("ui_theme", "🌙 Dark Mode")
+    font_choice = st.session_state.get("ui_font_size", "Normal (100%)")
+    density = st.session_state.get("ui_density", "Standard (Comfortable)")
+
+    font_scale = "0.95rem"
+    base_zoom = "100%"
+    if "Large (115%)" in font_choice:
+        font_scale = "1.08rem"
+        base_zoom = "108%"
+    elif "Extra Large (130%)" in font_choice:
+        font_scale = "1.20rem"
+        base_zoom = "116%"
+
+    card_pad = "12px 16px" if "Standard" in density else "7px 11px"
+    card_margin = "10px" if "Standard" in density else "5px"
+
+    if "Light" in theme:
+        app_bg = "#F8FAFC"
+        sidebar_bg = "#EFF6FF"
+        text_color = "#0F172A"
+        card_bg = "#FFFFFF"
+        card_text = "#1E293B"
+        card_border = "#1E3A8A"
+        side_box_bg = "#FFFFFF"
+        side_box_text = "#0F172A"
+        side_box_border = "#CBD5E1"
+        input_bg = "#FFFFFF"
+    elif "Royal Blue" in theme:
+        app_bg = "#0A192F"
+        sidebar_bg = "#112240"
+        text_color = "#E6F1FF"
+        card_bg = "#112240"
+        card_text = "#E6F1FF"
+        card_border = "#64FFDA"
+        side_box_bg = "#172A45"
+        side_box_text = "#E6F1FF"
+        side_box_border = "#233554"
+        input_bg = "#172A45"
+    else:
+        # Default Dark Mode
+        app_bg = "#0E1117"
+        sidebar_bg = "#161B22"
+        text_color = "#F8FAFC"
+        card_bg = "#1E293B"
+        card_text = "#F8FAFC"
+        card_border = "#38BDF8"
+        side_box_bg = "#1E293B"
+        side_box_text = "#F1F5F9"
+        side_box_border = "#334155"
+        input_bg = "#1E293B"
+
+    st.markdown(f"""
+        <style>
+        html {{
+            font-size: {base_zoom};
+        }}
+        .stApp {{
+            background-color: {app_bg} !important;
+            color: {text_color} !important;
+        }}
+        [data-testid="stSidebar"] {{
+            background-color: {sidebar_bg} !important;
+        }}
+        .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5, .stApp p, .stApp label, .stMarkdown {{
+            color: {text_color} !important;
+        }}
+        .full-text-card {{
+            background-color: {card_bg};
+            border-left: 4px solid {card_border};
+            border-top: 1px solid {side_box_border};
+            border-right: 1px solid {side_box_border};
+            border-bottom: 1px solid {side_box_border};
+            padding: {card_pad};
+            margin-bottom: {card_margin};
+            border-radius: 8px;
+            color: {card_text} !important;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            font-size: {font_scale};
+        }}
+        .urgent-card {{
+            background-color: #FEF2F2;
+            border-left: 4px solid #DC2626;
+            padding: {card_pad};
+            margin-bottom: {card_margin};
+            border-radius: 8px;
+            color: #7F1D1D !important;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            font-size: {font_scale};
+        }}
+        .submitted-parish-badge {{
+            background-color: #ECFDF5;
+            border: 1px solid #10B981;
+            color: #065F46 !important;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-weight: 600;
+            font-size: 0.88rem;
+            margin-bottom: 8px;
+            display: inline-block;
+        }}
+        .assigned-parish-badge {{
+            background-color: #EFF6FF;
+            border: 1px solid #3B82F6;
+            color: #1E40AF !important;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-weight: 600;
+            font-size: 0.88rem;
+            margin-bottom: 8px;
+            display: inline-block;
+        }}
+        .records-side-box {{
+            background-color: {side_box_bg};
+            border: 1px solid {side_box_border};
+            border-top: 4px solid #0F766E;
+            padding: {card_pad};
+            border-radius: 8px;
+            margin-bottom: {card_margin};
+            color: {side_box_text} !important;
+            font-size: 0.88rem;
+        }}
+        .sidebar-log-card {{
+            background-color: {side_box_bg};
+            border-left: 3px solid #38BDF8;
+            border-top: 1px solid {side_box_border};
+            border-right: 1px solid {side_box_border};
+            border-bottom: 1px solid {side_box_border};
+            padding: 8px 10px;
+            border-radius: 5px;
+            margin-bottom: 6px;
+            color: {side_box_text} !important;
+            font-size: 0.80rem;
+        }}
+        /* Siguraduhing laging litaw ang Sidebar (>> / <<) Toggle Button sa Desktop at Phone */
+        [data-testid="collapsedControl"], [data-testid="stSidebarCollapseButton"] {{
+            display: flex !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+            z-index: 999999 !important;
+            background-color: #1E3A8A !important;
+            color: #FFFFFF !important;
+            border-radius: 8px !important;
+            padding: 4px !important;
+            margin: 6px !important;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.45) !important;
+        }}
+        [data-testid="stAppDeployButton"] {{ display: none !important; }}
+        #MainMenu {{ visibility: hidden !important; display: none !important; }}
+        footer {{ visibility: hidden !important; display: none !important; }}
+        .viewerBadge_container__1QSob, .styles_viewerBadge__1yB5_, .viewerBadge_link__1S137, .viewerBadge_text__1JaDK {{ display: none !important; }}
+        </style>
+    """, unsafe_allow_html=True)
+
+apply_dynamic_app_styles()
 
 PARISH_ORDER = [
     "LIPAY NORTE PARISH", "MALANAS PARISH", "POBLACION PARISH", "DUPLAS PARISH",
@@ -763,7 +850,7 @@ df_crm_global, df_p_global, df_q_global, df_co_global = load_all_ministry_DataFr
 global_records_df = build_combined_records_df(df_p_global, df_q_global, df_co_global)
 
 # =====================================================================
-# ⚙️ SIDEBAR CONTROL PANEL (MASTER ADMIN EXCLUSIVE PARA SA MONITOR & BACKUP)
+# ⚙️ SIDEBAR CONTROL PANEL (MASTER ADMIN EXCLUSIVE + THEME CONTROLLER)
 # =====================================================================
 with st.sidebar:
     if LOGO_PATH and os.path.exists(LOGO_PATH): st.image(LOGO_PATH, width=85)
@@ -771,7 +858,40 @@ with st.sidebar:
     st.write(f"👤 Role: **{st.session_state.user_role}**")
     st.info(f"📍 Parish Access:\n**{st.session_state.assigned_parish}**")
 
-    # EXCLUSIVE PARA SA MASTER ADMIN LAMANG (HINDI KITA NG IBANG USERS / PARISH LEADERS)
+    # 1. THEME & DISPLAY CONTROLLER (BUKAS SA LAHAT NG USERS)
+    with st.expander("🎨 Theme & Display Controller", expanded=False):
+        theme_opts = ["🌙 Dark Mode", "☀️ Light Mode", "⛪ Royal Blue Ministry"]
+        sel_theme = st.selectbox(
+            "Tema ng App (Theme):",
+            theme_opts,
+            index=theme_opts.index(st.session_state.ui_theme) if st.session_state.ui_theme in theme_opts else 0,
+            key="sb_theme_sel"
+        )
+        font_opts = ["Normal (100%)", "Large (115%)", "Extra Large (130%)"]
+        sel_font = st.selectbox(
+            "Laki ng Teksto (Font Size):",
+            font_opts,
+            index=font_opts.index(st.session_state.ui_font_size) if st.session_state.ui_font_size in font_opts else 0,
+            key="sb_font_sel"
+        )
+        dens_opts = ["Standard (Comfortable)", "Compact (Mas Maraming Data)"]
+        sel_dens = st.selectbox(
+            "Layout Spacing:",
+            dens_opts,
+            index=dens_opts.index(st.session_state.ui_density) if st.session_state.ui_density in dens_opts else 0,
+            key="sb_dens_sel"
+        )
+        if (
+            sel_theme != st.session_state.ui_theme
+            or sel_font != st.session_state.ui_font_size
+            or sel_dens != st.session_state.ui_density
+        ):
+            st.session_state.ui_theme = sel_theme
+            st.session_state.ui_font_size = sel_font
+            st.session_state.ui_density = sel_dens
+            st.rerun()
+
+    # 2. EXCLUSIVE PARA SA MASTER ADMIN LAMANG (HINDI KITA NG IBANG USERS / PARISH LEADERS)
     if st.session_state.user_role == "Master Admin":
         with st.expander("📡 Live Update & Activity Monitor", expanded=True):
             if not global_records_df.empty:
@@ -821,7 +941,7 @@ with st.sidebar:
                         else:
                             st.error(res_b)
 
-    # ADMIN VIEW SWITCHER (TANGING ANG TOTOONG NAG-LOGIN NA MASTER ADMIN LANG ANG MAKAKAKITA)
+    # 3. ADMIN VIEW SWITCHER (TANGING ANG TOTOONG NAG-LOGIN NA MASTER ADMIN LANG ANG MAKAKAKITA)
     if st.session_state.login_role == "Master Admin":
         with st.expander("🛠️ Admin View & Parish Switcher", expanded=False):
             st.caption("Silipin o kontrolin ang dashboard ng kahit anong Parokya:")
@@ -856,7 +976,8 @@ with st.sidebar:
             "📥 Parish Assigned Requests & Counselling",
             "💬 AI Chat Assistant",
             "➕ Magdagdag ng Miyembro & Litrato",
-            "🙏 Prayer Wall & Categorizer"
+            "🙏 Prayer Wall & Categorizer",
+            "🛠️ App Settings"
         ]
     app_mode = st.radio("Pumili ng Pahina:", nav_options)
     selected_model = st.selectbox("Gemini Model:", ["gemini-3.8-flash", "gemini-3.1-pro-preview"], index=0)
@@ -868,31 +989,6 @@ with st.sidebar:
     if st.button("🚪 Logout"):
         st.session_state.authenticated = False
         st.rerun()
-
-# =====================================================================
-# 📱 MOBILE & DESKTOP TOP QUICK CONTROL PANEL (PARA LAGING KITA KAHIT SA PHONE)
-# =====================================================================
-with st.expander("📱 Quick Navigation & Ministry Control Panel (Buksan kung gamit ay Phone o Nakatago ang Sidebar)", expanded=False):
-    m_col1, m_col2, m_col3 = st.columns([1.8, 1.2, 1])
-    with m_col1:
-        mobile_mode = st.selectbox(
-            "🧭 Pumili / Lumipat ng Pahina:",
-            nav_options,
-            index=nav_options.index(app_mode),
-            key="mobile_nav_select"
-        )
-        if mobile_mode != app_mode:
-            app_mode = mobile_mode
-    with m_col2:
-        st.write(f"👤 **Role:** {st.session_state.user_role}")
-        st.write(f"📍 **Parish:** {st.session_state.assigned_parish}")
-    with m_col3:
-        if st.button("🔄 Refresh Data", key="mob_ref", use_container_width=True):
-            st.cache_data.clear()
-            st.rerun()
-        if st.button("🚪 Logout Account", key="mob_out", use_container_width=True):
-            st.session_state.authenticated = False
-            st.rerun()
 
 def generate_ai_ministry_draft(service_category, sender_name, parish_name, topic, details, lang, model_name):
     valid_keys = get_valid_gemini_keys()
@@ -1429,11 +1525,15 @@ elif app_mode in ["🛡️ Master Admin Controller & Approval Queue", "📥 Pari
             "Eksklusibong Inbox at Typing Area para sa mga request na ibinigay ni Master Admin sa iyong Parokya."
         )
     
+    lang_choices = ["Tagalog", "Ilokano", "English"]
+    def_lang_idx = lang_choices.index(st.session_state.ui_default_lang) if st.session_state.ui_default_lang in lang_choices else 0
+
     top1, top2, top3 = st.columns([1.8, 1.2, 1])
     with top1:
-        def_lang = st.selectbox("🌐 Default na Wika para sa AI Draft:", ["Tagalog", "Ilokano", "English"], index=0)
+        def_lang = st.selectbox("🌐 Default na Wika para sa AI Draft:", lang_choices, index=def_lang_idx)
     with top2:
-        show_side_panel = st.checkbox("📜 Ipakita ang Records Panel sa Gilid", value=True)
+        show_side_panel = st.checkbox("📜 Ipakita ang Records Panel sa Gilid", value=st.session_state.ui_show_side_records)
+        st.session_state.ui_show_side_records = show_side_panel
     with top3:
         if st.button("🔄 I-refresh ang Data", use_container_width=True):
             st.cache_data.clear()
@@ -1665,30 +1765,92 @@ elif app_mode == "📢 Announcement Broadcaster":
     st.stop()
 
 # =====================================================================
-# 7. APP SETTINGS (KUMPLETONG 10 CREDENTIAL KEYS)
+# 7. APP SETTINGS (THEME CONTROLLER, DISPLAY PREFS & API CREDENTIALS)
 # =====================================================================
 elif app_mode == "🛠️ App Settings":
-    render_title_with_logo("App Configuration & Settings")
-    with st.form("set_form"):
-        ng = st.text_input("GEMINI_API_KEY", value=st.session_state.custom_secrets.get("GEMINI_API_KEY", ""), type="password")
-        ng2 = st.text_input("GEMINI_API_KEY_2", value=st.session_state.custom_secrets.get("GEMINI_API_KEY_2", ""), type="password")
-        nt = st.text_input("NOTION_TOKEN", value=st.session_state.custom_secrets.get("NOTION_TOKEN", ""), type="password")
-        ndb = st.text_input("NOTION_CRM_DB_ID", value=st.session_state.custom_secrets.get("NOTION_CRM_DB_ID", ""))
-        npdb = st.text_input("NOTION_PRAYER_DB_ID", value=st.session_state.custom_secrets.get("NOTION_PRAYER_DB_ID", ""))
-        nqdb = st.text_input("NOTION_QUESTIONS_DB_ID", value=st.session_state.custom_secrets.get("NOTION_QUESTIONS_DB_ID", ""))
-        ncdb = st.text_input("NOTION_COUNSELLING_DB_ID", value=st.session_state.custom_secrets.get("NOTION_COUNSELLING_DB_ID", ""))
-        gci = st.text_input("GMAIL_CLIENT_ID", value=st.session_state.custom_secrets.get("GMAIL_CLIENT_ID", ""))
-        gcs = st.text_input("GMAIL_CLIENT_SECRET", value=st.session_state.custom_secrets.get("GMAIL_CLIENT_SECRET", ""), type="password")
-        grt = st.text_input("GMAIL_REFRESH_TOKEN", value=st.session_state.custom_secrets.get("GMAIL_REFRESH_TOKEN", ""), type="password")
-        if st.form_submit_button("I-save", type="primary"):
-            st.session_state.custom_secrets = {
-                "GEMINI_API_KEY": ng, "GEMINI_API_KEY_2": ng2, "NOTION_TOKEN": nt,
-                "NOTION_CRM_DB_ID": ndb, "NOTION_PRAYER_DB_ID": npdb,
-                "NOTION_QUESTIONS_DB_ID": nqdb, "NOTION_COUNSELLING_DB_ID": ncdb,
-                "GMAIL_CLIENT_ID": gci, "GMAIL_CLIENT_SECRET": gcs, "GMAIL_REFRESH_TOKEN": grt
-            }
-            st.cache_data.clear()
-            st.success("Na-save na!"); time.sleep(1); st.rerun()
+    render_title_with_logo("🛠️ App Controller, Theme & Configuration Settings", "I-customize ang hitsura ng app (Dark/Light Mode, Font Size, Layout) at API settings.")
+
+    tab_ui, tab_api = st.tabs(["🎨 Theme, Display & App Controller", "🔑 API & Cloud Credentials (Master Admin)"])
+
+    with tab_ui:
+        st.subheader("🎛️ App Appearance & Controller Settings")
+        c_u1, c_u2 = st.columns(2)
+        with c_u1:
+            theme_list = ["🌙 Dark Mode", "☀️ Light Mode", "⛪ Royal Blue Ministry"]
+            new_ui_theme = st.radio(
+                "1. Pumili ng Kulay / Theme ng App:",
+                theme_list,
+                index=theme_list.index(st.session_state.ui_theme) if st.session_state.ui_theme in theme_list else 0
+            )
+            font_list = ["Normal (100%)", "Large (115%)", "Extra Large (130%)"]
+            new_ui_font = st.radio(
+                "2. Laki ng Teksto (Font Size Controller):",
+                font_list,
+                index=font_list.index(st.session_state.ui_font_size) if st.session_state.ui_font_size in font_list else 0
+            )
+        with c_u2:
+            dens_list = ["Standard (Comfortable)", "Compact (Mas Maraming Data)"]
+            new_ui_dens = st.radio(
+                "3. Card & Table Layout Spacing:",
+                dens_list,
+                index=dens_list.index(st.session_state.ui_density) if st.session_state.ui_density in dens_list else 0
+            )
+            lang_list = ["Tagalog", "Ilokano", "English"]
+            new_ui_lang = st.selectbox(
+                "4. Default na Wika para sa AI Drafts:",
+                lang_list,
+                index=lang_list.index(st.session_state.ui_default_lang) if st.session_state.ui_default_lang in lang_list else 0
+            )
+            new_side_rec = st.checkbox(
+                "5. Laging ipakita ang Records Panel sa gilid ng Workspace",
+                value=st.session_state.ui_show_side_records
+            )
+
+        st.divider()
+        col_btn_ui1, col_btn_ui2 = st.columns([1.5, 1.5])
+        with col_btn_ui1:
+            if st.button("✅ I-apply ang Theme at Controller Settings", type="primary", use_container_width=True):
+                st.session_state.ui_theme = new_ui_theme
+                st.session_state.ui_font_size = new_ui_font
+                st.session_state.ui_density = new_ui_dens
+                st.session_state.ui_default_lang = new_ui_lang
+                st.session_state.ui_show_side_records = new_side_rec
+                st.success("Na-update na ang Theme at App Controller!")
+                time.sleep(0.5)
+                st.rerun()
+        with col_btn_ui2:
+            if st.button("🧹 I-clear ang App Cache & Refresh Data", use_container_width=True):
+                st.cache_data.clear()
+                st.cache_resource.clear()
+                st.success("Na-clear na ang cache at na-refresh ang data!")
+                time.sleep(0.5)
+                st.rerun()
+
+    with tab_api:
+        if st.session_state.user_role != "Master Admin":
+            st.info("🔒 Ang API & Cloud Credentials ay maaari lamang baguhin ng Master Admin.")
+        else:
+            st.subheader("🔑 API Keys & Notion / Gmail Cloud Integration")
+            with st.form("set_form"):
+                ng = st.text_input("GEMINI_API_KEY", value=st.session_state.custom_secrets.get("GEMINI_API_KEY", ""), type="password")
+                ng2 = st.text_input("GEMINI_API_KEY_2", value=st.session_state.custom_secrets.get("GEMINI_API_KEY_2", ""), type="password")
+                nt = st.text_input("NOTION_TOKEN", value=st.session_state.custom_secrets.get("NOTION_TOKEN", ""), type="password")
+                ndb = st.text_input("NOTION_CRM_DB_ID", value=st.session_state.custom_secrets.get("NOTION_CRM_DB_ID", ""))
+                npdb = st.text_input("NOTION_PRAYER_DB_ID", value=st.session_state.custom_secrets.get("NOTION_PRAYER_DB_ID", ""))
+                nqdb = st.text_input("NOTION_QUESTIONS_DB_ID", value=st.session_state.custom_secrets.get("NOTION_QUESTIONS_DB_ID", ""))
+                ncdb = st.text_input("NOTION_COUNSELLING_DB_ID", value=st.session_state.custom_secrets.get("NOTION_COUNSELLING_DB_ID", ""))
+                gci = st.text_input("GMAIL_CLIENT_ID", value=st.session_state.custom_secrets.get("GMAIL_CLIENT_ID", ""))
+                gcs = st.text_input("GMAIL_CLIENT_SECRET", value=st.session_state.custom_secrets.get("GMAIL_CLIENT_SECRET", ""), type="password")
+                grt = st.text_input("GMAIL_REFRESH_TOKEN", value=st.session_state.custom_secrets.get("GMAIL_REFRESH_TOKEN", ""), type="password")
+                if st.form_submit_button("💾 I-save ang API Credentials", type="primary"):
+                    st.session_state.custom_secrets = {
+                        "GEMINI_API_KEY": ng, "GEMINI_API_KEY_2": ng2, "NOTION_TOKEN": nt,
+                        "NOTION_CRM_DB_ID": ndb, "NOTION_PRAYER_DB_ID": npdb,
+                        "NOTION_QUESTIONS_DB_ID": nqdb, "NOTION_COUNSELLING_DB_ID": ncdb,
+                        "GMAIL_CLIENT_ID": gci, "GMAIL_CLIENT_SECRET": gcs, "GMAIL_REFRESH_TOKEN": grt
+                    }
+                    st.cache_data.clear()
+                    st.success("Na-save na ang mga credentials!"); time.sleep(1); st.rerun()
     st.stop()
 
 # =====================================================================
