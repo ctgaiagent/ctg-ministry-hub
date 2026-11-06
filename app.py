@@ -1202,7 +1202,7 @@ def render_workflow_queue_section(df_source: pd.DataFrame, category_label: str, 
         st.info("Walang nahanap na request na tumutugma sa napiling filter.")
 
 # =====================================================================
-# 🧭 PARISH LEADER PORTAL (GUIDED WIZARD & SUMMARY)
+# 🧭 PARISH LEADER PORTAL (WIZARD & SUMMARY)
 # =====================================================================
 if app_mode == "🧭 Parish Leader Portal (Wizard & Summary)":
     if st.session_state.user_role == "Master Admin":
@@ -1266,6 +1266,21 @@ elif app_mode == "📊 Parish Census & Member Manager":
     st.markdown("### 📊 Quick Stats & Summary ng Aking Parokya")
     st.dataframe(summary_df, use_container_width=True, hide_index=True)
 
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    st.markdown("### 📋 MGA TALAAN NG MGA MIYEMBRO AYON SA STATUS")
+    col_act, col_inact, col_non = st.columns(3)
+    with col_act:
+        st.success(f"**ACTIVE MEMBERS ({len(df_act_list)})**")
+        st.dataframe(df_act_list, use_container_width=True, hide_index=True)
+    with col_inact:
+        st.warning(f"**INACTIVE MEMBERS ({len(df_inact_list)})**")
+        st.dataframe(df_inact_list, use_container_width=True, hide_index=True)
+    with col_non:
+        st.info(f"**NON-MEMBERS ({len(df_non_list)})**")
+        st.dataframe(df_non_list, use_container_width=True, hide_index=True)
+
+    st.divider()
     st.markdown("### 🔍 Family Search & Remarks View")
     fam_search = st.text_input("Hanapin ang Family ID o Pangalan ng Miyembro:", placeholder="Hal. CTG-PL-FAM-001").strip()
     search_df = parish_df.copy()
@@ -1641,7 +1656,7 @@ elif app_mode == "🤝 Notion CRM (Visitors & Members)":
     st.stop()
 
 # =====================================================================
-# 4. MAGDAGDAG NG MIYEMBRO & LITRATO (GOOGLE DRIVE CLOUD STORAGE)
+# 4. MAGDAGDAG NG MIYEMBRO & LITRATO
 # =====================================================================
 elif app_mode == "➕ Magdagdag ng Miyembro & Litrato":
     render_title_with_logo("Magdagdag ng Miyembro", "Mag-input ng bagong miyembro at i-save ang litrato sa iyong Google Drive cloud storage.")
@@ -1723,7 +1738,7 @@ elif app_mode == "📢 Announcement Broadcaster":
     st.stop()
 
 # =====================================================================
-# 7. APP SETTINGS (THEME CONTROLLER & API CREDENTIALS)
+# 7. APP SETTINGS
 # =====================================================================
 elif app_mode == "🛠️ App Settings":
     render_title_with_logo("🛠️ App Controller, Theme & Configuration Settings", "I-customize ang hitsura ng app at API settings.")
