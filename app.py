@@ -13,12 +13,10 @@ from google import genai
 from google.genai import types
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
 
 load_dotenv()
 
-# ==========================================
-# 🖼️ AUTOMATIC LOGO FINDER & HEADER HELPER
-# ==========================================
 def find_logo_file():
     preferred_names = [
         "logo.png", "logo.jpg", "logo.jpeg",
@@ -88,9 +86,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ==========================================
-# 🎛️ INITIALIZE UI & APP CONTROLLER STATES
-# ==========================================
 if "ui_theme" not in st.session_state:
     st.session_state.ui_theme = "🌙 Dark Mode"
 if "ui_font_size" not in st.session_state:
@@ -129,7 +124,6 @@ def apply_dynamic_app_styles():
         side_box_bg = "#FFFFFF"
         side_box_text = "#0F172A"
         side_box_border = "#CBD5E1"
-        input_bg = "#FFFFFF"
     elif "Royal Blue" in theme:
         app_bg = "#0A192F"
         sidebar_bg = "#112240"
@@ -140,9 +134,7 @@ def apply_dynamic_app_styles():
         side_box_bg = "#172A45"
         side_box_text = "#E6F1FF"
         side_box_border = "#233554"
-        input_bg = "#172A45"
     else:
-        # Default Dark Mode
         app_bg = "#0E1117"
         sidebar_bg = "#161B22"
         text_color = "#F8FAFC"
@@ -152,29 +144,17 @@ def apply_dynamic_app_styles():
         side_box_bg = "#1E293B"
         side_box_text = "#F1F5F9"
         side_box_border = "#334155"
-        input_bg = "#1E293B"
 
     st.markdown(f"""
         <style>
-        html {{
-            font-size: {base_zoom};
-        }}
-        .stApp {{
-            background-color: {app_bg} !important;
-            color: {text_color} !important;
-        }}
-        [data-testid="stSidebar"] {{
-            background-color: {sidebar_bg} !important;
-        }}
-        .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5, .stApp p, .stApp label, .stMarkdown {{
-            color: {text_color} !important;
-        }}
+        html {{ font-size: {base_zoom}; }}
+        .stApp {{ background-color: {app_bg} !important; color: {text_color} !important; }}
+        [data-testid="stSidebar"] {{ background-color: {sidebar_bg} !important; }}
+        .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5, .stApp p, .stApp label, .stMarkdown {{ color: {text_color} !important; }}
         .full-text-card {{
             background-color: {card_bg};
             border-left: 4px solid {card_border};
-            border-top: 1px solid {side_box_border};
-            border-right: 1px solid {side_box_border};
-            border-bottom: 1px solid {side_box_border};
+            border: 1px solid {side_box_border};
             padding: {card_pad};
             margin-bottom: {card_margin};
             border-radius: 8px;
@@ -183,78 +163,25 @@ def apply_dynamic_app_styles():
             word-wrap: break-word;
             font-size: {font_scale};
         }}
-        .urgent-card {{
-            background-color: #FEF2F2;
-            border-left: 4px solid #DC2626;
-            padding: {card_pad};
-            margin-bottom: {card_margin};
-            border-radius: 8px;
-            color: #7F1D1D !important;
-            white-space: pre-wrap;
-            word-wrap: break-word;
-            font-size: {font_scale};
-        }}
         .submitted-parish-badge {{
-            background-color: #ECFDF5;
-            border: 1px solid #10B981;
-            color: #065F46 !important;
-            padding: 6px 12px;
-            border-radius: 6px;
-            font-weight: 600;
-            font-size: 0.88rem;
-            margin-bottom: 8px;
-            display: inline-block;
+            background-color: #ECFDF5; border: 1px solid #10B981; color: #065F46 !important;
+            padding: 6px 12px; border-radius: 6px; font-weight: 600; font-size: 0.88rem; margin-bottom: 8px; display: inline-block;
         }}
         .assigned-parish-badge {{
-            background-color: #EFF6FF;
-            border: 1px solid #3B82F6;
-            color: #1E40AF !important;
-            padding: 6px 12px;
-            border-radius: 6px;
-            font-weight: 600;
-            font-size: 0.88rem;
-            margin-bottom: 8px;
-            display: inline-block;
+            background-color: #EFF6FF; border: 1px solid #3B82F6; color: #1E40AF !important;
+            padding: 6px 12px; border-radius: 6px; font-weight: 600; font-size: 0.88rem; margin-bottom: 8px; display: inline-block;
         }}
         .records-side-box {{
-            background-color: {side_box_bg};
-            border: 1px solid {side_box_border};
-            border-top: 4px solid #0F766E;
-            padding: {card_pad};
-            border-radius: 8px;
-            margin-bottom: {card_margin};
-            color: {side_box_text} !important;
-            font-size: 0.88rem;
+            background-color: {side_box_bg}; border: 1px solid {side_box_border}; border-top: 4px solid #0F766E;
+            padding: {card_pad}; border-radius: 8px; margin-bottom: {card_margin}; color: {side_box_text} !important; font-size: 0.88rem;
         }}
-        .sidebar-log-card {{
-            background-color: {side_box_bg};
-            border-left: 3px solid #38BDF8;
-            border-top: 1px solid {side_box_border};
-            border-right: 1px solid {side_box_border};
-            border-bottom: 1px solid {side_box_border};
-            padding: 8px 10px;
-            border-radius: 5px;
-            margin-bottom: 6px;
-            color: {side_box_text} !important;
-            font-size: 0.80rem;
-        }}
-        /* Siguraduhing laging litaw ang Sidebar (>> / <<) Toggle Button sa Desktop at Phone */
         [data-testid="collapsedControl"], [data-testid="stSidebarCollapseButton"] {{
-            display: flex !important;
-            visibility: visible !important;
-            opacity: 1 !important;
-            z-index: 999999 !important;
-            background-color: #1E3A8A !important;
-            color: #FFFFFF !important;
-            border-radius: 8px !important;
-            padding: 4px !important;
-            margin: 6px !important;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.45) !important;
+            display: flex !important; visibility: visible !important; opacity: 1 !important; z-index: 999999 !important;
+            background-color: #1E3A8A !important; color: #FFFFFF !important; border-radius: 8px !important; padding: 4px !important; margin: 6px !important;
         }}
         [data-testid="stAppDeployButton"] {{ display: none !important; }}
         #MainMenu {{ visibility: hidden !important; display: none !important; }}
         footer {{ visibility: hidden !important; display: none !important; }}
-        .viewerBadge_container__1QSob, .styles_viewerBadge__1yB5_, .viewerBadge_link__1S137, .viewerBadge_text__1JaDK {{ display: none !important; }}
         </style>
     """, unsafe_allow_html=True)
 
@@ -645,6 +572,28 @@ def safe_generate_content(client, model, contents, config=None):
                     break
     raise Exception(f"Gemini API Error: {last_err}")
 
+def upload_file_to_google_drive(file_bytes, filename, mime_type="image/jpeg"):
+    g_id = get_secret("GMAIL_CLIENT_ID")
+    g_sec = get_secret("GMAIL_CLIENT_SECRET")
+    g_ref = get_secret("GMAIL_REFRESH_TOKEN")
+    if not all([g_id, g_sec, g_ref]):
+        return None, "Error: Kulang ang Google Drive/Gmail credentials sa App Settings."
+    try:
+        creds = Credentials(
+            token=None,
+            refresh_token=g_ref.strip(),
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=g_id.strip(),
+            client_secret=g_sec.strip()
+        )
+        service = build("drive", "v3", credentials=creds)
+        file_metadata = {'name': filename}
+        media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype=mime_type, resumable=True)
+        file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
+        return file.get('webViewLink'), "Matagumpay na na-upload sa Google Drive!"
+    except Exception as e:
+        return None, f"Google Drive Upload Error: {str(e)}"
+
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 if "user_role" not in st.session_state:
@@ -793,9 +742,6 @@ if "custom_secrets" not in st.session_state:
         "GMAIL_REFRESH_TOKEN": GMAIL_REFRESH_TOKEN,
     }
 
-# =====================================================================
-# 📜 HELPER PARA SA RECORDS, LIVE DASHBOARD, AT CLOUD BACKUP
-# =====================================================================
 def build_combined_records_df(df_p: pd.DataFrame, df_q: pd.DataFrame, df_co: pd.DataFrame) -> pd.DataFrame:
     records = []
     sources = [
@@ -850,7 +796,7 @@ df_crm_global, df_p_global, df_q_global, df_co_global = load_all_ministry_DataFr
 global_records_df = build_combined_records_df(df_p_global, df_q_global, df_co_global)
 
 # =====================================================================
-# ⚙️ SIDEBAR CONTROL PANEL (MASTER ADMIN EXCLUSIVE + THEME CONTROLLER)
+# ⚙️ SIDEBAR CONTROL PANEL
 # =====================================================================
 with st.sidebar:
     if LOGO_PATH and os.path.exists(LOGO_PATH): st.image(LOGO_PATH, width=85)
@@ -858,40 +804,6 @@ with st.sidebar:
     st.write(f"👤 Role: **{st.session_state.user_role}**")
     st.info(f"📍 Parish Access:\n**{st.session_state.assigned_parish}**")
 
-    # 1. THEME & DISPLAY CONTROLLER (BUKAS SA LAHAT NG USERS)
-    with st.expander("🎨 Theme & Display Controller", expanded=False):
-        theme_opts = ["🌙 Dark Mode", "☀️ Light Mode", "⛪ Royal Blue Ministry"]
-        sel_theme = st.selectbox(
-            "Tema ng App (Theme):",
-            theme_opts,
-            index=theme_opts.index(st.session_state.ui_theme) if st.session_state.ui_theme in theme_opts else 0,
-            key="sb_theme_sel"
-        )
-        font_opts = ["Normal (100%)", "Large (115%)", "Extra Large (130%)"]
-        sel_font = st.selectbox(
-            "Laki ng Teksto (Font Size):",
-            font_opts,
-            index=font_opts.index(st.session_state.ui_font_size) if st.session_state.ui_font_size in font_opts else 0,
-            key="sb_font_sel"
-        )
-        dens_opts = ["Standard (Comfortable)", "Compact (Mas Maraming Data)"]
-        sel_dens = st.selectbox(
-            "Layout Spacing:",
-            dens_opts,
-            index=dens_opts.index(st.session_state.ui_density) if st.session_state.ui_density in dens_opts else 0,
-            key="sb_dens_sel"
-        )
-        if (
-            sel_theme != st.session_state.ui_theme
-            or sel_font != st.session_state.ui_font_size
-            or sel_dens != st.session_state.ui_density
-        ):
-            st.session_state.ui_theme = sel_theme
-            st.session_state.ui_font_size = sel_font
-            st.session_state.ui_density = sel_dens
-            st.rerun()
-
-    # 2. EXCLUSIVE PARA SA MASTER ADMIN LAMANG (HINDI KITA NG IBANG USERS / PARISH LEADERS)
     if st.session_state.user_role == "Master Admin":
         with st.expander("📡 Live Update & Activity Monitor", expanded=True):
             if not global_records_df.empty:
@@ -941,7 +853,6 @@ with st.sidebar:
                         else:
                             st.error(res_b)
 
-    # 3. ADMIN VIEW SWITCHER (TANGING ANG TOTOONG NAG-LOGIN NA MASTER ADMIN LANG ANG MAKAKAKITA)
     if st.session_state.login_role == "Master Admin":
         with st.expander("🛠️ Admin View & Parish Switcher", expanded=False):
             st.caption("Silipin o kontrolin ang dashboard ng kahit anong Parokya:")
@@ -972,11 +883,11 @@ with st.sidebar:
         ]
     else:
         nav_options = [
-            "📊 Parish Directory & Family Search",
-            "📥 Parish Assigned Requests & Counselling",
+            "🧭 Parish Leader Portal (Wizard & Summary)",
+            "📥 Parish Inbox & Action Hub",
+            "📊 Parish Census & Member Manager",
             "💬 AI Chat Assistant",
             "➕ Magdagdag ng Miyembro & Litrato",
-            "🙏 Prayer Wall & Categorizer",
             "🛠️ App Settings"
         ]
     app_mode = st.radio("Pumili ng Pahina:", nav_options)
@@ -1005,9 +916,6 @@ def generate_ai_ministry_draft(service_category, sender_name, parish_name, topic
     res = safe_generate_content(client, model_name, prompt)
     return res.text
 
-# =====================================================================
-# 🛠️ WORKFLOW QUEUE CARDS (INBOX AREA + TYPING AREA + PARISH TRACKING)
-# =====================================================================
 def render_workflow_queue_section(df_source: pd.DataFrame, category_label: str, key_prefix: str, default_lang: str):
     if df_source.empty:
         st.info(f"Walang nakitang rekord para sa **{category_label}**.")
@@ -1073,7 +981,6 @@ def render_workflow_queue_section(df_source: pd.DataFrame, category_label: str, 
         admin_status = get_first_non_empty(row, ["Admin Status", "Approval Status", "Status"], "Pending Review")
         handled_by = get_first_non_empty(row, ["Approved By", "Reviewed By", "Handled By", "Submitted By"], "")
 
-        # STRICT PARISH ISOLATION: Tanging ang parokyang nakatalaga lang ang makakakita
         if not is_master and not normalize_parish_match(parish, st.session_state.assigned_parish):
             continue
 
@@ -1295,9 +1202,83 @@ def render_workflow_queue_section(df_source: pd.DataFrame, category_label: str, 
         st.info("Walang nahanap na request na tumutugma sa napiling filter.")
 
 # =====================================================================
+# 🧭 PARISH LEADER PORTAL (GUIDED WIZARD & SUMMARY)
+# =====================================================================
+if app_mode == "🧭 Parish Leader Portal (Wizard & Summary)":
+    if st.session_state.user_role == "Master Admin":
+        render_title_with_logo(f"Parish Portal Overview — {st.session_state.assigned_parish}", "Guided workflow at summary para sa parokya.")
+    else:
+        render_title_with_logo(f"📍 Parish Workspace: {st.session_state.assigned_parish}", "Maligayang pagdating sa iyong pang-araw-araw na gabay at ministry portal.")
+
+    df_crm, df_p, df_q, df_co = df_crm_global, df_p_global, df_q_global, df_co_global
+    records_master_df = global_records_df
+
+    p_records = records_master_df[records_master_df["Parokya"].apply(lambda x: normalize_parish_match(x, st.session_state.assigned_parish))] if not records_master_df.empty else pd.DataFrame()
+    pending_p_count = len(p_records[p_records["Status"].str.contains("Assigned", case=False, na=False)]) if not p_records.empty else 0
+
+    st.markdown("### 📋 Daily Action Checklist (Pang-araw-araw na Gabay)")
+    chk1 = st.checkbox(f"1. Mayroon kang ({pending_p_count}) bagong request o panalangin na nakatalaga sa iyong parokya.", value=(pending_p_count > 0))
+    chk2 = st.checkbox("2. I-check ang listahan ng mga bisita at miyembro ngayong linggo sa Parish Census tab.", value=False)
+    chk3 = st.checkbox("3. Magpadala ng ulat o sumulat ng tugon gamit ang AI Assistant kung kinakailangan.", value=False)
+
+    if chk1 and pending_p_count > 0:
+        if st.button("👉 Pumunta sa Parish Inbox para Tugunan", type="primary"):
+            st.session_state.app_mode_override = "📥 Parish Inbox & Action Hub"
+            st.rerun()
+
+    st.divider()
+    st.markdown("### 🤖 Guided AI Assistant para sa Parish Leader")
+    st.caption("Magtanong dito kung paano kakausapin ang mga miyembro, humingi ng ideya sa Bible study, o gabay sa pamumuno.")
+    with st.form("wizard_ai_form"):
+        w_prompt = st.text_input("Magtanong sa CTG Gabay AI:", placeholder="Hal. Paano ko hihikayatin ang mga kabataan na sumali sa fellowship?")
+        w_submit = st.form_submit_button("Humingi ng Gabay sa AI", use_container_width=True)
+        if w_submit and w_prompt:
+            client = genai.Client(api_key=get_valid_gemini_keys()[0])
+            ans = safe_generate_content(client, selected_model, f"Bilang isang tagapayo sa simbahan ng CTG sa parokya ng {st.session_state.assigned_parish}, sagutin ito nang may malasakit at gabay sa Bibliya sa wikang Tagalog: {w_prompt}")
+            st.success("Gabay mula sa AI:")
+            st.markdown(ans.text)
+    st.stop()
+
+# =====================================================================
+# 📥 PARISH INBOX & ACTION HUB (MINIMALIST & TASK-FOCUSED)
+# =====================================================================
+elif app_mode == "📥 Parish Inbox & Action Hub":
+    render_title_with_logo(f"📍 Parish Workspace: {st.session_state.assigned_parish}", "Task-focused inbox para sa pagtugon sa mga nag-aabang ng tulong o dasal.")
+    df_crm, df_p, df_q, df_co = df_crm_global, df_p_global, df_q_global, df_co_global
+    tp, tq, tc = st.tabs(["🙏 Prayer Requests", "📖 Church Questions", "🤝 Counselling"])
+    with tp: render_workflow_queue_section(df_p, "Prayer Request", "p_inbox", "Tagalog")
+    with tq: render_workflow_queue_section(df_q, "Church Question", "q_inbox", "Tagalog")
+    with tc: render_workflow_queue_section(df_co, "Counselling Request", "c_inbox", "Tagalog")
+    st.stop()
+
+# =====================================================================
+# 📊 PARISH CENSUS & MEMBER MANAGER (DATA-DRIVEN DASHBOARD)
+# =====================================================================
+elif app_mode == "📊 Parish Census & Member Manager":
+    render_title_with_logo(f"📊 Parish Census & Member Manager — {st.session_state.assigned_parish}", "Subaybayan ang mga miyembro, pamilya, at mga talaan.")
+    if master_members_df.empty:
+        st.error("Walang nakitang Excel database para sa mga miyembro.")
+        st.stop()
+
+    parish_df = master_members_df[master_members_df["Parish"] == st.session_state.assigned_parish].copy()
+    summary_df, df_act_list, df_inact_list, df_non_list = build_status_summary_and_lists(parish_df)
+
+    st.markdown("### 📊 Quick Stats & Summary ng Aking Parokya")
+    st.dataframe(summary_df, use_container_width=True, hide_index=True)
+
+    st.markdown("### 🔍 Family Search & Remarks View")
+    fam_search = st.text_input("Hanapin ang Family ID o Pangalan ng Miyembro:", placeholder="Hal. CTG-PL-FAM-001").strip()
+    search_df = parish_df.copy()
+    if fam_search:
+        search_df = search_df[search_df.astype(str).apply(lambda x: x.str.contains(fam_search, case=False, na=False)).any(axis=1)]
+
+    st.dataframe(search_df, use_container_width=True, hide_index=True)
+    st.stop()
+
+# =====================================================================
 # 📈 PAGE 0: LIVE ACTIVITY & UPDATE DASHBOARD (MASTER ADMIN ONLY)
 # =====================================================================
-if app_mode == "📈 Live Activity & Update Dashboard":
+elif app_mode == "📈 Live Activity & Update Dashboard":
     if st.session_state.user_role != "Master Admin":
         st.error("Ang pahinang ito ay para lamang sa Master Admin.")
         st.stop()
@@ -1405,7 +1386,7 @@ if app_mode == "📈 Live Activity & Update Dashboard":
     st.stop()
 
 # =====================================================================
-# 1. PARISH DIRECTORY & FAMILY SEARCH (KUMPLETONG ORIGINAL VIEW + REMARKS)
+# 1. PARISH DIRECTORY & FAMILY SEARCH
 # =====================================================================
 elif app_mode == "📊 Parish Directory & Family Search":
     render_title_with_logo("CHURCH OF THE TEMPLE OF GOD — SEARCH FAMILY / PARISH")
@@ -1511,29 +1492,19 @@ elif app_mode == "📊 Parish Directory & Family Search":
     st.stop()
 
 # =====================================================================
-# 2. MASTER ADMIN CONTROLLER / PARISH ASSIGNED WORKSPACE + SIDE PANEL
+# 2. MASTER ADMIN CONTROLLER / APPROVAL HUB
 # =====================================================================
-elif app_mode in ["🛡️ Master Admin Controller & Approval Queue", "📥 Parish Assigned Requests & Counselling"]:
-    if st.session_state.user_role == "Master Admin":
-        render_title_with_logo(
-            "Master Admin Controller & Approval Hub",
-            "Ipasa ang mga request sa kaukulang Parokya, tingnan kung sino ang nag-submit, at i-approve/i-send sa Gmail o SMS."
-        )
-    else:
-        render_title_with_logo(
-            f"Parish Workspace — {st.session_state.assigned_parish}",
-            "Eksklusibong Inbox at Typing Area para sa mga request na ibinigay ni Master Admin sa iyong Parokya."
-        )
+elif app_mode == "🛡️ Master Admin Controller & Approval Queue":
+    render_title_with_logo(
+        "Master Admin Controller & Approval Hub",
+        "Ipasa ang mga request sa kaukulang Parokya, tingnan kung sino ang nag-submit, at i-approve/i-send sa Gmail o SMS."
+    )
     
-    lang_choices = ["Tagalog", "Ilokano", "English"]
-    def_lang_idx = lang_choices.index(st.session_state.ui_default_lang) if st.session_state.ui_default_lang in lang_choices else 0
-
     top1, top2, top3 = st.columns([1.8, 1.2, 1])
     with top1:
-        def_lang = st.selectbox("🌐 Default na Wika para sa AI Draft:", lang_choices, index=def_lang_idx)
+        def_lang = st.selectbox("🌐 Default na Wika para sa AI Draft:", ["Tagalog", "Ilokano", "English"], index=0)
     with top2:
-        show_side_panel = st.checkbox("📜 Ipakita ang Records Panel sa Gilid", value=st.session_state.ui_show_side_records)
-        st.session_state.ui_show_side_records = show_side_panel
+        show_side_panel = st.checkbox("📜 Ipakita ang Records Panel sa Gilid", value=True)
     with top3:
         if st.button("🔄 I-refresh ang Data", use_container_width=True):
             st.cache_data.clear()
@@ -1570,12 +1541,9 @@ elif app_mode in ["🛡️ Master Admin Controller & Approval Queue", "📥 Pari
             "📜 Buong Records & Requester Info",
             "📋 All CRM"
         ])
-        with tp:
-            render_workflow_queue_section(df_p, "Prayer Request", "pray", def_lang)
-        with tq:
-            render_workflow_queue_section(df_q, "Church Question", "qna", def_lang)
-        with tc:
-            render_workflow_queue_section(df_co, "Counselling Request", "counsel", def_lang)
+        with tp: render_workflow_queue_section(df_p, "Prayer Request", "pray", def_lang)
+        with tq: render_workflow_queue_section(df_q, "Church Question", "qna", def_lang)
+        with tc: render_workflow_queue_section(df_co, "Counselling Request", "counsel", def_lang)
         with trec:
             st.subheader("📜 Kumpletong Talaan ng mga Nagawa at Impormasyon ng mga Nag-request")
             if records_master_df.empty:
@@ -1609,10 +1577,7 @@ elif app_mode in ["🛡️ Master Admin Controller & Approval Queue", "📥 Pari
 
                 st.dataframe(df_view_rec, use_container_width=True, hide_index=True)
         with tcrm:
-            if st.session_state.user_role == "Master Admin":
-                st.dataframe(df_crm.drop(columns=["_page_id", "_last_edited", "_created_time"], errors="ignore"), use_container_width=True, hide_index=True)
-            else:
-                st.info("Ang buong Central CRM table ay para sa Master Admin. Gamitin ang Records tab para sa iyong parokya.")
+            st.dataframe(df_crm.drop(columns=["_page_id", "_last_edited", "_created_time"], errors="ignore"), use_container_width=True, hide_index=True)
 
     if col_side_records is not None:
         with col_side_records:
@@ -1657,16 +1622,10 @@ elif app_mode in ["🛡️ Master Admin Controller & Approval Queue", "📥 Pari
                         f"</div>",
                         unsafe_allow_html=True
                     )
-                    with st.expander(f"🔍 Buong Detalye at Tugon — {r_item['Pangalan ng Nag-request']}"):
-                        st.write(f"**🏠 Tirahan:** {r_item['Tirahan']}")
-                        st.write(f"**⛪ Katayuan:** {r_item['Katayuan sa Simbahan']} | **📅 Petsa:** {r_item['Petsa ng Request']}")
-                        st.write(f"**⏱️ Huling Update:** {r_item['Huling Na-update']}")
-                        st.markdown(f"**💬 Kahilingan / Tanong:**\n> {r_item['Detalye ng Request']}")
-                        st.markdown(f"**✉️ Tugon / AI Draft:**\n> {r_item['Tugon / AI Draft'] or 'Wala pang tugon.'}")
     st.stop()
 
 # =====================================================================
-# 3. NOTION CRM (VISITORS & MEMBERS) — FULL READABLE TEXT & CARDS
+# 3. NOTION CRM (VISITORS & MEMBERS)
 # =====================================================================
 elif app_mode == "🤝 Notion CRM (Visitors & Members)":
     render_title_with_logo("Church CRM: Visitors & Members (Notion)")
@@ -1679,25 +1638,13 @@ elif app_mode == "🤝 Notion CRM (Visitors & Members)":
         q = st.text_input("🔍 Search CRM:").strip()
         if q: disp = disp[disp.astype(str).apply(lambda x: x.str.contains(q, case=False, na=False)).any(axis=1)]
         st.dataframe(disp, use_container_width=True, hide_index=True)
-        st.divider()
-        st.subheader("📖 Buong Detalye ng Bawat Rekord sa Notion CRM (Full View)")
-        for idx, row in disp.iterrows():
-            first_col = disp.columns[0]
-            title_val = str(row[first_col]).strip() or f"Record #{idx + 1}"
-            details_html = f"<div class='full-text-card'><b>📌 {title_val}</b><br><hr style='margin:6px 0;'>"
-            for c_name in disp.columns:
-                val_str = str(row[c_name]).strip()
-                if val_str:
-                    details_html += f"<b>• {c_name}:</b> {val_str}<br>"
-            details_html += "</div>"
-            st.markdown(details_html, unsafe_allow_html=True)
     st.stop()
 
 # =====================================================================
-# 4. MAGDAGDAG NG MIYEMBRO & LITRATO
+# 4. MAGDAGDAG NG MIYEMBRO & LITRATO (GOOGLE DRIVE CLOUD STORAGE)
 # =====================================================================
 elif app_mode == "➕ Magdagdag ng Miyembro & Litrato":
-    render_title_with_logo("Magdagdag ng Miyembro", "Mag-input ng bagong miyembro.")
+    render_title_with_logo("Magdagdag ng Miyembro", "Mag-input ng bagong miyembro at i-save ang litrato sa iyong Google Drive cloud storage.")
     with st.form("add_form"):
         c1, c2 = st.columns(2)
         with c1:
@@ -1711,22 +1658,33 @@ elif app_mode == "➕ Magdagdag ng Miyembro & Litrato":
             m_cat = st.selectbox("Kategorya:", ["KIDS", "YOUTH", "ADULT", "SENIOR CITIZEN"])
             m_st = st.selectbox("Status:", ["ACTIVE", "INACTIVE", "NON-MEMBER"])
             m_con = st.text_input("Contact Number:")
-            pho = st.file_uploader("Litrato:", type=["jpg", "png", "jpeg"])
+            pho = st.file_uploader("Litrato (Direktang i-save sa Google Drive):", type=["jpg", "png", "jpeg"])
         m_rem = st.text_area("Remarks / Tala para sa Miyembro:")
-        if st.form_submit_button("I-save", type="primary"):
+        if st.form_submit_button("I-save at I-upload sa Google Drive", type="primary"):
             if fid and fn:
+                drive_link_text = "Walang inilakip na litrato."
+                if pho is not None:
+                    with st.spinner("Ina-upload ang litrato sa iyong Google Drive..."):
+                        file_bytes = pho.read()
+                        link, msg = upload_file_to_google_drive(file_bytes, f"CTG_Member_{fid}_{fn}.jpg", pho.type)
+                        if link:
+                            drive_link_text = f"Google Drive Link: {link}"
+                            st.success(f"✅ Matagumpay na na-upload ang litrato sa Google Drive! ([Buksan ang Link]({link}))")
+                        else:
+                            st.warning(f"⚠️ {msg} (Nai-save pa rin ang rekord nang walang litrato sa drive)")
+
                 st.success(f"Naidagdag si **{fn}** sa pamilyang `{fid}` ({mp})!")
                 backup_action_to_admin_cloud(
-                    "New Member Added",
+                    "New Member Added & Cloud Photo",
                     fn,
                     mp,
                     f"Family ID: {fid}",
-                    f"Head: {m_head} | Rel: {m_rel} | Sex: {m_sex} | Cat: {m_cat} | Status: {m_st} | Contact: {m_con}",
+                    f"Head: {m_head} | Rel: {m_rel} | Contact: {m_con} | {drive_link_text}",
                     f"Remarks: {m_rem}",
                     st.session_state.assigned_parish
                 )
-                if pho is not None:
-                    st.image(pho, caption=f"Litrato ni {fn}", width=150)
+                if pho is not None and 'link' in locals() and link:
+                    st.image(pho, caption=f"Litrato ni {fn} (Naka-save sa Drive)", width=180)
             else:
                 st.warning("Punan ang Family ID at Pangalan.")
     st.stop()
@@ -1765,12 +1723,12 @@ elif app_mode == "📢 Announcement Broadcaster":
     st.stop()
 
 # =====================================================================
-# 7. APP SETTINGS (THEME CONTROLLER, DISPLAY PREFS & API CREDENTIALS)
+# 7. APP SETTINGS (THEME CONTROLLER & API CREDENTIALS)
 # =====================================================================
 elif app_mode == "🛠️ App Settings":
-    render_title_with_logo("🛠️ App Controller, Theme & Configuration Settings", "I-customize ang hitsura ng app (Dark/Light Mode, Font Size, Layout) at API settings.")
+    render_title_with_logo("🛠️ App Controller, Theme & Configuration Settings", "I-customize ang hitsura ng app at API settings.")
 
-    tab_ui, tab_api = st.tabs(["🎨 Theme, Display & App Controller", "🔑 API & Cloud Credentials (Master Admin)"])
+    tab_ui, tab_api = st.tabs(["🎨 Theme, Display & App Controller", "🔑 API & Google Drive / Gmail Credentials"])
 
     with tab_ui:
         st.subheader("🎛️ App Appearance & Controller Settings")
@@ -1807,30 +1765,21 @@ elif app_mode == "🛠️ App Settings":
             )
 
         st.divider()
-        col_btn_ui1, col_btn_ui2 = st.columns([1.5, 1.5])
-        with col_btn_ui1:
-            if st.button("✅ I-apply ang Theme at Controller Settings", type="primary", use_container_width=True):
-                st.session_state.ui_theme = new_ui_theme
-                st.session_state.ui_font_size = new_ui_font
-                st.session_state.ui_density = new_ui_dens
-                st.session_state.ui_default_lang = new_ui_lang
-                st.session_state.ui_show_side_records = new_side_rec
-                st.success("Na-update na ang Theme at App Controller!")
-                time.sleep(0.5)
-                st.rerun()
-        with col_btn_ui2:
-            if st.button("🧹 I-clear ang App Cache & Refresh Data", use_container_width=True):
-                st.cache_data.clear()
-                st.cache_resource.clear()
-                st.success("Na-clear na ang cache at na-refresh ang data!")
-                time.sleep(0.5)
-                st.rerun()
+        if st.button("✅ I-apply ang Theme at Controller Settings", type="primary", use_container_width=True):
+            st.session_state.ui_theme = new_ui_theme
+            st.session_state.ui_font_size = new_ui_font
+            st.session_state.ui_density = new_ui_dens
+            st.session_state.ui_default_lang = new_ui_lang
+            st.session_state.ui_show_side_records = new_side_rec
+            st.success("Na-update na ang Theme at App Controller!")
+            time.sleep(0.5)
+            st.rerun()
 
     with tab_api:
         if st.session_state.user_role != "Master Admin":
-            st.info("🔒 Ang API & Cloud Credentials ay maaari lamang baguhin ng Master Admin.")
+            st.info("🔒 Ang API & Google Drive Cloud Storage credentials ay maaari lamang baguhin ng Master Admin.")
         else:
-            st.subheader("🔑 API Keys & Notion / Gmail Cloud Integration")
+            st.subheader("🔑 API Keys & Google Drive / Gmail Cloud Storage Integration")
             with st.form("set_form"):
                 ng = st.text_input("GEMINI_API_KEY", value=st.session_state.custom_secrets.get("GEMINI_API_KEY", ""), type="password")
                 ng2 = st.text_input("GEMINI_API_KEY_2", value=st.session_state.custom_secrets.get("GEMINI_API_KEY_2", ""), type="password")
@@ -1842,7 +1791,7 @@ elif app_mode == "🛠️ App Settings":
                 gci = st.text_input("GMAIL_CLIENT_ID", value=st.session_state.custom_secrets.get("GMAIL_CLIENT_ID", ""))
                 gcs = st.text_input("GMAIL_CLIENT_SECRET", value=st.session_state.custom_secrets.get("GMAIL_CLIENT_SECRET", ""), type="password")
                 grt = st.text_input("GMAIL_REFRESH_TOKEN", value=st.session_state.custom_secrets.get("GMAIL_REFRESH_TOKEN", ""), type="password")
-                if st.form_submit_button("💾 I-save ang API Credentials", type="primary"):
+                if st.form_submit_button("💾 I-save ang API & Cloud Credentials", type="primary"):
                     st.session_state.custom_secrets = {
                         "GEMINI_API_KEY": ng, "GEMINI_API_KEY_2": ng2, "NOTION_TOKEN": nt,
                         "NOTION_CRM_DB_ID": ndb, "NOTION_PRAYER_DB_ID": npdb,
