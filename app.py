@@ -751,7 +751,7 @@ df_crm_global, df_p_global, df_q_global, df_co_global = load_all_ministry_DataFr
 global_records_df = build_combined_records_df(df_p_global, df_q_global, df_co_global)
 
 # =====================================================================
-# ⚙️ SIDEBAR CONTROL PANEL, LIVE MONITOR & CLOUD BACKUP CENTER
+# ⚙️ SIDEBAR CONTROL PANEL (MASTER ADMIN EXCLUSIVE PARA SA MONITOR & BACKUP)
 # =====================================================================
 with st.sidebar:
     if LOGO_PATH and os.path.exists(LOGO_PATH): st.image(LOGO_PATH, width=85)
@@ -759,57 +759,57 @@ with st.sidebar:
     st.write(f"👤 Role: **{st.session_state.user_role}**")
     st.info(f"📍 Parish Access:\n**{st.session_state.assigned_parish}**")
 
-    # 1. SIDEBAR LIVE ACTIVITY & UPDATE MONITOR
-    with st.expander("📡 Live Update & Activity Monitor", expanded=True):
-        if not global_records_df.empty:
-            c_s1, c_s2 = st.columns(2)
-            cnt_sub = len(global_records_df[global_records_df["Status"].str.contains("For Master Admin Approval", case=False, na=False)])
-            cnt_ass = len(global_records_df[global_records_df["Status"].str.contains("Assigned to Parish Leader", case=False, na=False)])
-            c_s1.metric("📥 For Approval", cnt_sub)
-            c_s2.metric("📤 Assigned", cnt_ass)
-            st.caption("🔔 **Pinakahuling Galaw / Updates:**")
-            for _, l_row in global_records_df.head(3).iterrows():
-                st.markdown(
-                    f"<div class='sidebar-log-card'>"
-                    f"<b>{l_row['Pangalan ng Nag-request']}</b> ({l_row['Parokya']})<br>"
-                    f"📊 {l_row['Status']}<br>"
-                    f"🏛️ {l_row['Isinumite / Inaprubahan Ni']}"
-                    f"</div>",
-                    unsafe_allow_html=True
-                )
-        else:
-            st.caption("Wala pang aktibong rekord.")
-
-    # 2. SIDEBAR CLOUD BACKUP & GOOGLE DRIVE SAFE CENTER
-    with st.expander(f"☁️ Cloud Backup ({BACKUP_ADMIN_EMAIL})", expanded=False):
-        st.session_state.auto_cloud_backup = st.checkbox(
-            "Auto-save bawat update sa Gmail Cloud",
-            value=st.session_state.auto_cloud_backup
-        )
-        if not global_records_df.empty:
-            csv_bytes = global_records_df.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                label="📥 Download CSV (Para sa Google Drive)",
-                data=csv_bytes,
-                file_name=f"CTG_Ministry_Backup_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
-            if st.button("📧 I-email ang Buong Backup sa Gmail Ko", use_container_width=True):
-                with st.spinner("Ipinapadala sa clarojerald16@gmail.com..."):
-                    res_b = send_email_via_gmail(
-                        BACKUP_ADMIN_EMAIL,
-                        f"CTG Full Database Backup — {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-                        f"Narito ang kumpletong CSV backup ng lahat ng CTG Ministry Hub records ({len(global_records_df)} rows).",
-                        attachment_bytes=csv_bytes,
-                        attachment_filename=f"CTG_Full_Backup_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"
+    # EXCLUSIVE PARA SA MASTER ADMIN LAMANG (HINDI KITA NG IBANG USERS / PARISH LEADERS)
+    if st.session_state.user_role == "Master Admin":
+        with st.expander("📡 Live Update & Activity Monitor", expanded=True):
+            if not global_records_df.empty:
+                c_s1, c_s2 = st.columns(2)
+                cnt_sub = len(global_records_df[global_records_df["Status"].str.contains("For Master Admin Approval", case=False, na=False)])
+                cnt_ass = len(global_records_df[global_records_df["Status"].str.contains("Assigned to Parish Leader", case=False, na=False)])
+                c_s1.metric("📥 For Approval", cnt_sub)
+                c_s2.metric("📤 Assigned", cnt_ass)
+                st.caption("🔔 **Pinakahuling Galaw / Updates:**")
+                for _, l_row in global_records_df.head(3).iterrows():
+                    st.markdown(
+                        f"<div class='sidebar-log-card'>"
+                        f"<b>{l_row['Pangalan ng Nag-request']}</b> ({l_row['Parokya']})<br>"
+                        f"📊 {l_row['Status']}<br>"
+                        f"🏛️ {l_row['Isinumite / Inaprubahan Ni']}"
+                        f"</div>",
+                        unsafe_allow_html=True
                     )
-                    if "Matagumpay" in res_b:
-                        st.success("Naipadala sa clarojerald16@gmail.com!")
-                    else:
-                        st.error(res_b)
+            else:
+                st.caption("Wala pang aktibong rekord.")
 
-    # 3. SIDEBAR ROLE & PARISH SWITCHER (PARA SA MASTER ADMIN)
+        with st.expander(f"☁️ Cloud Backup ({BACKUP_ADMIN_EMAIL})", expanded=False):
+            st.session_state.auto_cloud_backup = st.checkbox(
+                "Auto-save bawat update sa Gmail Cloud",
+                value=st.session_state.auto_cloud_backup
+            )
+            if not global_records_df.empty:
+                csv_bytes = global_records_df.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    label="📥 Download CSV (Para sa Google Drive)",
+                    data=csv_bytes,
+                    file_name=f"CTG_Ministry_Backup_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+                if st.button("📧 I-email ang Buong Backup sa Gmail Ko", use_container_width=True):
+                    with st.spinner("Ipinapadala sa clarojerald16@gmail.com..."):
+                        res_b = send_email_via_gmail(
+                            BACKUP_ADMIN_EMAIL,
+                            f"CTG Full Database Backup — {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                            f"Narito ang kumpletong CSV backup ng lahat ng CTG Ministry Hub records ({len(global_records_df)} rows).",
+                            attachment_bytes=csv_bytes,
+                            attachment_filename=f"CTG_Full_Backup_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"
+                        )
+                        if "Matagumpay" in res_b:
+                            st.success("Naipadala sa clarojerald16@gmail.com!")
+                        else:
+                            st.error(res_b)
+
+    # ADMIN VIEW SWITCHER (TANGING ANG TOTOONG NAG-LOGIN NA MASTER ADMIN LANG ANG MAKAKAKITA)
     if st.session_state.login_role == "Master Admin":
         with st.expander("🛠️ Admin View & Parish Switcher", expanded=False):
             st.caption("Silipin o kontrolin ang dashboard ng kahit anong Parokya:")
@@ -840,7 +840,6 @@ with st.sidebar:
         ]
     else:
         nav_options = [
-            "📈 Live Activity & Update Dashboard",
             "📊 Parish Directory & Family Search",
             "📥 Parish Assigned Requests & Counselling",
             "💬 AI Chat Assistant",
@@ -1163,9 +1162,13 @@ def render_workflow_queue_section(df_source: pd.DataFrame, category_label: str, 
         st.info("Walang nahanap na request na tumutugma sa napiling filter.")
 
 # =====================================================================
-# 📈 PAGE 0: LIVE ACTIVITY & UPDATE DASHBOARD + CLOUD BACKUP CENTER
+# 📈 PAGE 0: LIVE ACTIVITY & UPDATE DASHBOARD (MASTER ADMIN ONLY)
 # =====================================================================
 if app_mode == "📈 Live Activity & Update Dashboard":
+    if st.session_state.user_role != "Master Admin":
+        st.error("Ang pahinang ito ay para lamang sa Master Admin.")
+        st.stop()
+
     render_title_with_logo(
         "📈 CTG Live Activity, Parish Updates & Cloud Backup Dashboard",
         f"Real-time monitoring ng lahat ng galaw ng bawat parokya at direktang backup para sa {BACKUP_ADMIN_EMAIL}."
@@ -1238,15 +1241,14 @@ if app_mode == "📈 Live Activity & Update Dashboard":
             parish_breakdown = []
             for p_name in PARISH_ORDER + ["Unassigned Parish"]:
                 sub_df = global_records_df[global_records_df["Parokya"].apply(lambda x: normalize_parish_match(x, p_name) if p_name != "Unassigned Parish" else (x == "Unassigned Parish"))]
-                if len(sub_df) > 0 or st.session_state.user_role == "Master Admin":
-                    parish_breakdown.append({
-                        "Parokya": p_name,
-                        "Kabuuan": len(sub_df),
-                        "Pending": len(sub_df[sub_df["Status"].str.contains("Pending", case=False, na=False)]),
-                        "Nasa Parokya": len(sub_df[sub_df["Status"].str.contains("Assigned", case=False, na=False)]),
-                        "Isinumite (For Approval)": len(sub_df[sub_df["Status"].str.contains("For Master Admin Approval", case=False, na=False)]),
-                        "Tapos Na (Sent)": len(sub_df[sub_df["Status"].str.contains("Approved & Sent", case=False, na=False)]),
-                    })
+                parish_breakdown.append({
+                    "Parokya": p_name,
+                    "Kabuuan": len(sub_df),
+                    "Pending": len(sub_df[sub_df["Status"].str.contains("Pending", case=False, na=False)]),
+                    "Nasa Parokya": len(sub_df[sub_df["Status"].str.contains("Assigned", case=False, na=False)]),
+                    "Isinumite (For Approval)": len(sub_df[sub_df["Status"].str.contains("For Master Admin Approval", case=False, na=False)]),
+                    "Tapos Na (Sent)": len(sub_df[sub_df["Status"].str.contains("Approved & Sent", case=False, na=False)]),
+                })
             st.dataframe(pd.DataFrame(parish_breakdown), use_container_width=True, hide_index=True)
 
         with col_d_right:
@@ -1459,13 +1461,14 @@ elif app_mode in ["🛡️ Master Admin Controller & Approval Queue", "📥 Pari
 
                 with c_rf2:
                     st.write("")
-                    st.download_button(
-                        label="📥 I-download sa Google Drive (CSV)",
-                        data=df_view_rec.to_csv(index=False).encode("utf-8"),
-                        file_name="CTG_Records_Export.csv",
-                        mime="text/csv",
-                        use_container_width=True
-                    )
+                    if st.session_state.user_role == "Master Admin":
+                        st.download_button(
+                            label="📥 I-download sa Google Drive (CSV)",
+                            data=df_view_rec.to_csv(index=False).encode("utf-8"),
+                            file_name="CTG_Records_Export.csv",
+                            mime="text/csv",
+                            use_container_width=True
+                        )
 
                 st.dataframe(df_view_rec, use_container_width=True, hide_index=True)
         with tcrm:
