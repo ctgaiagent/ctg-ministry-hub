@@ -109,6 +109,38 @@ st.markdown("""
         word-wrap: break-word;
         font-size: 0.95rem;
     }
+    .submitted-parish-badge {
+        background-color: #ECFDF5;
+        border: 1px solid #10B981;
+        color: #065F46;
+        padding: 6px 12px;
+        border-radius: 6px;
+        font-weight: 600;
+        font-size: 0.88rem;
+        margin-bottom: 8px;
+        display: inline-block;
+    }
+    .assigned-parish-badge {
+        background-color: #EFF6FF;
+        border: 1px solid #3B82F6;
+        color: #1E40AF;
+        padding: 6px 12px;
+        border-radius: 6px;
+        font-weight: 600;
+        font-size: 0.88rem;
+        margin-bottom: 8px;
+        display: inline-block;
+    }
+    .records-side-box {
+        background-color: #F9FAFB;
+        border: 1px solid #E5E7EB;
+        border-top: 4px solid #0F766E;
+        padding: 12px;
+        border-radius: 8px;
+        margin-bottom: 10px;
+        color: #111827;
+        font-size: 0.88rem;
+    }
     [data-testid="stToolbar"] { display: none !important; visibility: hidden !important; }
     [data-testid="stAppDeployButton"] { display: none !important; }
     [data-testid="stHeaderActionElements"] { display: none !important; }
@@ -355,7 +387,7 @@ def update_notion_page_record(
         if admin_status is not None:
             set_prop_value(["Admin Status", "Status", "Request Status", "Approval Status"], admin_status)
         if approved_by is not None:
-            set_prop_value(["Approved By", "Reviewed By", "Approver", "Handled By"], approved_by)
+            set_prop_value(["Approved By", "Reviewed By", "Approver", "Handled By", "Submitted By"], approved_by)
         if assigned_parish is not None:
             set_prop_value(["Parish", "Assigned Parish", "Parokya"], assigned_parish)
 
@@ -640,108 +672,339 @@ def generate_ai_ministry_draft(service_category, sender_name, parish_name, topic
     if not valid_keys: return "⚠️ Wala pang GEMINI_API_KEY."
     client = genai.Client(api_key=valid_keys[0])
     prompt = (
-        f"Ikaw si CTG Gabay AI, sumusulat ng opisyal at magalang na tugon mula sa Church of the Temple of God (CTG) - {parish_name}.\n"
+        f"Ikaw si CTG Gabay AI, sumusulat ng opisyal, magalang, at punong-puno ng malasakit na tugon mula sa "
+        f"Church of the Temple of God (CTG) - {parish_name}.\n"
         f"Uri ng Request: {service_category}\n"
         f"Pangalan ng Nagpadala: {sender_name}\nPaksa: {topic}\nDetalye:\n\"{details}\"\n\n"
         f"1. Ilagay sa unang linya: '[Urgency Analysis: Low / Medium / High]'\n"
-        f"2. Sumulat ng email sa wikang {lang}.\n"
+        f"2. Sumulat ng buong mensahe (email/SMS ready) sa wikang {lang} na may comforting words, Bible verse, o malinaw na gabay.\n"
     )
     res = safe_generate_content(client, model_name, prompt)
     return res.text
 
+# =====================================================================
+# 🛠️ WORKFLOW QUEUE CARDS (INBOX AREA + TYPING AREA + PARISH TRACKING)
+# =====================================================================
 def render_workflow_queue_section(df_source: pd.DataFrame, category_label: str, key_prefix: str, default_lang: str):
     if df_source.empty:
         st.info(f"Walang nakitang rekord para sa **{category_label}**.")
         return
     n_tok = st.session_state.custom_secrets.get("NOTION_TOKEN", NOTION_TOKEN)
     is_master = (st.session_state.user_role == "Master Admin")
-    col_f1, col_f2 = st.columns([1.4, 2])
-    with col_f1:
-        status_filter = st.selectbox("Salain ayon sa Status:", ["Lahat ng Hindi Pa Naipapadala (Active Queue)", "Lahat ng Rekord", "Pending Review", "Assigned to Parish Leader", "Approved & Sent", "Rejected / Archived"], key=f"flt_st_{key_prefix}")
-    with col_f2:
-        search_txt = st.text_input("🔍 Hanapin:", key=f"flt_q_{key_prefix}").strip()
-    
+
+    if is_master:
+        col_f1, col_f2, col_f3 = st.columns([1.3, 1.3, 1.6])
+        with col_f1:
+            status_filter = st.selectbox(
+                "Salain ayon sa Status:",
+                [
+                    "Lahat ng Active Queue (Pending / Assigned / For Approval)",
+                    "📥 For Master Admin Approval (Galing sa Parokya)",
+                    "📤 Assigned to Parish Leader",
+                    "⏳ Pending Review (Bagong Pasok)",
+                    "✅ Approved & Sent (Natapos Na)",
+                    "❌ Rejected / Archived",
+                    "Lahat ng Rekord"
+                ],
+                key=f"flt_st_{key_prefix}"
+            )
+        with col_f2:
+            parish_filter = st.selectbox(
+                "Salain ayon sa Parokya:",
+                ["Lahat ng Parokya"] + PARISH_ORDER + ["Unassigned Parish"],
+                key=f"flt_pr_{key_prefix}"
+            )
+        with col_f3:
+            search_txt = st.text_input("🔍 Hanapin (Pangalan, Paksa, o Detalye):", key=f"flt_q_{key_prefix}").strip()
+    else:
+        col_f1, col_f2 = st.columns([1.4, 2])
+        with col_f1:
+            status_filter = st.selectbox(
+                "Salain ang Iyong Parish Inbox:",
+                [
+                    "📥 Mga Nakatalaga sa Aking Parokya (Active)",
+                    "📤 Naipasa Na kay Master Admin (For Approval)",
+                    "✅ Approved & Sent (Natapos Na)",
+                    "Lahat ng Rekord ng Aking Parokya"
+                ],
+                key=f"flt_st_{key_prefix}"
+            )
+        parish_filter = st.session_state.assigned_parish
+        with col_f2:
+            search_txt = st.text_input("🔍 Hanapin sa Iyong Parokya:", key=f"flt_q_{key_prefix}").strip()
+
+    shown = 0
     for idx, row in df_source.iterrows():
         page_id = row.get("_page_id", f"{key_prefix}_{idx}")
-        sender_name = get_first_non_empty(row, ["Full Name", "Name", "Pangalan"], f"Record #{idx+1}")
-        email = get_first_non_empty(row, ["Email", "Email Address"], "")
-        contact_no = get_first_non_empty(row, ["Contact No.", "Phone"], "N/A")
-        parish = get_first_non_empty(row, ["Parish", "Parokya"], "Unassigned Parish")
+        sender_name = get_first_non_empty(row, ["Full Name", "Name", "Pangalan", "Visitor Name"], f"Record #{idx+1}")
+        email = get_first_non_empty(row, ["Email", "Email Address", "E-mail"], "")
+        contact_no = get_first_non_empty(row, ["Contact No.", "Contact Number", "Phone", "Mobile"], "N/A")
+        address = get_first_non_empty(row, ["Address", "Tirahan", "Current Address"], "N/A")
+        parish = get_first_non_empty(row, ["Parish", "Assigned Parish", "Parokya"], "Unassigned Parish")
+        church_status = get_first_non_empty(row, ["Church Status", "Member Status", "Status sa Simbahan"], "Member / Visitor")
+        sub_date = get_first_non_empty(row, ["Submission Date", "Date", "Created time", "Timestamp"], "N/A")
+        pref_contact = get_first_non_empty(row, ["Response Type", "Preferred Contact", "Gustong Uri ng Tugon"], "Email / SMS")
         topic = get_first_non_empty(row, ["Prayer Title", "Question Topic", "Counselling Type", "Service Type", "Title"], category_label)
         details = get_first_non_empty(row, ["Prayer Details", "Question Details", "Situation Details", "Request Details", "Details", "Message"], "Walang detalye.")
-        admin_status = get_first_non_empty(row, ["Admin Status", "Approval Status"], "Pending Review")
-        
-        if not is_master and not normalize_parish_match(parish, st.session_state.assigned_parish): continue
-        if status_filter == "Lahat ng Hindi Pa Naipapadala (Active Queue)" and admin_status.lower() in ["approved & sent", "rejected / archived"]: continue
-        elif status_filter != "Lahat ng Rekord" and admin_status.lower() != status_filter.lower(): continue
-        if search_txt and search_txt.lower() not in f"{sender_name} {parish} {topic} {details}".lower(): continue
+        admin_status = get_first_non_empty(row, ["Admin Status", "Approval Status", "Status"], "Pending Review")
+        handled_by = get_first_non_empty(row, ["Approved By", "Reviewed By", "Handled By", "Submitted By"], "")
 
+        # STRICT PARISH PRIVACY: Ang Parish Leader (hal. Lipay Norte) ay hinding-hindi makakakita ng request ng ibang parokya
+        if not is_master and not normalize_parish_match(parish, st.session_state.assigned_parish):
+            continue
+
+        # Master Admin Parish Filter
+        if is_master and parish_filter != "Lahat ng Parokya":
+            if parish_filter == "Unassigned Parish":
+                if parish != "Unassigned Parish" and parish.strip() != "":
+                    continue
+            elif not normalize_parish_match(parish, parish_filter):
+                continue
+
+        # Status Filtering
+        st_low = admin_status.lower()
+        if is_master:
+            if status_filter.startswith("Lahat ng Active Queue") and st_low in ["approved & sent", "rejected / archived"]:
+                continue
+            elif status_filter.startswith("📥 For Master Admin") and "for master admin approval" not in st_low:
+                continue
+            elif status_filter.startswith("📤 Assigned") and "assigned to parish leader" not in st_low:
+                continue
+            elif status_filter.startswith("⏳ Pending") and "pending" not in st_low:
+                continue
+            elif status_filter.startswith("✅ Approved") and "approved & sent" not in st_low:
+                continue
+            elif status_filter.startswith("❌ Rejected") and "rejected" not in st_low:
+                continue
+        else:
+            if status_filter.startswith("📥 Mga Nakatalaga") and st_low in ["approved & sent", "rejected / archived", "for master admin approval"]:
+                continue
+            elif status_filter.startswith("📤 Naipasa Na") and "for master admin approval" not in st_low:
+                continue
+            elif status_filter.startswith("✅ Approved") and "approved & sent" not in st_low:
+                continue
+
+        if search_txt and search_txt.lower() not in f"{sender_name} {parish} {topic} {details} {handled_by} {email}".lower():
+            continue
+
+        shown += 1
         draft_state_key = f"draft_val_{page_id}"
-        if draft_state_key not in st.session_state: st.session_state[draft_state_key] = get_first_non_empty(row, ["AI Draft Reply", "AI Reply"], "")
+        if draft_state_key not in st.session_state:
+            st.session_state[draft_state_key] = get_first_non_empty(row, ["AI Draft Reply", "AI Reply", "Draft Reply", "Reply"], "")
 
-        with st.expander(f"📌 {sender_name} | 📍 {parish} | 🏷️ {topic} | 📊 Status: {admin_status}", expanded=(admin_status != "Approved & Sent")):
-            st.markdown(f"**📧 Email:** {email} | **📞 Contact:** {contact_no}")
-            st.markdown(f"<div class='full-text-card'><b>📝 Paksa:</b> {topic}<br><b>💬 Mensahe:</b><br>{details}</div>", unsafe_allow_html=True)
-            
-            c_ai_btn, c_lang = st.columns([1.6, 2])
-            with c_lang:
-                item_lang = st.selectbox("Wika ng AI Draft:", ["Tagalog", "Ilokano", "English"], index=["Tagalog", "Ilokano", "English"].index(default_lang), key=f"lang_{page_id}")
-            with c_ai_btn:
-                st.write("")
-                if st.button("🤖 Bumuo ng AI Draft", key=f"gen_ai_{page_id}", use_container_width=True):
-                    with st.spinner("Ginagawa ng AI..."):
-                        try:
-                            generated = generate_ai_ministry_draft(category_label, sender_name, parish, topic, details, item_lang, selected_model)
-                            st.session_state[draft_state_key] = generated
-                            update_notion_page_record(n_tok, page_id, ai_draft=generated, admin_status="Pending Review")
-                            st.cache_data.clear()
-                            st.success("Na-save ang AI Draft!")
-                        except Exception as ex: st.error(str(ex))
+        # Tukuyin kung sino ang parokyang nag-submit ng tugon
+        submitted_parish_info = handled_by if handled_by else (parish if "for master admin approval" in st_low else "Wala pang nagsusumite")
 
-            edited_draft = st.text_area("✏️ Tugon para sa miyembro:", value=st.session_state[draft_state_key], height=180, key=f"editor_{page_id}")
-            st.session_state[draft_state_key] = edited_draft
+        header_tag = (
+            f"📌 Nag-request: {sender_name} | 📍 Parokya: {parish} | 🏷️ {topic} | "
+            f"📊 Status: {admin_status} | 🏛️ Gawa/Sinumite ni: {submitted_parish_info}"
+        )
 
-            if is_master:
-                col_a1, col_a2, col_a3, col_a4 = st.columns([1.5, 1.5, 1.3, 1.1])
-                with col_a1:
-                    target_parish = st.selectbox("Ipasa sa Parokya:", PARISH_ORDER, key=f"ass_sel_{page_id}", label_visibility="collapsed")
-                    if st.button("📤 Ipasa sa Parish", key=f"ass_btn_{page_id}", use_container_width=True):
-                        update_notion_page_record(n_tok, page_id, ai_draft=edited_draft, admin_status="Assigned to Parish Leader", assigned_parish=target_parish)
-                        st.cache_data.clear()
-                        st.info(f"Naipasa sa {target_parish}!")
-                with col_a2:
-                    if st.button("💾 I-save", key=f"save_btn_{page_id}", use_container_width=True):
-                        update_notion_page_record(n_tok, page_id, ai_draft=edited_draft, admin_status="Pending Review")
-                        st.cache_data.clear()
-                        st.success("Na-save!")
-                with col_a3:
-                    if st.button("🚀 Approve & Send", key=f"app_send_{page_id}", type="primary", use_container_width=True):
-                        if email and "@" in email:
-                            res_mail = send_email_via_gmail(email, f"CTG Update: {topic}", edited_draft)
-                            if "Matagumpay" in res_mail:
-                                update_notion_page_record(n_tok, page_id, ai_draft=edited_draft, admin_status="Approved & Sent", approved_by="Master Admin")
+        with st.expander(header_tag, expanded=(st_low != "approved & sent")):
+            # Badges kung sino ang nag-submit o kanino naka-assign
+            if "for master admin approval" in st_low or "Submitted by" in handled_by or "Drafted by" in handled_by:
+                st.markdown(
+                    f"<div class='submitted-parish-badge'>📥 ISINUMITE NG PAROKYA PARA SA IYONG APPROVAL: "
+                    f"<b>{handled_by or parish}</b></div>",
+                    unsafe_allow_html=True
+                )
+            elif "assigned to parish leader" in st_low:
+                st.markdown(
+                    f"<div class='assigned-parish-badge'>📤 NAKATALAGA SA PAROKYA: <b>{parish}</b> ({handled_by or 'Waiting for Parish Reply'})</div>",
+                    unsafe_allow_html=True
+                )
+
+            # SPLIT AREA: KALIWA = REQUEST DETAILS AREA | KANAN = TYPING & ACTION AREA
+            col_req_area, col_type_area = st.columns([1.05, 1.35])
+
+            with col_req_area:
+                st.markdown("##### 📋 1. Area ng Request at Impormasyon ng Nagsumite")
+                st.markdown(
+                    f"<div class='full-text-card'>"
+                    f"<b>👤 Pangalan ng Nag-request:</b> {sender_name}<br>"
+                    f"<b>⛪ Katayuan sa Simbahan:</b> {church_status}<br>"
+                    f"<b>📍 Parokya:</b> {parish}<br>"
+                    f"<b>📧 Email Address:</b> {email or 'Walang Email'}<br>"
+                    f"<b>📱 Contact / SMS No.:</b> {contact_no}<br>"
+                    f"<b>🏠 Tirahan:</b> {address}<br>"
+                    f"<b>📅 Petsa ng Request:</b> {sub_date}<br>"
+                    f"<b>📬 Gustong Tugon:</b> {pref_contact}<br>"
+                    f"<b>🏛️ Huling Nag-proseso / Nag-submit:</b> {handled_by or 'N/A'}"
+                    f"<hr style='margin:8px 0;'>"
+                    f"<b>🏷️ Paksa ({category_label}):</b> {topic}<br><br>"
+                    f"<b>💬 Buong Mensahe / Kahilingan:</b><br>{details}"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+
+            with col_type_area:
+                if is_master:
+                    st.markdown("##### ✍️ 2. Master Admin Typing, Assignment & Final Approval Area")
+                else:
+                    st.markdown(f"##### ✍️ 2. Typing & Response Area para sa {st.session_state.assigned_parish}")
+
+                c_ai_btn, c_lang = st.columns([1.5, 1.5])
+                with c_lang:
+                    item_lang = st.selectbox(
+                        "Wika ng AI Draft:",
+                        ["Tagalog", "Ilokano", "English"],
+                        index=["Tagalog", "Ilokano", "English"].index(default_lang),
+                        key=f"lang_{page_id}"
+                    )
+                with c_ai_btn:
+                    st.write("")
+                    if st.button("🤖 Bumuo ng AI Draft", key=f"gen_ai_{page_id}", use_container_width=True):
+                        with st.spinner("Ginagawa ng CTG Gabay AI..."):
+                            try:
+                                generated = generate_ai_ministry_draft(category_label, sender_name, parish, topic, details, item_lang, selected_model)
+                                st.session_state[draft_state_key] = generated
+                                update_notion_page_record(n_tok, page_id, ai_draft=generated, admin_status=admin_status)
                                 st.cache_data.clear()
-                                st.success(res_mail)
-                            else: st.error(res_mail)
-                        else: st.error("Walang valid email.")
-                with col_a4:
-                    if st.button("❌ Reject", key=f"rej_btn_{page_id}", use_container_width=True):
-                        update_notion_page_record(n_tok, page_id, ai_draft=edited_draft, admin_status="Rejected / Archived")
-                        st.cache_data.clear()
-                        st.warning("Na-reject.")
-            else:
-                p1, p2 = st.columns(2)
-                with p1:
-                    if st.button("💾 I-save", key=f"p_save_{page_id}", use_container_width=True):
-                        update_notion_page_record(n_tok, page_id, ai_draft=edited_draft)
-                        st.cache_data.clear()
-                        st.success("Na-save.")
-                with p2:
-                    if st.button("📥 Ibalik kay Master Admin", key=f"p_ret_{page_id}", type="primary", use_container_width=True):
-                        update_notion_page_record(n_tok, page_id, ai_draft=edited_draft, admin_status="For Master Admin Approval", approved_by=st.session_state.assigned_parish)
-                        st.cache_data.clear()
-                        st.success("Naibalik na sa Master Admin!")
+                                st.success("Nagawa at na-save ang AI Draft!")
+                            except Exception as ex:
+                                st.error(str(ex))
 
+                edited_draft = st.text_area(
+                    f"✏️ I-type o i-edit dito ang mensahe/sagot para kay {sender_name}:",
+                    value=st.session_state[draft_state_key],
+                    height=185,
+                    key=f"editor_{page_id}"
+                )
+                st.session_state[draft_state_key] = edited_draft
+
+                if is_master:
+                    st.markdown("**🅰️ Ipasa sa Partikular na Parokya (Hindi makikita ng ibang parokya):**")
+                    ca1, ca2 = st.columns([1.6, 1.2])
+                    with ca1:
+                        default_p_idx = PARISH_ORDER.index(parish.upper()) if parish.upper() in PARISH_ORDER else 0
+                        target_parish = st.selectbox(
+                            "Pumili ng Parokya:",
+                            PARISH_ORDER,
+                            index=default_p_idx,
+                            key=f"ass_sel_{page_id}",
+                            label_visibility="collapsed"
+                        )
+                    with ca2:
+                        if st.button("📤 Ipasa sa Parokyang Ito", key=f"ass_btn_{page_id}", use_container_width=True):
+                            update_notion_page_record(
+                                n_tok,
+                                page_id,
+                                ai_draft=edited_draft,
+                                admin_status="Assigned to Parish Leader",
+                                assigned_parish=target_parish,
+                                approved_by=f"Assigned by Master Admin to {target_parish}"
+                            )
+                            st.cache_data.clear()
+                            st.info(f"Naipasa na sa **{target_parish}**! Sila lang ang makakakita nito sa kanilang area.")
+
+                    st.markdown("**🅱️ Master Admin Final Approval & Pagpapadala (Gmail / SMS):**")
+                    cb1, cb2, cb3 = st.columns([1.5, 1.2, 1.1])
+                    with cb1:
+                        if st.button("🚀 Approve & Send sa Gmail", key=f"app_send_{page_id}", type="primary", use_container_width=True):
+                            if email and "@" in email:
+                                clean_body = re.sub(r"^\[Urgency Analysis:.*?\]\s*", "", edited_draft.strip(), flags=re.IGNORECASE)
+                                res_mail = send_email_via_gmail(email, f"Tugon mula sa Church of the Temple of God (CTG) — {topic}", clean_body)
+                                if "Matagumpay" in res_mail:
+                                    approver_note = f"Approved & Sent by Master Admin (Draft: {handled_by or parish})"
+                                    update_notion_page_record(
+                                        n_tok, page_id, ai_draft=clean_body, admin_status="Approved & Sent", approved_by=approver_note
+                                    )
+                                    st.cache_data.clear()
+                                    st.success(f"✅ {res_mail} Naitala na rin sa Records Panel!")
+                                else:
+                                    st.error(res_mail)
+                            else:
+                                st.error("Walang valid email address ang nag-request.")
+                    with cb2:
+                        if st.button("💾 I-save ang Draft", key=f"save_btn_{page_id}", use_container_width=True):
+                            update_notion_page_record(n_tok, page_id, ai_draft=edited_draft)
+                            st.cache_data.clear()
+                            st.success("Na-save sa Notion!")
+                    with cb3:
+                        if st.button("❌ Reject / Archive", key=f"rej_btn_{page_id}", use_container_width=True):
+                            update_notion_page_record(n_tok, page_id, ai_draft=edited_draft, admin_status="Rejected / Archived", approved_by="Rejected by Master Admin")
+                            st.cache_data.clear()
+                            st.warning("Na-reject / Archive.")
+
+                    with st.expander(f"📱 Kopyahin para sa SMS / Text Message ({contact_no})"):
+                        st.caption("Kung walang email o gusto mong i-text sa mobile/Viber, kopyahin ang mensahe sa ibaba:")
+                        st.code(f"Para kay: {sender_name} ({contact_no})\n\n{edited_draft}", language="text")
+                        if st.button("✅ Markahan bilang 'Approved & Sent via SMS'", key=f"sms_sent_{page_id}"):
+                            approver_note = f"Approved & Sent via SMS by Master Admin (Draft: {handled_by or parish})"
+                            update_notion_page_record(
+                                n_tok, page_id, ai_draft=edited_draft, admin_status="Approved & Sent", approved_by=approver_note
+                            )
+                            st.cache_data.clear()
+                            st.success("Na-record na bilang 'Approved & Sent via SMS' sa Records Panel!")
+                else:
+                    # PARISH LEADER BUTTONS
+                    p1, p2 = st.columns([1, 1.5])
+                    with p1:
+                        if st.button("💾 I-save Muna ang Draft", key=f"p_save_{page_id}", use_container_width=True):
+                            update_notion_page_record(
+                                n_tok,
+                                page_id,
+                                ai_draft=edited_draft,
+                                approved_by=f"Draft in progress by {st.session_state.assigned_parish}"
+                            )
+                            st.cache_data.clear()
+                            st.success("Na-save ang draft!")
+                    with p2:
+                        if st.button("📥 Tapos Na — Ipasa kay Master Admin para sa Approval", key=f"p_ret_{page_id}", type="primary", use_container_width=True):
+                            if not edited_draft.strip():
+                                st.warning("Mag-type muna ng iyong tugon bago ipasa kay Master Admin.")
+                            else:
+                                update_notion_page_record(
+                                    n_tok,
+                                    page_id,
+                                    ai_draft=edited_draft,
+                                    admin_status="For Master Admin Approval",
+                                    assigned_parish=st.session_state.assigned_parish,
+                                    approved_by=f"Submitted by {st.session_state.assigned_parish}"
+                                )
+                                st.cache_data.clear()
+                                st.success(f"✅ Naipasa na kay Master Admin! Makikita niya na ang {st.session_state.assigned_parish} ang nag-submit nito.")
+
+    if shown == 0:
+        st.info("Walang nahanap na request na tumutugma sa napiling filter.")
+
+# =====================================================================
+# 📜 HELPER PARA SA SIDE PANEL & TAB NG MGA NATAPOS AT REQUESTER INFO
+# =====================================================================
+def build_combined_records_df(df_p: pd.DataFrame, df_q: pd.DataFrame, df_co: pd.DataFrame) -> pd.DataFrame:
+    records = []
+    sources = [
+        ("Prayer Request", df_p),
+        ("Church Question", df_q),
+        ("Counselling Request", df_co),
+    ]
+    for cat_name, df_src in sources:
+        if df_src is None or df_src.empty:
+            continue
+        for _, r in df_src.iterrows():
+            parish_val = get_first_non_empty(r, ["Parish", "Assigned Parish", "Parokya"], "Unassigned Parish")
+            if st.session_state.user_role == "Parish Leader" and not normalize_parish_match(parish_val, st.session_state.assigned_parish):
+                continue
+            records.append({
+                "Uri ng Request": cat_name,
+                "Pangalan ng Nag-request": get_first_non_empty(r, ["Full Name", "Name", "Pangalan", "Visitor Name"], "N/A"),
+                "Parokya": parish_val,
+                "Status": get_first_non_empty(r, ["Admin Status", "Approval Status", "Status"], "Pending Review"),
+                "Isinumite / Inaprubahan Ni": get_first_non_empty(r, ["Approved By", "Reviewed By", "Handled By", "Submitted By"], "Pending"),
+                "Paksa": get_first_non_empty(r, ["Prayer Title", "Question Topic", "Counselling Type", "Service Type", "Title"], cat_name),
+                "Email": get_first_non_empty(r, ["Email", "Email Address", "E-mail"], "N/A"),
+                "Contact No.": get_first_non_empty(r, ["Contact No.", "Contact Number", "Phone", "Mobile"], "N/A"),
+                "Tirahan": get_first_non_empty(r, ["Address", "Tirahan", "Current Address"], "N/A"),
+                "Katayuan sa Simbahan": get_first_non_empty(r, ["Church Status", "Member Status"], "N/A"),
+                "Petsa": get_first_non_empty(r, ["Submission Date", "Date", "Created time"], "N/A"),
+                "Detalye ng Request": get_first_non_empty(r, ["Prayer Details", "Question Details", "Situation Details", "Request Details", "Details", "Message"], ""),
+                "Tugon / AI Draft": get_first_non_empty(r, ["AI Draft Reply", "AI Reply", "Draft Reply", "Reply"], ""),
+            })
+    return pd.DataFrame(records) if records else pd.DataFrame()
+
+# =====================================================================
+# 1. PARISH DIRECTORY & FAMILY SEARCH (KUMPLETONG ORIGINAL VIEW + REMARKS)
+# =====================================================================
 if app_mode == "📊 Parish Directory & Family Search":
     render_title_with_logo("CHURCH OF THE TEMPLE OF GOD — SEARCH FAMILY / PARISH")
     if master_members_df.empty:
@@ -845,17 +1108,30 @@ if app_mode == "📊 Parish Directory & Family Search":
         st.warning("Walang nahanap na kumpletong record para sa iyong hinahanap.")
     st.stop()
 
+# =====================================================================
+# 2. MASTER ADMIN CONTROLLER / PARISH ASSIGNED WORKSPACE + SIDE PANEL
+# =====================================================================
 elif app_mode in ["🛡️ Master Admin Controller & Approval Queue", "📥 Parish Assigned Requests & Counselling"]:
     if st.session_state.user_role == "Master Admin":
-        render_title_with_logo("Master Admin Controller & Approval Hub", "Sentralisadong Dashboard para sa Prayer, Questions, Counselling.")
+        render_title_with_logo(
+            "Master Admin Controller & Approval Hub",
+            "Ipasa ang mga request sa kaukulang Parokya, tingnan kung sino ang nag-submit, at i-approve/i-send sa Gmail o SMS."
+        )
     else:
-        render_title_with_logo(f"Parish Assigned Requests — {st.session_state.assigned_parish}", "Mga Request na nakatalaga sa iyong Parokya.")
+        render_title_with_logo(
+            f"Parish Workspace — {st.session_state.assigned_parish}",
+            "Eksklusibong Inbox at Typing Area para sa mga request na ibinigay ni Master Admin sa iyong Parokya."
+        )
     
-    top1, top2 = st.columns([2.5, 1])
-    with top1: def_lang = st.selectbox("🌐 Wika para sa AI Draft:", ["Tagalog", "Ilokano", "English"], index=0)
-    with top2: 
-        st.write("")
-        if st.button("🔄 I-refresh", use_container_width=True): st.cache_data.clear(); st.rerun()
+    top1, top2, top3 = st.columns([1.8, 1.2, 1])
+    with top1:
+        def_lang = st.selectbox("🌐 Default na Wika para sa AI Draft:", ["Tagalog", "Ilokano", "English"], index=0)
+    with top2:
+        show_side_panel = st.checkbox("📜 Ipakita ang Records Panel sa Gilid", value=True)
+    with top3:
+        if st.button("🔄 I-refresh ang Data", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
 
     n_tok = st.session_state.custom_secrets.get("NOTION_TOKEN", NOTION_TOKEN)
     crm_db = st.session_state.custom_secrets.get("NOTION_CRM_DB_ID", NOTION_CRM_DB_ID)
@@ -868,20 +1144,122 @@ elif app_mode in ["🛡️ Master Admin Controller & Approval Queue", "📥 Pari
     df_q = load_notion_crm_data(n_tok, q_db) if clean_notion_id(q_db) != clean_notion_id(crm_db) else df_crm.copy()
     df_co = load_notion_crm_data(n_tok, c_db) if clean_notion_id(c_db) != clean_notion_id(crm_db) else df_crm.copy()
 
-    m1, m2, m3, m4 = st.columns(4)
+    records_master_df = build_combined_records_df(df_p, df_q, df_co)
+
+    # Bilangin ang mga status para sa metrics
+    if not records_master_df.empty:
+        cnt_for_approval = len(records_master_df[records_master_df["Status"].str.contains("For Master Admin Approval", case=False, na=False)])
+        cnt_completed = len(records_master_df[records_master_df["Status"].str.contains("Approved & Sent", case=False, na=False)])
+    else:
+        cnt_for_approval, cnt_completed = 0, 0
+
+    m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("🙏 Prayer Requests", len(df_p))
     m2.metric("📖 Church Questions", len(df_q))
-    m3.metric("🤝 Counselling Requests", len(df_co))
-    m4.metric("👥 Total CRM", len(df_crm))
+    m3.metric("🤝 Counselling", len(df_co))
+    m4.metric("📥 Galing sa Parokya (For Approval)", cnt_for_approval)
+    m5.metric("✅ Natapos Na (Approved & Sent)", cnt_completed)
     st.divider()
 
-    tp, tq, tc, tcrm = st.tabs(["🙏 Prayer Requests", "📖 Church Questions", "🤝 Counselling", "📋 All CRM"])
-    with tp: render_workflow_queue_section(df_p, "Prayer Request", "pray", def_lang)
-    with tq: render_workflow_queue_section(df_q, "Church Question", "qna", def_lang)
-    with tc: render_workflow_queue_section(df_co, "Counselling Request", "counsel", def_lang)
-    with tcrm: st.dataframe(df_crm.drop(columns=["_page_id"], errors="ignore"), use_container_width=True, hide_index=True)
+    # Kung naka-check ang Side Panel, hatiin ang screen: Kaliwa = Main Workspace, Kanan = Side Panel ng Records
+    if show_side_panel:
+        col_main_workspace, col_side_records = st.columns([2.35, 1.05])
+    else:
+        col_main_workspace = st.container()
+        col_side_records = None
+
+    with col_main_workspace:
+        tp, tq, tc, trec, tcrm = st.tabs([
+            "🙏 Prayer Requests",
+            "📖 Church Questions",
+            "🤝 Counselling",
+            "📜 Buong Records & Requester Info",
+            "📋 All CRM"
+        ])
+        with tp:
+            render_workflow_queue_section(df_p, "Prayer Request", "pray", def_lang)
+        with tq:
+            render_workflow_queue_section(df_q, "Church Question", "qna", def_lang)
+        with tc:
+            render_workflow_queue_section(df_co, "Counselling Request", "counsel", def_lang)
+        with trec:
+            st.subheader("📜 Kumpletong Talaan ng mga Nagawa at Impormasyon ng mga Nag-request")
+            if records_master_df.empty:
+                st.info("Wala pang nakatalang request.")
+            else:
+                rec_filter = st.selectbox(
+                    "Salain ang Talaan:",
+                    ["Lahat ng Rekord", "✅ Mga Natapos Na (Approved & Sent)", "📥 Isinumite ng Parokya (For Master Admin Approval)", "📤 Nakatalaga sa Parokya"],
+                    key="full_rec_flt"
+                )
+                df_view_rec = records_master_df.copy()
+                if rec_filter.startswith("✅"):
+                    df_view_rec = df_view_rec[df_view_rec["Status"].str.contains("Approved & Sent", case=False, na=False)]
+                elif rec_filter.startswith("📥"):
+                    df_view_rec = df_view_rec[df_view_rec["Status"].str.contains("For Master Admin Approval", case=False, na=False)]
+                elif rec_filter.startswith("📤"):
+                    df_view_rec = df_view_rec[df_view_rec["Status"].str.contains("Assigned to Parish Leader", case=False, na=False)]
+
+                st.dataframe(df_view_rec, use_container_width=True, hide_index=True)
+        with tcrm:
+            if st.session_state.user_role == "Master Admin":
+                st.dataframe(df_crm.drop(columns=["_page_id"], errors="ignore"), use_container_width=True, hide_index=True)
+            else:
+                st.info("Ang buong Central CRM table ay para sa Master Admin. Gamitin ang Records tab para sa iyong parokya.")
+
+    if col_side_records is not None:
+        with col_side_records:
+            st.markdown("### 📜 Records & Info Panel")
+            st.caption("Talaan ng mga natapos na, sino ang parokyang nag-submit, at buong info ng mga nag-request.")
+            side_mode = st.selectbox(
+                "Ipakita sa Panel:",
+                [
+                    "Lahat ng Rekord & Nag-request",
+                    "✅ Mga Natapos Na (Approved & Sent)",
+                    "📥 Isinumite ng Parokya (For Approval)",
+                    "📤 Nakatalaga sa Parokya (Assigned)"
+                ],
+                key="side_panel_mode"
+            )
+            side_search = st.text_input("🔍 Hanapin sa Records Panel:", key="side_panel_search").strip()
+
+            if records_master_df.empty:
+                st.info("Wala pang rekord.")
+            else:
+                side_df = records_master_df.copy()
+                if side_mode.startswith("✅"):
+                    side_df = side_df[side_df["Status"].str.contains("Approved & Sent", case=False, na=False)]
+                elif side_mode.startswith("📥"):
+                    side_df = side_df[side_df["Status"].str.contains("For Master Admin Approval", case=False, na=False)]
+                elif side_mode.startswith("📤"):
+                    side_df = side_df[side_df["Status"].str.contains("Assigned to Parish Leader", case=False, na=False)]
+
+                if side_search:
+                    side_df = side_df[side_df.astype(str).apply(lambda x: x.str.contains(side_search, case=False, na=False)).any(axis=1)]
+
+                st.caption(f"Kabuuang nakita: **{len(side_df)}** rekord")
+                for r_idx, r_item in side_df.iterrows():
+                    st.markdown(
+                        f"<div class='records-side-box'>"
+                        f"<b>👤 {r_item['Pangalan ng Nag-request']}</b> ({r_item['Uri ng Request']})<br>"
+                        f"📍 <b>Parokya:</b> {r_item['Parokya']}<br>"
+                        f"📊 <b>Status:</b> <code>{r_item['Status']}</code><br>"
+                        f"🏛️ <b>Sinumite/Inaprubahan:</b> {r_item['Isinumite / Inaprubahan Ni']}<br>"
+                        f"📧 <b>Email:</b> {r_item['Email']} | 📱 <b>Tel:</b> {r_item['Contact No.']}<br>"
+                        f"🏷️ <b>Paksa:</b> {r_item['Paksa']}"
+                        f"</div>",
+                        unsafe_allow_html=True
+                    )
+                    with st.expander(f"🔍 Buong Detalye at Tugon — {r_item['Pangalan ng Nag-request']}"):
+                        st.write(f"**🏠 Tirahan:** {r_item['Tirahan']}")
+                        st.write(f"**⛪ Katayuan:** {r_item['Katayuan sa Simbahan']} | **📅 Petsa:** {r_item['Petsa']}")
+                        st.markdown(f"**💬 Kahilingan / Tanong:**\n> {r_item['Detalye ng Request']}")
+                        st.markdown(f"**✉️ Tugon / AI Draft:**\n> {r_item['Tugon / AI Draft'] or 'Wala pang tugon.'}")
     st.stop()
 
+# =====================================================================
+# 3. NOTION CRM (VISITORS & MEMBERS) — FULL READABLE TEXT & CARDS
+# =====================================================================
 elif app_mode == "🤝 Notion CRM (Visitors & Members)":
     render_title_with_logo("Church CRM: Visitors & Members (Notion)")
     if st.button("🔄 I-refresh"): st.cache_data.clear(); st.rerun()
@@ -893,8 +1271,23 @@ elif app_mode == "🤝 Notion CRM (Visitors & Members)":
         q = st.text_input("🔍 Search CRM:").strip()
         if q: disp = disp[disp.astype(str).apply(lambda x: x.str.contains(q, case=False, na=False)).any(axis=1)]
         st.dataframe(disp, use_container_width=True, hide_index=True)
+        st.divider()
+        st.subheader("📖 Buong Detalye ng Bawat Rekord sa Notion CRM (Full View)")
+        for idx, row in disp.iterrows():
+            first_col = disp.columns[0]
+            title_val = str(row[first_col]).strip() or f"Record #{idx + 1}"
+            details_html = f"<div class='full-text-card'><b>📌 {title_val}</b><br><hr style='margin:6px 0;'>"
+            for c_name in disp.columns:
+                val_str = str(row[c_name]).strip()
+                if val_str:
+                    details_html += f"<b>• {c_name}:</b> {val_str}<br>"
+            details_html += "</div>"
+            st.markdown(details_html, unsafe_allow_html=True)
     st.stop()
 
+# =====================================================================
+# 4. MAGDAGDAG NG MIYEMBRO & LITRATO
+# =====================================================================
 elif app_mode == "➕ Magdagdag ng Miyembro & Litrato":
     render_title_with_logo("Magdagdag ng Miyembro", "Mag-input ng bagong miyembro.")
     with st.form("add_form"):
@@ -902,20 +1295,32 @@ elif app_mode == "➕ Magdagdag ng Miyembro & Litrato":
         with c1:
             mp = st.selectbox("Parish:", [st.session_state.assigned_parish] if st.session_state.user_role == "Parish Leader" else PARISH_ORDER)
             fid = st.text_input("Family ID (hal. CTG-LN-FAM-0001):")
+            m_head = st.text_input("Head of Family:")
             fn = st.text_input("Buong Pangalan:")
+            m_rel = st.selectbox("Relasyon sa Pamilya:", ["HEAD OF FAMILY", "HUSBAND", "WIFE", "SON", "DAUGHTER", "RELATIVE", "OTHER"])
         with c2:
+            m_sex = st.selectbox("Kasarian:", ["MALE", "FEMALE"])
+            m_cat = st.selectbox("Kategorya:", ["KIDS", "YOUTH", "ADULT", "SENIOR CITIZEN"])
+            m_st = st.selectbox("Status:", ["ACTIVE", "INACTIVE", "NON-MEMBER"])
             st.text_input("Contact Number:")
-            pho = st.file_uploader("Litrato:", type=["jpg", "png"])
-        if st.form_submit_button("I-save"):
-            if fid and fn: st.success(f"Naidagdag si {fn}!")
-            else: st.warning("Punan ang Family ID at Pangalan.")
+            pho = st.file_uploader("Litrato:", type=["jpg", "png", "jpeg"])
+        if st.form_submit_button("I-save", type="primary"):
+            if fid and fn:
+                st.success(f"Naidagdag si **{fn}** sa pamilyang `{fid}` ({mp})!")
+                if pho is not None:
+                    st.image(pho, caption=f"Litrato ni {fn}", width=150)
+            else:
+                st.warning("Punan ang Family ID at Pangalan.")
     st.stop()
 
+# =====================================================================
+# 5. PRAYER WALL & CATEGORIZER
+# =====================================================================
 elif app_mode == "🙏 Prayer Wall & Categorizer":
     render_title_with_logo("AI Prayer Request Categorizer")
     plang = st.selectbox("Wika:", ["Tagalog", "Ilokano", "English"])
     rp = st.text_area("Nilalaman ng Panalangin:")
-    if st.button("Suriin sa AI"):
+    if st.button("Suriin sa AI", type="primary"):
         if rp:
             client = genai.Client(api_key=get_valid_gemini_keys()[0])
             res = safe_generate_content(client, selected_model, f"Suriin ang prayer request na ito sa wikang {plang}: {rp}")
@@ -923,13 +1328,16 @@ elif app_mode == "🙏 Prayer Wall & Categorizer":
         else: st.warning("Maglagay muna ng mensahe.")
     st.stop()
 
+# =====================================================================
+# 6. ANNOUNCEMENT BROADCASTER
+# =====================================================================
 elif app_mode == "📢 Announcement Broadcaster":
     render_title_with_logo("AI Announcement Broadcaster")
     blang = st.selectbox("Wika:", ["Tagalog", "Ilokano", "English"])
     et = st.text_input("Pamagat:")
     ed = st.text_area("Detalye:")
     em = st.text_input("Email ng Tatanggap:")
-    if st.button("Magpadala"):
+    if st.button("Magpadala", type="primary"):
         if et and ed and em:
             client = genai.Client(api_key=get_valid_gemini_keys()[0])
             body = safe_generate_content(client, selected_model, f"Gumawa ng pormal na announcement tungkol sa {et}. Detalye: {ed}. Isulat sa {blang}.").text
@@ -938,6 +1346,9 @@ elif app_mode == "📢 Announcement Broadcaster":
         else: st.warning("Punan ang lahat.")
     st.stop()
 
+# =====================================================================
+# 7. APP SETTINGS
+# =====================================================================
 elif app_mode == "🛠️ App Settings":
     render_title_with_logo("App Configuration & Settings")
     with st.form("set_form"):
@@ -951,18 +1362,19 @@ elif app_mode == "🛠️ App Settings":
         gci = st.text_input("GMAIL_CLIENT_ID", value=st.session_state.custom_secrets.get("GMAIL_CLIENT_ID", ""))
         gcs = st.text_input("GMAIL_CLIENT_SECRET", value=st.session_state.custom_secrets.get("GMAIL_CLIENT_SECRET", ""), type="password")
         grt = st.text_input("GMAIL_REFRESH_TOKEN", value=st.session_state.custom_secrets.get("GMAIL_REFRESH_TOKEN", ""), type="password")
-        if st.form_submit_button("I-save"):
+        if st.form_submit_button("I-save", type="primary"):
             st.session_state.custom_secrets = {
                 "GEMINI_API_KEY": ng, "GEMINI_API_KEY_2": ng2, "NOTION_TOKEN": nt,
                 "NOTION_CRM_DB_ID": ndb, "NOTION_PRAYER_DB_ID": npdb,
                 "NOTION_QUESTIONS_DB_ID": nqdb, "NOTION_COUNSELLING_DB_ID": ncdb,
                 "GMAIL_CLIENT_ID": gci, "GMAIL_CLIENT_SECRET": gcs, "GMAIL_REFRESH_TOKEN": grt
             }
+            st.cache_data.clear()
             st.success("Na-save na!"); time.sleep(1); st.rerun()
     st.stop()
 
 # =====================================================================
-# CHAT ASSISTANT
+# 8. CHAT ASSISTANT
 # =====================================================================
 render_title_with_logo("CTG Gabay AI — Ministry Assistant", "Mag-type sa Tagalog, Ilokano, o English.")
 valid_keys = get_valid_gemini_keys()
