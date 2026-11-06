@@ -4,6 +4,7 @@ import re
 import time
 import base64
 import requests
+from datetime import datetime
 from email.message import EmailMessage
 import streamlit as st
 import pandas as pd
@@ -73,6 +74,7 @@ GMAIL_CLIENT_SECRET = get_secret("GMAIL_CLIENT_SECRET")
 GMAIL_REFRESH_TOKEN = get_secret("GMAIL_REFRESH_TOKEN")
 APP_USER = get_secret("APP_USER", "ctg.ministry.master.admin")
 APP_PASSWORD = get_secret("APP_PASSWORD", "Church#Temple#God$2026!Admin")
+BACKUP_ADMIN_EMAIL = "clarojerald16@gmail.com"
 
 CLOUD_SPREADSHEET_URL = (
     "https://docs.google.com/spreadsheets/d/15_znwPmjK95vTgf5lStbKKPCjEGw6oDp/"
@@ -140,6 +142,15 @@ st.markdown("""
         margin-bottom: 10px;
         color: #111827;
         font-size: 0.88rem;
+    }
+    .sidebar-log-card {
+        background-color: #1E293B;
+        border-left: 3px solid #38BDF8;
+        padding: 8px 10px;
+        border-radius: 5px;
+        margin-bottom: 6px;
+        color: #F8FAFC;
+        font-size: 0.80rem;
     }
     [data-testid="stToolbar"] { display: none !important; visibility: hidden !important; }
     [data-testid="stAppDeployButton"] { display: none !important; }
@@ -304,6 +315,8 @@ def extract_notion_property(prop_data: dict) -> str:
         return str(prop_data.get("url") or "")
     elif p_type == "created_time":
         return str(prop_data.get("created_time") or "")
+    elif p_type == "last_edited_time":
+        return str(prop_data.get("last_edited_time") or "")
     return ""
 
 @st.cache_data(ttl=120)
@@ -332,7 +345,11 @@ def load_notion_crm_data(token: str, db_id: str) -> pd.DataFrame:
         data = res.json()
         for page in data.get("results", []):
             props = page.get("properties", {})
-            row_data = {"_page_id": page.get("id", "")}
+            row_data = {
+                "_page_id": page.get("id", ""),
+                "_last_edited": page.get("last_edited_time", ""),
+                "_created_time": page.get("created_time", "")
+            }
             for col_name, col_val in props.items():
                 row_data[col_name] = extract_notion_property(col_val)
             rows.append(row_data)
@@ -343,8 +360,9 @@ def load_notion_crm_data(token: str, db_id: str) -> pd.DataFrame:
         df = df.fillna("")
         for main_col in ["Full Name", "Name", "Pangalan", "Visitor Name"]:
             if main_col in df.columns:
-                other_cols = [c for c in df.columns if c not in [main_col, "_page_id"]]
-                df = df[[main_col] + other_cols + ["_page_id"]]
+                meta_cols = ["_page_id", "_last_edited", "_created_time"]
+                other_cols = [c for c in df.columns if c not in [main_col] + meta_cols]
+                df = df[[main_col] + other_cols + [c for c in meta_cols if c in df.columns]]
                 break
     return df
 
@@ -534,6 +552,12 @@ if "user_role" not in st.session_state:
     st.session_state.user_role = "Admin"
 if "assigned_parish" not in st.session_state:
     st.session_state.assigned_parish = "Lahat ng Parokya"
+if "login_role" not in st.session_state:
+    st.session_state.login_role = "Admin"
+if "login_parish" not in st.session_state:
+    st.session_state.login_parish = "Lahat ng Parokya"
+if "auto_cloud_backup" not in st.session_state:
+    st.session_state.auto_cloud_backup = True
 
 if not st.session_state.authenticated:
     st.markdown("<br><br>", unsafe_allow_html=True)
@@ -554,6 +578,8 @@ if not st.session_state.authenticated:
                     st.session_state.authenticated = True
                     st.session_state.user_role = acc_info["role"]
                     st.session_state.assigned_parish = acc_info["parish"]
+                    st.session_state.login_role = acc_info["role"]
+                    st.session_state.login_parish = acc_info["parish"]
                     st.rerun()
                 else:
                     st.error("Maling Username o Password.")
@@ -600,7 +626,9 @@ def query_notion_crm(search_query: str = "") -> str:
                     continue
         if not frames: return "Walang nakitang rekord sa Notion database."
         df_notion = pd.concat(frames, ignore_index=True).fillna("")
-        if "_page_id" in df_notion.columns: df_notion = df_notion.drop(columns=["_page_id"])
+        for m_col in ["_page_id", "_last_edited", "_created_time"]:
+            if m_col in df_notion.columns:
+                df_notion = df_notion.drop(columns=[m_col])
         if search_query and search_query.strip():
             mask = df_notion.astype(str).apply(lambda x: x.str.contains(search_query.strip(), case=False, na=False)).any(axis=1)
             df_notion = df_notion[mask]
@@ -609,7 +637,7 @@ def query_notion_crm(search_query: str = "") -> str:
     except Exception as e:
         return f"Error sa Notion: {str(e)}"
 
-def send_email_via_gmail(recipient_email: str, subject: str, body_text: str) -> str:
+def send_email_via_gmail(recipient_email: str, subject: str, body_text: str, attachment_bytes: bytes = None, attachment_filename: str = None) -> str:
     g_id = st.session_state.custom_secrets.get("GMAIL_CLIENT_ID", GMAIL_CLIENT_ID)
     g_sec = st.session_state.custom_secrets.get("GMAIL_CLIENT_SECRET", GMAIL_CLIENT_SECRET)
     g_ref = st.session_state.custom_secrets.get("GMAIL_REFRESH_TOKEN", GMAIL_REFRESH_TOKEN)
@@ -622,11 +650,39 @@ def send_email_via_gmail(recipient_email: str, subject: str, body_text: str) -> 
         msg.set_content(body_text)
         msg["To"] = recipient_email.strip()
         msg["Subject"] = subject
+        if attachment_bytes and attachment_filename:
+            msg.add_attachment(attachment_bytes, maintype="text", subtype="csv", filename=attachment_filename)
         encoded_msg = base64.urlsafe_b64encode(msg.as_bytes()).decode()
         service.users().messages().send(userId="me", body={"raw": encoded_msg}).execute()
         return f"Matagumpay na naipadala ang email kay {recipient_email}!"
     except Exception as e:
         return f"Error sa Gmail: {str(e)}"
+
+def backup_action_to_admin_cloud(action_type: str, sender_name: str, parish: str, topic: str, details: str, draft_reply: str, actor: str):
+    if not st.session_state.get("auto_cloud_backup", True):
+        return
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    subject = f"[CTG Cloud Backup Log] {action_type} — {sender_name} ({parish})"
+    body = (
+        f"CTG MINISTRY HUB — AUTOMATIC CLOUD BACKUP LOG\n"
+        f"==================================================\n"
+        f"Petsa at Oras: {now_str}\n"
+        f"Uri ng Aksyon: {action_type}\n"
+        f"Nag-update / Actor: {actor}\n"
+        f"Pangalan ng Nag-request: {sender_name}\n"
+        f"Parokya: {parish}\n"
+        f"Paksa: {topic}\n"
+        f"--------------------------------------------------\n"
+        f"DETALYE NG REQUEST:\n{details}\n\n"
+        f"--------------------------------------------------\n"
+        f"TUGON / DRAFT SA SISTEMA:\n{draft_reply}\n"
+        f"==================================================\n"
+        f"Naka-save nang ligtas sa iyong Gmail / Google Cloud ({BACKUP_ADMIN_EMAIL})."
+    )
+    try:
+        send_email_via_gmail(BACKUP_ADMIN_EMAIL, subject, body)
+    except Exception:
+        pass
 
 if "custom_secrets" not in st.session_state:
     st.session_state.custom_secrets = {
@@ -638,23 +694,158 @@ if "custom_secrets" not in st.session_state:
         "GMAIL_REFRESH_TOKEN": GMAIL_REFRESH_TOKEN,
     }
 
+# =====================================================================
+# 📜 HELPER PARA SA RECORDS, LIVE DASHBOARD, AT CLOUD BACKUP
+# =====================================================================
+def build_combined_records_df(df_p: pd.DataFrame, df_q: pd.DataFrame, df_co: pd.DataFrame) -> pd.DataFrame:
+    records = []
+    sources = [
+        ("Prayer Request", df_p),
+        ("Church Question", df_q),
+        ("Counselling Request", df_co),
+    ]
+    for cat_name, df_src in sources:
+        if df_src is None or df_src.empty:
+            continue
+        for _, r in df_src.iterrows():
+            parish_val = get_first_non_empty(r, ["Parish", "Assigned Parish", "Parokya"], "Unassigned Parish")
+            if st.session_state.user_role == "Parish Leader" and not normalize_parish_match(parish_val, st.session_state.assigned_parish):
+                continue
+            records.append({
+                "Uri ng Request": cat_name,
+                "Pangalan ng Nag-request": get_first_non_empty(r, ["Full Name", "Name", "Pangalan", "Visitor Name"], "N/A"),
+                "Parokya": parish_val,
+                "Status": get_first_non_empty(r, ["Admin Status", "Approval Status", "Status"], "Pending Review"),
+                "Isinumite / Inaprubahan Ni": get_first_non_empty(r, ["Approved By", "Reviewed By", "Handled By", "Submitted By"], "Pending"),
+                "Paksa": get_first_non_empty(r, ["Prayer Title", "Question Topic", "Counselling Type", "Service Type", "Title"], cat_name),
+                "Email": get_first_non_empty(r, ["Email", "Email Address", "E-mail"], "N/A"),
+                "Contact No.": get_first_non_empty(r, ["Contact No.", "Contact Number", "Phone", "Mobile"], "N/A"),
+                "Tirahan": get_first_non_empty(r, ["Address", "Tirahan", "Current Address"], "N/A"),
+                "Katayuan sa Simbahan": get_first_non_empty(r, ["Church Status", "Member Status"], "N/A"),
+                "Petsa ng Request": get_first_non_empty(r, ["Submission Date", "Date", "Created time", "_created_time"], "N/A"),
+                "Huling Na-update": get_first_non_empty(r, ["_last_edited", "Last edited time", "Updated At"], "N/A"),
+                "Detalye ng Request": get_first_non_empty(r, ["Prayer Details", "Question Details", "Situation Details", "Request Details", "Details", "Message"], ""),
+                "Tugon / AI Draft": get_first_non_empty(r, ["AI Draft Reply", "AI Reply", "Draft Reply", "Reply"], ""),
+            })
+    df_out = pd.DataFrame(records) if records else pd.DataFrame()
+    if not df_out.empty and "Huling Na-update" in df_out.columns:
+        df_out = df_out.sort_values(by="Huling Na-update", ascending=False, ignore_index=True)
+    return df_out
+
+def load_all_ministry_DataFrames():
+    n_tok = st.session_state.custom_secrets.get("NOTION_TOKEN", NOTION_TOKEN)
+    crm_db = st.session_state.custom_secrets.get("NOTION_CRM_DB_ID", NOTION_CRM_DB_ID)
+    p_db = st.session_state.custom_secrets.get("NOTION_PRAYER_DB_ID", NOTION_PRAYER_DB_ID) or crm_db
+    q_db = st.session_state.custom_secrets.get("NOTION_QUESTIONS_DB_ID", NOTION_QUESTIONS_DB_ID) or crm_db
+    c_db = st.session_state.custom_secrets.get("NOTION_COUNSELLING_DB_ID", NOTION_COUNSELLING_DB_ID) or crm_db
+    try:
+        df_crm = load_notion_crm_data(n_tok, crm_db)
+        df_p = load_notion_crm_data(n_tok, p_db) if clean_notion_id(p_db) != clean_notion_id(crm_db) else df_crm.copy()
+        df_q = load_notion_crm_data(n_tok, q_db) if clean_notion_id(q_db) != clean_notion_id(crm_db) else df_crm.copy()
+        df_co = load_notion_crm_data(n_tok, c_db) if clean_notion_id(c_db) != clean_notion_id(crm_db) else df_crm.copy()
+        return df_crm, df_p, df_q, df_co
+    except Exception:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+df_crm_global, df_p_global, df_q_global, df_co_global = load_all_ministry_DataFrames()
+global_records_df = build_combined_records_df(df_p_global, df_q_global, df_co_global)
+
+# =====================================================================
+# ⚙️ SIDEBAR CONTROL PANEL, LIVE MONITOR & CLOUD BACKUP CENTER
+# =====================================================================
 with st.sidebar:
     if LOGO_PATH and os.path.exists(LOGO_PATH): st.image(LOGO_PATH, width=85)
     st.header("⚙️ Ministry Control Panel")
     st.write(f"👤 Role: **{st.session_state.user_role}**")
     st.info(f"📍 Parish Access:\n**{st.session_state.assigned_parish}**")
+
+    # 1. SIDEBAR LIVE ACTIVITY & UPDATE MONITOR
+    with st.expander("📡 Live Update & Activity Monitor", expanded=True):
+        if not global_records_df.empty:
+            c_s1, c_s2 = st.columns(2)
+            cnt_sub = len(global_records_df[global_records_df["Status"].str.contains("For Master Admin Approval", case=False, na=False)])
+            cnt_ass = len(global_records_df[global_records_df["Status"].str.contains("Assigned to Parish Leader", case=False, na=False)])
+            c_s1.metric("📥 For Approval", cnt_sub)
+            c_s2.metric("📤 Assigned", cnt_ass)
+            st.caption("🔔 **Pinakahuling Galaw / Updates:**")
+            for _, l_row in global_records_df.head(3).iterrows():
+                st.markdown(
+                    f"<div class='sidebar-log-card'>"
+                    f"<b>{l_row['Pangalan ng Nag-request']}</b> ({l_row['Parokya']})<br>"
+                    f"📊 {l_row['Status']}<br>"
+                    f"🏛️ {l_row['Isinumite / Inaprubahan Ni']}"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+        else:
+            st.caption("Wala pang aktibong rekord.")
+
+    # 2. SIDEBAR CLOUD BACKUP & GOOGLE DRIVE SAFE CENTER
+    with st.expander(f"☁️ Cloud Backup ({BACKUP_ADMIN_EMAIL})", expanded=False):
+        st.session_state.auto_cloud_backup = st.checkbox(
+            "Auto-save bawat update sa Gmail Cloud",
+            value=st.session_state.auto_cloud_backup
+        )
+        if not global_records_df.empty:
+            csv_bytes = global_records_df.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                label="📥 Download CSV (Para sa Google Drive)",
+                data=csv_bytes,
+                file_name=f"CTG_Ministry_Backup_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+            if st.button("📧 I-email ang Buong Backup sa Gmail Ko", use_container_width=True):
+                with st.spinner("Ipinapadala sa clarojerald16@gmail.com..."):
+                    res_b = send_email_via_gmail(
+                        BACKUP_ADMIN_EMAIL,
+                        f"CTG Full Database Backup — {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                        f"Narito ang kumpletong CSV backup ng lahat ng CTG Ministry Hub records ({len(global_records_df)} rows).",
+                        attachment_bytes=csv_bytes,
+                        attachment_filename=f"CTG_Full_Backup_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"
+                    )
+                    if "Matagumpay" in res_b:
+                        st.success("Naipadala sa clarojerald16@gmail.com!")
+                    else:
+                        st.error(res_b)
+
+    # 3. SIDEBAR ROLE & PARISH SWITCHER (PARA SA MASTER ADMIN)
+    if st.session_state.login_role == "Master Admin":
+        with st.expander("🛠️ Admin View & Parish Switcher", expanded=False):
+            st.caption("Silipin o kontrolin ang dashboard ng kahit anong Parokya:")
+            override_role = st.selectbox("Pumili ng View Mode:", ["Master Admin (Lahat)", "Parish Leader View"], key="ctrl_role_override")
+            if override_role == "Master Admin (Lahat)":
+                new_role = "Master Admin"
+                new_parish = "Lahat ng Parokya"
+            else:
+                new_role = "Parish Leader"
+                new_parish = st.selectbox("Pumili ng Parokya:", PARISH_ORDER, key="ctrl_parish_override")
+            if st.button("🔄 Ilipat ang Control View", use_container_width=True):
+                st.session_state.user_role = new_role
+                st.session_state.assigned_parish = new_parish
+                st.rerun()
+
     st.divider()
     if st.session_state.user_role == "Master Admin":
         nav_options = [
-            "📊 Parish Directory & Family Search", "🛡️ Master Admin Controller & Approval Queue",
-            "🤝 Notion CRM (Visitors & Members)", "💬 AI Chat Assistant",
-            "➕ Magdagdag ng Miyembro & Litrato", "🙏 Prayer Wall & Categorizer",
-            "📢 Announcement Broadcaster", "🛠️ App Settings"
+            "📈 Live Activity & Update Dashboard",
+            "📊 Parish Directory & Family Search",
+            "🛡️ Master Admin Controller & Approval Queue",
+            "🤝 Notion CRM (Visitors & Members)",
+            "💬 AI Chat Assistant",
+            "➕ Magdagdag ng Miyembro & Litrato",
+            "🙏 Prayer Wall & Categorizer",
+            "📢 Announcement Broadcaster",
+            "🛠️ App Settings"
         ]
     else:
         nav_options = [
-            "📊 Parish Directory & Family Search", "📥 Parish Assigned Requests & Counselling",
-            "💬 AI Chat Assistant", "➕ Magdagdag ng Miyembro & Litrato", "🙏 Prayer Wall & Categorizer"
+            "📈 Live Activity & Update Dashboard",
+            "📊 Parish Directory & Family Search",
+            "📥 Parish Assigned Requests & Counselling",
+            "💬 AI Chat Assistant",
+            "➕ Magdagdag ng Miyembro & Litrato",
+            "🙏 Prayer Wall & Categorizer"
         ]
     app_mode = st.radio("Pumili ng Pahina:", nav_options)
     selected_model = st.selectbox("Gemini Model:", ["gemini-3.8-flash", "gemini-3.1-pro-preview"], index=0)
@@ -742,18 +933,18 @@ def render_workflow_queue_section(df_source: pd.DataFrame, category_label: str, 
         address = get_first_non_empty(row, ["Address", "Tirahan", "Current Address"], "N/A")
         parish = get_first_non_empty(row, ["Parish", "Assigned Parish", "Parokya"], "Unassigned Parish")
         church_status = get_first_non_empty(row, ["Church Status", "Member Status", "Status sa Simbahan"], "Member / Visitor")
-        sub_date = get_first_non_empty(row, ["Submission Date", "Date", "Created time", "Timestamp"], "N/A")
+        sub_date = get_first_non_empty(row, ["Submission Date", "Date", "Created time", "_created_time"], "N/A")
+        last_edit = get_first_non_empty(row, ["_last_edited", "Last edited time"], "N/A")
         pref_contact = get_first_non_empty(row, ["Response Type", "Preferred Contact", "Gustong Uri ng Tugon"], "Email / SMS")
         topic = get_first_non_empty(row, ["Prayer Title", "Question Topic", "Counselling Type", "Service Type", "Title"], category_label)
         details = get_first_non_empty(row, ["Prayer Details", "Question Details", "Situation Details", "Request Details", "Details", "Message"], "Walang detalye.")
         admin_status = get_first_non_empty(row, ["Admin Status", "Approval Status", "Status"], "Pending Review")
         handled_by = get_first_non_empty(row, ["Approved By", "Reviewed By", "Handled By", "Submitted By"], "")
 
-        # STRICT PARISH PRIVACY: Ang Parish Leader (hal. Lipay Norte) ay hinding-hindi makakakita ng request ng ibang parokya
+        # STRICT PARISH ISOLATION: Tanging ang parokyang nakatalaga lang ang makakakita
         if not is_master and not normalize_parish_match(parish, st.session_state.assigned_parish):
             continue
 
-        # Master Admin Parish Filter
         if is_master and parish_filter != "Lahat ng Parokya":
             if parish_filter == "Unassigned Parish":
                 if parish != "Unassigned Parish" and parish.strip() != "":
@@ -761,7 +952,6 @@ def render_workflow_queue_section(df_source: pd.DataFrame, category_label: str, 
             elif not normalize_parish_match(parish, parish_filter):
                 continue
 
-        # Status Filtering
         st_low = admin_status.lower()
         if is_master:
             if status_filter.startswith("Lahat ng Active Queue") and st_low in ["approved & sent", "rejected / archived"]:
@@ -792,7 +982,6 @@ def render_workflow_queue_section(df_source: pd.DataFrame, category_label: str, 
         if draft_state_key not in st.session_state:
             st.session_state[draft_state_key] = get_first_non_empty(row, ["AI Draft Reply", "AI Reply", "Draft Reply", "Reply"], "")
 
-        # Tukuyin kung sino ang parokyang nag-submit ng tugon
         submitted_parish_info = handled_by if handled_by else (parish if "for master admin approval" in st_low else "Wala pang nagsusumite")
 
         header_tag = (
@@ -801,7 +990,6 @@ def render_workflow_queue_section(df_source: pd.DataFrame, category_label: str, 
         )
 
         with st.expander(header_tag, expanded=(st_low != "approved & sent")):
-            # Badges kung sino ang nag-submit o kanino naka-assign
             if "for master admin approval" in st_low or "Submitted by" in handled_by or "Drafted by" in handled_by:
                 st.markdown(
                     f"<div class='submitted-parish-badge'>📥 ISINUMITE NG PAROKYA PARA SA IYONG APPROVAL: "
@@ -814,7 +1002,6 @@ def render_workflow_queue_section(df_source: pd.DataFrame, category_label: str, 
                     unsafe_allow_html=True
                 )
 
-            # SPLIT AREA: KALIWA = REQUEST DETAILS AREA | KANAN = TYPING & ACTION AREA
             col_req_area, col_type_area = st.columns([1.05, 1.35])
 
             with col_req_area:
@@ -828,6 +1015,7 @@ def render_workflow_queue_section(df_source: pd.DataFrame, category_label: str, 
                     f"<b>📱 Contact / SMS No.:</b> {contact_no}<br>"
                     f"<b>🏠 Tirahan:</b> {address}<br>"
                     f"<b>📅 Petsa ng Request:</b> {sub_date}<br>"
+                    f"<b>⏱️ Huling Na-update:</b> {last_edit}<br>"
                     f"<b>📬 Gustong Tugon:</b> {pref_contact}<br>"
                     f"<b>🏛️ Huling Nag-proseso / Nag-submit:</b> {handled_by or 'N/A'}"
                     f"<hr style='margin:8px 0;'>"
@@ -886,16 +1074,18 @@ def render_workflow_queue_section(df_source: pd.DataFrame, category_label: str, 
                         )
                     with ca2:
                         if st.button("📤 Ipasa sa Parokyang Ito", key=f"ass_btn_{page_id}", use_container_width=True):
+                            actor_tag = f"Assigned by Master Admin to {target_parish}"
                             update_notion_page_record(
                                 n_tok,
                                 page_id,
                                 ai_draft=edited_draft,
                                 admin_status="Assigned to Parish Leader",
                                 assigned_parish=target_parish,
-                                approved_by=f"Assigned by Master Admin to {target_parish}"
+                                approved_by=actor_tag
                             )
+                            backup_action_to_admin_cloud("Assigned to Parish", sender_name, target_parish, topic, details, edited_draft, actor_tag)
                             st.cache_data.clear()
-                            st.info(f"Naipasa na sa **{target_parish}**! Sila lang ang makakakita nito sa kanilang area.")
+                            st.info(f"Naipasa na sa **{target_parish}**! Sila lang ang makakakita nito.")
 
                     st.markdown("**🅱️ Master Admin Final Approval & Pagpapadala (Gmail / SMS):**")
                     cb1, cb2, cb3 = st.columns([1.5, 1.2, 1.1])
@@ -909,8 +1099,9 @@ def render_workflow_queue_section(df_source: pd.DataFrame, category_label: str, 
                                     update_notion_page_record(
                                         n_tok, page_id, ai_draft=clean_body, admin_status="Approved & Sent", approved_by=approver_note
                                     )
+                                    backup_action_to_admin_cloud("Approved & Sent via Gmail", sender_name, parish, topic, details, clean_body, approver_note)
                                     st.cache_data.clear()
-                                    st.success(f"✅ {res_mail} Naitala na rin sa Records Panel!")
+                                    st.success(f"✅ {res_mail} Naka-backup na rin sa {BACKUP_ADMIN_EMAIL}!")
                                 else:
                                     st.error(res_mail)
                             else:
@@ -934,18 +1125,19 @@ def render_workflow_queue_section(df_source: pd.DataFrame, category_label: str, 
                             update_notion_page_record(
                                 n_tok, page_id, ai_draft=edited_draft, admin_status="Approved & Sent", approved_by=approver_note
                             )
+                            backup_action_to_admin_cloud("Approved & Sent via SMS", sender_name, parish, topic, details, edited_draft, approver_note)
                             st.cache_data.clear()
-                            st.success("Na-record na bilang 'Approved & Sent via SMS' sa Records Panel!")
+                            st.success("Na-record bilang 'Approved & Sent via SMS' at na-backup sa Gmail!")
                 else:
-                    # PARISH LEADER BUTTONS
                     p1, p2 = st.columns([1, 1.5])
                     with p1:
                         if st.button("💾 I-save Muna ang Draft", key=f"p_save_{page_id}", use_container_width=True):
+                            actor_tag = f"Draft in progress by {st.session_state.assigned_parish}"
                             update_notion_page_record(
                                 n_tok,
                                 page_id,
                                 ai_draft=edited_draft,
-                                approved_by=f"Draft in progress by {st.session_state.assigned_parish}"
+                                approved_by=actor_tag
                             )
                             st.cache_data.clear()
                             st.success("Na-save ang draft!")
@@ -954,14 +1146,16 @@ def render_workflow_queue_section(df_source: pd.DataFrame, category_label: str, 
                             if not edited_draft.strip():
                                 st.warning("Mag-type muna ng iyong tugon bago ipasa kay Master Admin.")
                             else:
+                                actor_tag = f"Submitted by {st.session_state.assigned_parish}"
                                 update_notion_page_record(
                                     n_tok,
                                     page_id,
                                     ai_draft=edited_draft,
                                     admin_status="For Master Admin Approval",
                                     assigned_parish=st.session_state.assigned_parish,
-                                    approved_by=f"Submitted by {st.session_state.assigned_parish}"
+                                    approved_by=actor_tag
                                 )
+                                backup_action_to_admin_cloud("Parish Submitted for Approval", sender_name, st.session_state.assigned_parish, topic, details, edited_draft, actor_tag)
                                 st.cache_data.clear()
                                 st.success(f"✅ Naipasa na kay Master Admin! Makikita niya na ang {st.session_state.assigned_parish} ang nag-submit nito.")
 
@@ -969,43 +1163,116 @@ def render_workflow_queue_section(df_source: pd.DataFrame, category_label: str, 
         st.info("Walang nahanap na request na tumutugma sa napiling filter.")
 
 # =====================================================================
-# 📜 HELPER PARA SA SIDE PANEL & TAB NG MGA NATAPOS AT REQUESTER INFO
+# 📈 PAGE 0: LIVE ACTIVITY & UPDATE DASHBOARD + CLOUD BACKUP CENTER
 # =====================================================================
-def build_combined_records_df(df_p: pd.DataFrame, df_q: pd.DataFrame, df_co: pd.DataFrame) -> pd.DataFrame:
-    records = []
-    sources = [
-        ("Prayer Request", df_p),
-        ("Church Question", df_q),
-        ("Counselling Request", df_co),
-    ]
-    for cat_name, df_src in sources:
-        if df_src is None or df_src.empty:
-            continue
-        for _, r in df_src.iterrows():
-            parish_val = get_first_non_empty(r, ["Parish", "Assigned Parish", "Parokya"], "Unassigned Parish")
-            if st.session_state.user_role == "Parish Leader" and not normalize_parish_match(parish_val, st.session_state.assigned_parish):
-                continue
-            records.append({
-                "Uri ng Request": cat_name,
-                "Pangalan ng Nag-request": get_first_non_empty(r, ["Full Name", "Name", "Pangalan", "Visitor Name"], "N/A"),
-                "Parokya": parish_val,
-                "Status": get_first_non_empty(r, ["Admin Status", "Approval Status", "Status"], "Pending Review"),
-                "Isinumite / Inaprubahan Ni": get_first_non_empty(r, ["Approved By", "Reviewed By", "Handled By", "Submitted By"], "Pending"),
-                "Paksa": get_first_non_empty(r, ["Prayer Title", "Question Topic", "Counselling Type", "Service Type", "Title"], cat_name),
-                "Email": get_first_non_empty(r, ["Email", "Email Address", "E-mail"], "N/A"),
-                "Contact No.": get_first_non_empty(r, ["Contact No.", "Contact Number", "Phone", "Mobile"], "N/A"),
-                "Tirahan": get_first_non_empty(r, ["Address", "Tirahan", "Current Address"], "N/A"),
-                "Katayuan sa Simbahan": get_first_non_empty(r, ["Church Status", "Member Status"], "N/A"),
-                "Petsa": get_first_non_empty(r, ["Submission Date", "Date", "Created time"], "N/A"),
-                "Detalye ng Request": get_first_non_empty(r, ["Prayer Details", "Question Details", "Situation Details", "Request Details", "Details", "Message"], ""),
-                "Tugon / AI Draft": get_first_non_empty(r, ["AI Draft Reply", "AI Reply", "Draft Reply", "Reply"], ""),
-            })
-    return pd.DataFrame(records) if records else pd.DataFrame()
+if app_mode == "📈 Live Activity & Update Dashboard":
+    render_title_with_logo(
+        "📈 CTG Live Activity, Parish Updates & Cloud Backup Dashboard",
+        f"Real-time monitoring ng lahat ng galaw ng bawat parokya at direktang backup para sa {BACKUP_ADMIN_EMAIL}."
+    )
+
+    top_b1, top_b2, top_b3, top_b4 = st.columns([1.2, 1.4, 1.4, 1.5])
+    with top_b1:
+        if st.button("🔄 I-refresh ang Dashboard", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
+    if not global_records_df.empty:
+        csv_data_dash = global_records_df.to_csv(index=False).encode("utf-8")
+        excel_buffer = io.BytesIO()
+        with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+            global_records_df.to_excel(writer, index=False, sheet_name="CTG_Ministry_Records")
+        excel_bytes = excel_buffer.getvalue()
+
+        with top_b2:
+            st.download_button(
+                label="📥 Download CSV (Google Drive)",
+                data=csv_data_dash,
+                file_name=f"CTG_Ministry_Backup_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        with top_b3:
+            st.download_button(
+                label="📊 Download Excel (.xlsx)",
+                data=excel_bytes,
+                file_name=f"CTG_Ministry_Backup_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+        with top_b4:
+            if st.button(f"☁️ I-email ang Backup sa {BACKUP_ADMIN_EMAIL}", type="primary", use_container_width=True):
+                with st.spinner(f"Ipinapadala sa {BACKUP_ADMIN_EMAIL}..."):
+                    res_cloud = send_email_via_gmail(
+                        BACKUP_ADMIN_EMAIL,
+                        f"CTG Ministry Hub Cloud Backup — {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                        f"Kalakip nito ang pinakabagong CSV backup ng lahat ng CTG Ministry Hub requests at updates ({len(global_records_df)} records).",
+                        attachment_bytes=csv_data_dash,
+                        attachment_filename=f"CTG_Ministry_Backup_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"
+                    )
+                    if "Matagumpay" in res_cloud:
+                        st.success(f"Ligtas nang naipadala sa {BACKUP_ADMIN_EMAIL}!")
+                    else:
+                        st.error(res_cloud)
+
+    st.divider()
+
+    if not global_records_df.empty:
+        total_reqs = len(global_records_df)
+        pending_reqs = len(global_records_df[global_records_df["Status"].str.contains("Pending", case=False, na=False)])
+        assigned_reqs = len(global_records_df[global_records_df["Status"].str.contains("Assigned to Parish Leader", case=False, na=False)])
+        for_approval_reqs = len(global_records_df[global_records_df["Status"].str.contains("For Master Admin Approval", case=False, na=False)])
+        completed_reqs = len(global_records_df[global_records_df["Status"].str.contains("Approved & Sent", case=False, na=False)])
+
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("📌 Kabuuang Requests", total_reqs)
+        m2.metric("⏳ Pending Review", pending_reqs)
+        m3.metric("📤 Nasa Parokya (Assigned)", assigned_reqs)
+        m4.metric("📥 Galing Parokya (For Approval)", for_approval_reqs)
+        m5.metric("✅ Natapos Na (Approved & Sent)", completed_reqs)
+
+        st.divider()
+        col_d_left, col_d_right = st.columns([1.35, 1.15])
+
+        with col_d_left:
+            st.markdown("### 🏛️ Status Breakdown Kada Parokya")
+            parish_breakdown = []
+            for p_name in PARISH_ORDER + ["Unassigned Parish"]:
+                sub_df = global_records_df[global_records_df["Parokya"].apply(lambda x: normalize_parish_match(x, p_name) if p_name != "Unassigned Parish" else (x == "Unassigned Parish"))]
+                if len(sub_df) > 0 or st.session_state.user_role == "Master Admin":
+                    parish_breakdown.append({
+                        "Parokya": p_name,
+                        "Kabuuan": len(sub_df),
+                        "Pending": len(sub_df[sub_df["Status"].str.contains("Pending", case=False, na=False)]),
+                        "Nasa Parokya": len(sub_df[sub_df["Status"].str.contains("Assigned", case=False, na=False)]),
+                        "Isinumite (For Approval)": len(sub_df[sub_df["Status"].str.contains("For Master Admin Approval", case=False, na=False)]),
+                        "Tapos Na (Sent)": len(sub_df[sub_df["Status"].str.contains("Approved & Sent", case=False, na=False)]),
+                    })
+            st.dataframe(pd.DataFrame(parish_breakdown), use_container_width=True, hide_index=True)
+
+        with col_d_right:
+            st.markdown("### 🔔 Live Feed: Sino ang Nag-update / Nag-submit?")
+            for _, item in global_records_df.head(6).iterrows():
+                st.markdown(
+                    f"<div class='records-side-box'>"
+                    f"<b>👤 Nag-request: {item['Pangalan ng Nag-request']}</b> ({item['Uri ng Request']})<br>"
+                    f"📍 <b>Parokya:</b> {item['Parokya']} | 📊 <b>Status:</b> <code>{item['Status']}</code><br>"
+                    f"🏛️ <b>Huling Nag-update / Nag-submit:</b> <b>{item['Isinumite / Inaprubahan Ni']}</b><br>"
+                    f"🏷️ <b>Paksa:</b> {item['Paksa']} | ⏱️ <b>Oras:</b> {item['Huling Na-update']}"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+
+        st.divider()
+        st.markdown("### 📋 Kumpletong Master Log ng Lahat ng Transaksyon at Impormasyon ng Nag-request")
+        st.dataframe(global_records_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("Wala pang nakatalang aktibidad sa Notion databases.")
+    st.stop()
 
 # =====================================================================
 # 1. PARISH DIRECTORY & FAMILY SEARCH (KUMPLETONG ORIGINAL VIEW + REMARKS)
 # =====================================================================
-if app_mode == "📊 Parish Directory & Family Search":
+elif app_mode == "📊 Parish Directory & Family Search":
     render_title_with_logo("CHURCH OF THE TEMPLE OF GOD — SEARCH FAMILY / PARISH")
     if master_members_df.empty:
         st.error(f"Hindi makita o mabasa ang Excel file ({excel_filename}).")
@@ -1133,20 +1400,9 @@ elif app_mode in ["🛡️ Master Admin Controller & Approval Queue", "📥 Pari
             st.cache_data.clear()
             st.rerun()
 
-    n_tok = st.session_state.custom_secrets.get("NOTION_TOKEN", NOTION_TOKEN)
-    crm_db = st.session_state.custom_secrets.get("NOTION_CRM_DB_ID", NOTION_CRM_DB_ID)
-    p_db = st.session_state.custom_secrets.get("NOTION_PRAYER_DB_ID", NOTION_PRAYER_DB_ID) or crm_db
-    q_db = st.session_state.custom_secrets.get("NOTION_QUESTIONS_DB_ID", NOTION_QUESTIONS_DB_ID) or crm_db
-    c_db = st.session_state.custom_secrets.get("NOTION_COUNSELLING_DB_ID", NOTION_COUNSELLING_DB_ID) or crm_db
+    df_crm, df_p, df_q, df_co = df_crm_global, df_p_global, df_q_global, df_co_global
+    records_master_df = global_records_df
 
-    df_crm = load_notion_crm_data(n_tok, crm_db)
-    df_p = load_notion_crm_data(n_tok, p_db) if clean_notion_id(p_db) != clean_notion_id(crm_db) else df_crm.copy()
-    df_q = load_notion_crm_data(n_tok, q_db) if clean_notion_id(q_db) != clean_notion_id(crm_db) else df_crm.copy()
-    df_co = load_notion_crm_data(n_tok, c_db) if clean_notion_id(c_db) != clean_notion_id(crm_db) else df_crm.copy()
-
-    records_master_df = build_combined_records_df(df_p, df_q, df_co)
-
-    # Bilangin ang mga status para sa metrics
     if not records_master_df.empty:
         cnt_for_approval = len(records_master_df[records_master_df["Status"].str.contains("For Master Admin Approval", case=False, na=False)])
         cnt_completed = len(records_master_df[records_master_df["Status"].str.contains("Approved & Sent", case=False, na=False)])
@@ -1161,7 +1417,6 @@ elif app_mode in ["🛡️ Master Admin Controller & Approval Queue", "📥 Pari
     m5.metric("✅ Natapos Na (Approved & Sent)", cnt_completed)
     st.divider()
 
-    # Kung naka-check ang Side Panel, hatiin ang screen: Kaliwa = Main Workspace, Kanan = Side Panel ng Records
     if show_side_panel:
         col_main_workspace, col_side_records = st.columns([2.35, 1.05])
     else:
@@ -1187,11 +1442,13 @@ elif app_mode in ["🛡️ Master Admin Controller & Approval Queue", "📥 Pari
             if records_master_df.empty:
                 st.info("Wala pang nakatalang request.")
             else:
-                rec_filter = st.selectbox(
-                    "Salain ang Talaan:",
-                    ["Lahat ng Rekord", "✅ Mga Natapos Na (Approved & Sent)", "📥 Isinumite ng Parokya (For Master Admin Approval)", "📤 Nakatalaga sa Parokya"],
-                    key="full_rec_flt"
-                )
+                c_rf1, c_rf2 = st.columns([2, 1.2])
+                with c_rf1:
+                    rec_filter = st.selectbox(
+                        "Salain ang Talaan:",
+                        ["Lahat ng Rekord", "✅ Mga Natapos Na (Approved & Sent)", "📥 Isinumite ng Parokya (For Master Admin Approval)", "📤 Nakatalaga sa Parokya"],
+                        key="full_rec_flt"
+                    )
                 df_view_rec = records_master_df.copy()
                 if rec_filter.startswith("✅"):
                     df_view_rec = df_view_rec[df_view_rec["Status"].str.contains("Approved & Sent", case=False, na=False)]
@@ -1200,10 +1457,20 @@ elif app_mode in ["🛡️ Master Admin Controller & Approval Queue", "📥 Pari
                 elif rec_filter.startswith("📤"):
                     df_view_rec = df_view_rec[df_view_rec["Status"].str.contains("Assigned to Parish Leader", case=False, na=False)]
 
+                with c_rf2:
+                    st.write("")
+                    st.download_button(
+                        label="📥 I-download sa Google Drive (CSV)",
+                        data=df_view_rec.to_csv(index=False).encode("utf-8"),
+                        file_name="CTG_Records_Export.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
+
                 st.dataframe(df_view_rec, use_container_width=True, hide_index=True)
         with tcrm:
             if st.session_state.user_role == "Master Admin":
-                st.dataframe(df_crm.drop(columns=["_page_id"], errors="ignore"), use_container_width=True, hide_index=True)
+                st.dataframe(df_crm.drop(columns=["_page_id", "_last_edited", "_created_time"], errors="ignore"), use_container_width=True, hide_index=True)
             else:
                 st.info("Ang buong Central CRM table ay para sa Master Admin. Gamitin ang Records tab para sa iyong parokya.")
 
@@ -1252,7 +1519,8 @@ elif app_mode in ["🛡️ Master Admin Controller & Approval Queue", "📥 Pari
                     )
                     with st.expander(f"🔍 Buong Detalye at Tugon — {r_item['Pangalan ng Nag-request']}"):
                         st.write(f"**🏠 Tirahan:** {r_item['Tirahan']}")
-                        st.write(f"**⛪ Katayuan:** {r_item['Katayuan sa Simbahan']} | **📅 Petsa:** {r_item['Petsa']}")
+                        st.write(f"**⛪ Katayuan:** {r_item['Katayuan sa Simbahan']} | **📅 Petsa:** {r_item['Petsa ng Request']}")
+                        st.write(f"**⏱️ Huling Update:** {r_item['Huling Na-update']}")
                         st.markdown(f"**💬 Kahilingan / Tanong:**\n> {r_item['Detalye ng Request']}")
                         st.markdown(f"**✉️ Tugon / AI Draft:**\n> {r_item['Tugon / AI Draft'] or 'Wala pang tugon.'}")
     st.stop()
@@ -1267,7 +1535,7 @@ elif app_mode == "🤝 Notion CRM (Visitors & Members)":
     n_db = st.session_state.custom_secrets.get("NOTION_CRM_DB_ID", NOTION_CRM_DB_ID)
     df_n = load_notion_crm_data(n_tok, n_db)
     if not df_n.empty:
-        disp = df_n.drop(columns=["_page_id"], errors="ignore")
+        disp = df_n.drop(columns=["_page_id", "_last_edited", "_created_time"], errors="ignore")
         q = st.text_input("🔍 Search CRM:").strip()
         if q: disp = disp[disp.astype(str).apply(lambda x: x.str.contains(q, case=False, na=False)).any(axis=1)]
         st.dataframe(disp, use_container_width=True, hide_index=True)
@@ -1302,11 +1570,21 @@ elif app_mode == "➕ Magdagdag ng Miyembro & Litrato":
             m_sex = st.selectbox("Kasarian:", ["MALE", "FEMALE"])
             m_cat = st.selectbox("Kategorya:", ["KIDS", "YOUTH", "ADULT", "SENIOR CITIZEN"])
             m_st = st.selectbox("Status:", ["ACTIVE", "INACTIVE", "NON-MEMBER"])
-            st.text_input("Contact Number:")
+            m_con = st.text_input("Contact Number:")
             pho = st.file_uploader("Litrato:", type=["jpg", "png", "jpeg"])
+        m_rem = st.text_area("Remarks / Tala para sa Miyembro:")
         if st.form_submit_button("I-save", type="primary"):
             if fid and fn:
                 st.success(f"Naidagdag si **{fn}** sa pamilyang `{fid}` ({mp})!")
+                backup_action_to_admin_cloud(
+                    "New Member Added",
+                    fn,
+                    mp,
+                    f"Family ID: {fid}",
+                    f"Head: {m_head} | Rel: {m_rel} | Sex: {m_sex} | Cat: {m_cat} | Status: {m_st} | Contact: {m_con}",
+                    f"Remarks: {m_rem}",
+                    st.session_state.assigned_parish
+                )
                 if pho is not None:
                     st.image(pho, caption=f"Litrato ni {fn}", width=150)
             else:
@@ -1347,7 +1625,7 @@ elif app_mode == "📢 Announcement Broadcaster":
     st.stop()
 
 # =====================================================================
-# 7. APP SETTINGS
+# 7. APP SETTINGS (KUMPLETONG 10 CREDENTIAL KEYS)
 # =====================================================================
 elif app_mode == "🛠️ App Settings":
     render_title_with_logo("App Configuration & Settings")
