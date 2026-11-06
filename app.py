@@ -84,7 +84,8 @@ CLOUD_SPREADSHEET_URL = (
 st.set_page_config(
     page_title="CTG Ministry Hub - Gabay AI",
     page_icon=LOGO_PATH if LOGO_PATH else "⛪",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
 st.markdown("""
@@ -152,9 +153,20 @@ st.markdown("""
         color: #F8FAFC;
         font-size: 0.80rem;
     }
-    [data-testid="stToolbar"] { display: none !important; visibility: hidden !important; }
+    /* Siguraduhing laging litaw ang Sidebar Toggle Button sa Desktop at Phone */
+    [data-testid="collapsedControl"], [data-testid="stSidebarCollapseButton"] {
+        display: flex !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+        z-index: 999999 !important;
+        background-color: #1E3A8A !important;
+        color: #FFFFFF !important;
+        border-radius: 8px !important;
+        padding: 4px !important;
+        margin: 6px !important;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.45) !important;
+    }
     [data-testid="stAppDeployButton"] { display: none !important; }
-    [data-testid="stHeaderActionElements"] { display: none !important; }
     #MainMenu { visibility: hidden !important; display: none !important; }
     footer { visibility: hidden !important; display: none !important; }
     .viewerBadge_container__1QSob, .styles_viewerBadge__1yB5_, .viewerBadge_link__1S137, .viewerBadge_text__1JaDK { display: none !important; }
@@ -856,6 +868,31 @@ with st.sidebar:
     if st.button("🚪 Logout"):
         st.session_state.authenticated = False
         st.rerun()
+
+# =====================================================================
+# 📱 MOBILE & DESKTOP TOP QUICK CONTROL PANEL (PARA LAGING KITA KAHIT SA PHONE)
+# =====================================================================
+with st.expander("📱 Quick Navigation & Ministry Control Panel (Buksan kung gamit ay Phone o Nakatago ang Sidebar)", expanded=False):
+    m_col1, m_col2, m_col3 = st.columns([1.8, 1.2, 1])
+    with m_col1:
+        mobile_mode = st.selectbox(
+            "🧭 Pumili / Lumipat ng Pahina:",
+            nav_options,
+            index=nav_options.index(app_mode),
+            key="mobile_nav_select"
+        )
+        if mobile_mode != app_mode:
+            app_mode = mobile_mode
+    with m_col2:
+        st.write(f"👤 **Role:** {st.session_state.user_role}")
+        st.write(f"📍 **Parish:** {st.session_state.assigned_parish}")
+    with m_col3:
+        if st.button("🔄 Refresh Data", key="mob_ref", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
+        if st.button("🚪 Logout Account", key="mob_out", use_container_width=True):
+            st.session_state.authenticated = False
+            st.rerun()
 
 def generate_ai_ministry_draft(service_category, sender_name, parish_name, topic, details, lang, model_name):
     valid_keys = get_valid_gemini_keys()
