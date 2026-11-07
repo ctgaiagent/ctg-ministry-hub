@@ -5,6 +5,7 @@ import json
 import time
 import base64
 import requests
+import openpyxl
 from datetime import datetime
 from email.message import EmailMessage
 import streamlit as st
@@ -78,13 +79,35 @@ APP_USER = get_secret("APP_USER", "ctg.ministry.master.admin")
 APP_PASSWORD = get_secret("APP_PASSWORD", "Church#Temple#God$2026!Admin")
 BACKUP_ADMIN_EMAIL = "clarojerald16@gmail.com"
 
-CLOUD_SPREADSHEET_URL = (
+DEFAULT_CLOUD_SPREADSHEET_URL = (
     "https://docs.google.com/spreadsheets/d/15_znwPmjK95vTgf5lStbKKPCjEGw6oDp/"
     "edit?usp=sharing&ouid=107511419052324683693&rtpof=true&sd=true"
 )
 
+LOCAL_EXCEL_CACHE = "CTG_HEADS_TOTAL_UPDATED FIXED.xlsx"
+LOCAL_CONFIG_FILE = "ctg_app_cloud_config.json"
 LOCAL_CHAT_FILE = "ctg_ministry_internal_chat.json"
 DRIVE_CHAT_FILENAME = "ctg_ministry_internal_chat_cloud.json"
+
+def load_saved_cloud_url() -> str:
+    if "custom_secrets" in st.session_state and st.session_state.custom_secrets.get("CLOUD_SPREADSHEET_URL"):
+        return st.session_state.custom_secrets["CLOUD_SPREADSHEET_URL"].strip()
+    if os.path.exists(LOCAL_CONFIG_FILE):
+        try:
+            with open(LOCAL_CONFIG_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if data.get("CLOUD_SPREADSHEET_URL"):
+                    return data["CLOUD_SPREADSHEET_URL"].strip()
+        except Exception:
+            pass
+    return get_secret("CLOUD_SPREADSHEET_URL", DEFAULT_CLOUD_SPREADSHEET_URL)
+
+def save_cloud_url_config(new_url: str):
+    try:
+        with open(LOCAL_CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump({"CLOUD_SPREADSHEET_URL": new_url.strip()}, f, indent=2)
+    except Exception:
+        pass
 
 st.set_page_config(
     page_title="CTG Ministry Hub - Gabay AI",
@@ -320,38 +343,125 @@ PARISH_ACCOUNTS = {
 }
 
 def extract_id_from_url(url: str) -> str:
-    match = re.search(r"/d/([a-zA-Z0-9-_]+)", url)
-    return match.group(1) if match else url
+    match = re.search(r"/d/([a-zA-Z0-9-_]+)", str(url))
+    return match.group(1) if match else str(url).strip()
 
-@st.cache_resource(ttl=300)
-def load_excel_file():
-    excel_files = [f for f in os.listdir('.') if f.endswith('.xlsx') and 'CTG' in f]
-    if not excel_files and os.path.exists("CTG_HEADS_TOTAL_UPDATED FIXED.xlsx"):
-        excel_files = ["CTG_HEADS_TOTAL_UPDATED FIXED.xlsx"]
-    if excel_files:
-        filename = excel_files[0]
+# ==========================================
+# ☁️ GOOGLE DRIVE SERVICE & TWO-WAY EXCEL SYNC
+# ==========================================
+def get_google_drive_service():
+    g_id = get_secret("GMAIL_CLIENT_ID")
+    g_sec = get_secret("GMAIL_CLIENT_SECRET")
+    g_ref = get_secret("GMAIL_REFRESH_TOKEN")
+    if not all([g_id, g_sec, g_ref]):
+        return None
+    try:
+        creds = Credentials(
+            token=None,
+            refresh_token=g_ref.strip(),
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=g_id.strip(),
+            client_secret=g_sec.strip()
+        )
+        return build("drive", "v3", credentials=creds)
+    except Exception:
+        return None
+
+def sync_excel_bytes_to_drive(excel_bytes: bytes, spreadsheet_url: str) -> tuple[bool, str]:
+    try:
+        with open(LOCAL_EXCEL_CACHE, "wb") as f:
+            f.write(excel_bytes)
+    except Exception:
+        pass
+
+    service = get_google_drive_service()
+    if service is None:
+        return True, "Na-save sa lokal na Excel database! (Maglagay ng Google Drive token sa Settings kung nais i-sync sa Cloud)."
+
+    doc_id = extract_id_from_url(spreadsheet_url)
+    media = MediaIoBaseUpload(
+        io.BytesIO(excel_bytes),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        resumable=True
+    )
+    try:
+        if doc_id and len(doc_id) > 15:
+            service.files().update(fileId=doc_id, media_body=media).execute()
+            return True, "Matagumpay na na-update ang Excel sa App at sa iyong Google Drive Cloud!"
+    except Exception:
+        pass
+
+    try:
+        res = service.files().list(
+            q=f"name='{LOCAL_EXCEL_CACHE}' and trashed=false",
+            spaces="drive",
+            fields="files(id)",
+            pageSize=1
+        ).execute()
+        files = res.get("files", [])
+        if files:
+            service.files().update(fileId=files[0]["id"], media_body=media).execute()
+        else:
+            service.files().create(body={"name": LOCAL_EXCEL_CACHE}, media_body=media).execute()
+        return True, "Na-save sa lokal na Excel at na-upload bilang backup sa iyong Google Drive!"
+    except Exception as e:
+        return True, f"Na-save sa App Excel! (Cloud Sync Notice: {str(e)})"
+
+@st.cache_data(ttl=45)
+def fetch_live_excel_bytes(spreadsheet_url: str) -> tuple[bytes, str]:
+    doc_id = extract_id_from_url(spreadsheet_url)
+    # 1. Subukan kunin ang pinakabagong bersyon mula sa Google Drive API o Export Link
+    service = get_google_drive_service()
+    if service is not None and doc_id and len(doc_id) > 15:
         try:
-            xls = pd.ExcelFile(filename)
-            return xls, filename
+            content = service.files().get_media(fileId=doc_id).execute()
+            if content and len(content) > 1000:
+                with open(LOCAL_EXCEL_CACHE, "wb") as f:
+                    f.write(content)
+                return content, "Google Drive Cloud Excel (Live API Sync)"
         except Exception:
             pass
+
+    if doc_id and len(doc_id) > 15:
+        try:
+            download_url = f"https://docs.google.com/spreadsheets/d/{doc_id}/export?format=xlsx"
+            res = requests.get(download_url, timeout=25)
+            if res.status_code == 200 and len(res.content) > 1000:
+                with open(LOCAL_EXCEL_CACHE, "wb") as f:
+                    f.write(res.content)
+                return res.content, "Google Drive Cloud Excel (Live Link Sync)"
+        except Exception:
+            pass
+
+    # 2. Fallback sa local file kung offline o hindi ma-download
+    if os.path.exists(LOCAL_EXCEL_CACHE):
+        try:
+            with open(LOCAL_EXCEL_CACHE, "rb") as f:
+                return f.read(), LOCAL_EXCEL_CACHE
+        except Exception:
+            pass
+
+    excel_files = [f for f in os.listdir('.') if f.endswith('.xlsx') and 'CTG' in f]
+    if excel_files:
+        try:
+            with open(excel_files[0], "rb") as f:
+                return f.read(), excel_files[0]
+        except Exception:
+            pass
+
+    return b"", "Walang mahanap na Excel file."
+
+@st.cache_data(ttl=45)
+def load_complete_parish_members(spreadsheet_url: str):
+    excel_bytes, src_label = fetch_live_excel_bytes(spreadsheet_url)
+    if not excel_bytes:
+        return pd.DataFrame(), src_label
+
     try:
-        doc_id = extract_id_from_url(CLOUD_SPREADSHEET_URL)
-        download_url = f"https://docs.google.com/spreadsheets/d/{doc_id}/export?format=xlsx"
-        res = requests.get(download_url, timeout=30)
-        if res.status_code == 200 and len(res.content) > 1000:
-            xls = pd.ExcelFile(io.BytesIO(res.content))
-            return xls, "Google Drive Cloud Excel"
-        return None, f"Hindi ma-download ang Excel (Status {res.status_code})."
+        excel_xls = pd.ExcelFile(io.BytesIO(excel_bytes))
     except Exception as e:
-        return None, str(e)
+        return pd.DataFrame(), f"Error sa pagbasa ng Excel: {str(e)}"
 
-excel_xls, excel_filename = load_excel_file()
-
-@st.cache_data(ttl=300)
-def load_complete_parish_members():
-    if excel_xls is None:
-        return pd.DataFrame()
     all_rows = []
     for p_name in PARISH_ORDER:
         if p_name in excel_xls.sheet_names:
@@ -395,10 +505,123 @@ def load_complete_parish_members():
             except Exception:
                 continue
     if all_rows:
-        return pd.concat(all_rows, ignore_index=True)
-    return pd.DataFrame()
+        return pd.concat(all_rows, ignore_index=True), src_label
+    return pd.DataFrame(), src_label
 
-master_members_df = load_complete_parish_members()
+def update_member_in_excel_and_sync(
+    spreadsheet_url: str, parish_name: str, family_id: str, full_name: str,
+    new_status: str = None, new_category: str = None, new_remarks: str = None
+) -> tuple[bool, str]:
+    excel_bytes, _ = fetch_live_excel_bytes(spreadsheet_url)
+    if not excel_bytes:
+        return False, "Hindi mabasa ang Excel file."
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(excel_bytes))
+        if parish_name not in wb.sheetnames:
+            return False, f"Wala ang sheet na '{parish_name}' sa Excel."
+        ws = wb[parish_name]
+        headers = {}
+        for col_idx in range(1, ws.max_column + 1):
+            val = ws.cell(row=4, column=col_idx).value
+            if val:
+                headers[str(val).strip()] = col_idx
+
+        fid_col = headers.get("Family ID") or headers.get("Member / Record ID") or 2
+        fn_col = headers.get("Full Name") or 4
+        st_col = headers.get("Status") or 8
+        cat_col = headers.get("Category") or 12
+        cm_col = headers.get("Church Member") or headers.get("Church Member Status") or 15
+        rem_col = headers.get("Remarks") or 18
+
+        target_row = None
+        for r_idx in range(5, ws.max_row + 1):
+            r_fid = str(ws.cell(row=r_idx, column=fid_col).value or "").strip()
+            r_fn = str(ws.cell(row=r_idx, column=fn_col).value or "").strip()
+            if r_fid.upper() == family_id.strip().upper() and r_fn.upper() == full_name.strip().upper():
+                target_row = r_idx
+                break
+
+        if target_row is None:
+            return False, f"Hindi nahanap si '{full_name}' ({family_id}) sa sheet ng {parish_name}."
+
+        if new_status is not None:
+            ws.cell(row=target_row, column=st_col).value = new_status.strip().upper()
+            if "NON" in new_status.upper():
+                ws.cell(row=target_row, column=cm_col).value = "NO"
+            else:
+                ws.cell(row=target_row, column=cm_col).value = "YES"
+        if new_category is not None:
+            ws.cell(row=target_row, column=cat_col).value = new_category.strip().upper()
+        if new_remarks is not None:
+            ws.cell(row=target_row, column=rem_col).value = new_remarks.strip()
+
+        out_buf = io.BytesIO()
+        wb.save(out_buf)
+        ok, sync_msg = sync_excel_bytes_to_drive(out_buf.getvalue(), spreadsheet_url)
+        st.cache_data.clear()
+        return ok, sync_msg
+    except Exception as e:
+        return False, f"Error sa pag-update ng Excel: {str(e)}"
+
+def append_new_member_to_excel_and_sync(spreadsheet_url: str, member_data: dict) -> tuple[bool, str]:
+    excel_bytes, _ = fetch_live_excel_bytes(spreadsheet_url)
+    if not excel_bytes:
+        return False, "Hindi mabasa ang Excel file."
+    try:
+        parish_name = member_data.get("Parish", "")
+        wb = openpyxl.load_workbook(io.BytesIO(excel_bytes))
+        if parish_name not in wb.sheetnames:
+            return False, f"Wala ang sheet na '{parish_name}' sa Excel."
+        ws = wb[parish_name]
+        headers = {}
+        for col_idx in range(1, ws.max_column + 1):
+            val = ws.cell(row=4, column=col_idx).value
+            if val:
+                headers[str(val).strip()] = col_idx
+
+        fid_col = headers.get("Family ID") or headers.get("Member / Record ID") or 2
+        fn_col = headers.get("Full Name") or 4
+
+        insert_row = ws.max_row + 1
+        for r_idx in range(5, ws.max_row + 1):
+            v_fid = str(ws.cell(row=r_idx, column=fid_col).value or "").strip()
+            v_fn = str(ws.cell(row=r_idx, column=fn_col).value or "").strip()
+            if not v_fid and not v_fn:
+                insert_row = r_idx
+                break
+
+        col_mapping = {
+            "Family ID": ["Family ID", "Member / Record ID"],
+            "Head of Family": ["Head of Family"],
+            "Full Name": ["Full Name"],
+            "Relationship": ["Relationship"],
+            "Sex": ["Sex"],
+            "Age": ["Age"],
+            "Status": ["Status"],
+            "Contact No.": ["Contact No."],
+            "Current Address (If living separately)": ["Current Address (If living separately)", "Address (HK or Philippines)"],
+            "Category": ["Category"],
+            "Church Member": ["Church Member", "Church Member Status"],
+            "Remarks": ["Remarks"],
+        }
+
+        for key, candidates in col_mapping.items():
+            val = member_data.get(key, "")
+            for c_name in candidates:
+                if c_name in headers:
+                    ws.cell(row=insert_row, column=headers[c_name]).value = val
+                    break
+
+        out_buf = io.BytesIO()
+        wb.save(out_buf)
+        ok, sync_msg = sync_excel_bytes_to_drive(out_buf.getvalue(), spreadsheet_url)
+        st.cache_data.clear()
+        return ok, sync_msg
+    except Exception as e:
+        return False, f"Error sa pagdagdag sa Excel: {str(e)}"
+
+ACTIVE_SPREADSHEET_URL = load_saved_cloud_url()
+master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
 
 def clean_notion_id(raw_id: str) -> str:
     if not raw_id:
@@ -648,10 +871,17 @@ def build_status_summary_and_lists(df):
     df_non_list = pd.DataFrame(non_member_rows, columns=mini_cols) if non_member_rows else pd.DataFrame(columns=mini_cols)
     return summary_df, df_act_list, df_inact_list, df_non_list
 
+# ==========================================
+# 👥 ACTIVE MEMBERS ONLY AGE CATEGORY BUILDER
+# ==========================================
 def build_age_category_tables(df):
     seniors_rows, adults_rows, youth_rows, kids_rows = [], [], [], []
     cat_cols = ["Name", "Category", "Status"]
     for _, row in df.iterrows():
+        st_group = classify_member_status(row.get("Status", ""), row.get("Church Member", ""))
+        if st_group != "ACTIVE":
+            continue
+
         c_grp = classify_category(row.get("Category", ""))
         item = {
             "Name": row.get("Full Name", ""),
@@ -705,27 +935,6 @@ def safe_generate_content(client, model, contents, config=None):
                             continue
                     break
     raise Exception(f"Gemini API Error: {last_err}")
-
-# ==========================================
-# ☁️ GOOGLE DRIVE CLOUD STORAGE & MESSENGER SYNC
-# ==========================================
-def get_google_drive_service():
-    g_id = get_secret("GMAIL_CLIENT_ID")
-    g_sec = get_secret("GMAIL_CLIENT_SECRET")
-    g_ref = get_secret("GMAIL_REFRESH_TOKEN")
-    if not all([g_id, g_sec, g_ref]):
-        return None
-    try:
-        creds = Credentials(
-            token=None,
-            refresh_token=g_ref.strip(),
-            token_uri="https://oauth2.googleapis.com/token",
-            client_id=g_id.strip(),
-            client_secret=g_sec.strip()
-        )
-        return build("drive", "v3", credentials=creds)
-    except Exception:
-        return None
 
 def upload_file_to_google_drive(file_bytes, filename, mime_type="image/jpeg"):
     service = get_google_drive_service()
@@ -968,6 +1177,7 @@ if "custom_secrets" not in st.session_state:
         "NOTION_COUNSELLING_DB_ID": NOTION_COUNSELLING_DB_ID,
         "GMAIL_CLIENT_ID": GMAIL_CLIENT_ID, "GMAIL_CLIENT_SECRET": GMAIL_CLIENT_SECRET,
         "GMAIL_REFRESH_TOKEN": GMAIL_REFRESH_TOKEN,
+        "CLOUD_SPREADSHEET_URL": ACTIVE_SPREADSHEET_URL,
     }
 
 def build_combined_records_df(df_p: pd.DataFrame, df_q: pd.DataFrame, df_co: pd.DataFrame) -> pd.DataFrame:
@@ -1025,7 +1235,6 @@ global_records_df = build_combined_records_df(df_p_global, df_q_global, df_co_gl
 all_chat_msgs_global = load_internal_chat_messages()
 my_chat_id = get_current_chat_identity()
 
-# Filter messages visible to current user for sidebar badge
 visible_chats_for_me = [
     m for m in all_chat_msgs_global
     if st.session_state.user_role == "Master Admin"
@@ -1043,6 +1252,11 @@ with st.sidebar:
     st.header("⚙️ Ministry Control Panel")
     st.write(f"👤 Role: **{st.session_state.user_role}**")
     st.info(f"📍 Parish Access:\n**{st.session_state.assigned_parish}**")
+
+    if st.button("🔄 Sync Live Excel & Notion Data", use_container_width=True):
+        st.cache_data.clear()
+        st.cache_resource.clear()
+        st.rerun()
 
     if st.session_state.user_role == "Master Admin":
         with st.expander("📡 Live Update & Activity Monitor", expanded=True):
@@ -1182,7 +1396,6 @@ def render_ministry_messenger_page():
 
     all_msgs = load_internal_chat_messages()
 
-    # Build dropdown list of chat partners
     if is_master:
         partner_options = ["📢 LAHAT NG USERS (BROADCAST)"] + PARISH_ORDER
     else:
@@ -1202,7 +1415,6 @@ def render_ministry_messenger_page():
             st.cache_data.clear()
             st.rerun()
 
-    # Clean partner identifier
     if "LAHAT NG USERS" in selected_partner_raw:
         partner_id = "LAHAT NG USERS (BROADCAST)"
     elif "MASTER ADMIN" in selected_partner_raw:
@@ -1331,7 +1543,7 @@ def render_ministry_messenger_page():
 def render_parish_directory_and_census_view(page_heading: str, page_subtitle: str = ""):
     render_title_with_logo(page_heading, page_subtitle)
     if master_members_df.empty:
-        st.error(f"Hindi makita o mabasa ang Excel file ({excel_filename}).")
+        st.error(f"Hindi makita o mabasa ang Excel file ({excel_filename}). Maaari mong i-update ang Google Drive Link sa App Settings.")
         return
 
     if st.session_state.user_role == "Master Admin":
@@ -1370,10 +1582,16 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
             placeholder="Hal. CTG-LN-FAM-0001 o Juan Reyes"
         ).strip()
 
-    expand_full_family = st.checkbox(
-        "👨‍👩‍👧‍👦 Ipakita ang BUONG PAMILYA kapag nag-search ng Family ID o Pangalan (Makikita lahat sa Summary, Active/Inactive/Non-Member, Age Categories, at Matching Members)",
-        value=True
-    )
+    c_opt1, c_opt2 = st.columns([3, 1])
+    with c_opt1:
+        expand_full_family = st.checkbox(
+            "👨‍👩‍👧‍👦 Ipakita ang BUONG PAMILYA kapag nag-search ng Family ID o Pangalan (Makikita lahat sa Summary, Active/Inactive/Non-Member, Age Categories, at Matching Members)",
+            value=True
+        )
+    with c_opt2:
+        if st.button("🔄 I-sync ang Excel Mula sa Drive", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
 
     final_df = parish_filtered_df.copy()
 
@@ -1394,7 +1612,7 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
         else:
             final_df = matched_rows
 
-    search_label = selected_parish
+    search_label = f"{selected_parish} ({excel_filename})"
     if selected_family_id != "Lahat ng Family ID":
         search_label += f" • Family ID: {selected_family_id}"
     if keyword_search:
@@ -1402,7 +1620,7 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
 
     st.divider()
 
-    # SABAY-SABAY NA PAGBUO NG STATUS TABLES AT AGE CATEGORY TABLES MULA SA `final_df`
+    # SABAY-SABAY NA PAGBUO NG STATUS TABLES AT ACTIVE AGE CATEGORY TABLES MULA SA `final_df`
     summary_df, df_act_list, df_inact_list, df_non_list = build_status_summary_and_lists(final_df)
     df_seniors, df_adults, df_youth, df_kids = build_age_category_tables(final_df)
 
@@ -1416,12 +1634,12 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
     k4.metric("🟡 Inactive Members", len(df_inact_list))
     k5.metric("🔵 Non-Members", len(df_non_list))
 
-    # TOP TOTAL COUNTERS PARA SA SENIORS, ADULTS, YOUTH, KIDS
+    # TOP TOTAL COUNTERS PARA SA ACTIVE SENIORS, ADULTS, YOUTH, KIDS
     c_tot1, c_tot2, c_tot3, c_tot4 = st.columns(4)
-    c_tot1.metric("👴 TOTAL SENIORS", len(df_seniors))
-    c_tot2.metric("🧑 TOTAL ADULTS", len(df_adults))
-    c_tot3.metric("👦 TOTAL YOUTH", len(df_youth))
-    c_tot4.metric("👶 TOTAL KIDS", len(df_kids))
+    c_tot1.metric("👴 TOTAL SENIORS (Active)", len(df_seniors))
+    c_tot2.metric("🧑 TOTAL ADULTS (Active)", len(df_adults))
+    c_tot3.metric("👦 TOTAL YOUTH (Active)", len(df_youth))
+    c_tot4.metric("👶 TOTAL KIDS (Active)", len(df_kids))
 
     st.markdown("### 📋 MEMBER STATUS SUMMARY")
     st.caption(f"**Kasalukuyang Filter / Search:** {search_label}")
@@ -1444,8 +1662,8 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # 4 COLUMNS: TOTAL SENIORS, TOTAL ADULTS, TOTAL YOUTH, TOTAL KIDS (NAME, CATEGORY, STATUS)
-    st.markdown("### 👥 MGA TALAAN AYON SA KATEGORYA (SENIORS • ADULTS • YOUTH • KIDS)")
+    # 4 COLUMNS: ACTIVE MEMBERS ONLY — TOTAL SENIORS, TOTAL ADULTS, TOTAL YOUTH, TOTAL KIDS
+    st.markdown("### 👥 MGA TALAAN NG ACTIVE MEMBERS AYON SA KATEGORYA (SENIORS • ADULTS • YOUTH • KIDS)")
     col_sen, col_adu, col_you, col_kid = st.columns(4)
     with col_sen:
         st.markdown(f"<div class='category-header-seniors'>👴 TOTAL SENIORS ({len(df_seniors)})</div>", unsafe_allow_html=True)
@@ -1461,6 +1679,69 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
         st.dataframe(df_kids, use_container_width=True, hide_index=True)
 
     st.divider()
+
+    # ⚡ QUICK MEMBER STATUS & REMARKS UPDATER (AUTO-SYNC TO EXCEL & DRIVE)
+    if not final_df.empty:
+        with st.expander("⚡ Quick Member Status, Category & Remarks Updater (Auto-Sync sa Excel & Google Drive)", expanded=False):
+            st.caption("Pumili ng miyembro mula sa listahan sa ibaba upang direktang baguhin ang kanyang Status (hal. Active → Inactive), Category, o Remarks.")
+            member_options = [
+                f"{r['Full Name']} | {r['Family ID']} | {r['Parish']} (Kasalukuyan: {r['Status']})"
+                for _, r in final_df.iterrows()
+            ]
+            sel_member_str = st.selectbox("Pumili ng Miyembro na I-a-update:", member_options, key="quick_upd_member_sel")
+            sel_idx = member_options.index(sel_member_str)
+            sel_row = final_df.iloc[sel_idx]
+
+            u_col1, u_col2, u_col3 = st.columns([1.2, 1.2, 2])
+            with u_col1:
+                status_choices = ["ACTIVE", "INACTIVE", "NON-MEMBER"]
+                cur_st = str(sel_row["Status"]).upper().strip()
+                def_st_idx = 0
+                if "INACTIVE" in cur_st:
+                    def_st_idx = 1
+                elif "NON" in cur_st:
+                    def_st_idx = 2
+                upd_status = st.selectbox("Bagong Status:", status_choices, index=def_st_idx, key="quick_upd_st")
+            with u_col2:
+                cat_choices = ["SENIOR CITIZEN", "ADULT", "YOUTH", "KIDS"]
+                cur_cat = str(sel_row["Category"]).upper().strip()
+                def_cat_idx = 1
+                if "SENIOR" in cur_cat:
+                    def_cat_idx = 0
+                elif "YOUTH" in cur_cat:
+                    def_cat_idx = 2
+                elif "KID" in cur_cat:
+                    def_cat_idx = 3
+                upd_cat = st.selectbox("Kategorya:", cat_choices, index=def_cat_idx, key="quick_upd_cat")
+            with u_col3:
+                upd_rem = st.text_input("Remarks / Tala:", value=str(sel_row["Remarks"]), key="quick_upd_rem")
+
+            if st.button("💾 I-save ang Pagbabago sa Excel at Google Drive", type="primary"):
+                with st.spinner("Ina-update ang Excel database at sini-sync sa Google Drive..."):
+                    ok, msg = update_member_in_excel_and_sync(
+                        ACTIVE_SPREADSHEET_URL,
+                        str(sel_row["Parish"]),
+                        str(sel_row["Family ID"]),
+                        str(sel_row["Full Name"]),
+                        new_status=upd_status,
+                        new_category=upd_cat,
+                        new_remarks=upd_rem
+                    )
+                    if ok:
+                        backup_action_to_admin_cloud(
+                            "Member Status Updated in Excel",
+                            str(sel_row["Full Name"]),
+                            str(sel_row["Parish"]),
+                            f"Family ID: {sel_row['Family ID']}",
+                            f"Old Status: {sel_row['Status']} -> New Status: {upd_status} | Category: {upd_cat}",
+                            f"Remarks: {upd_rem}",
+                            get_current_chat_identity()
+                        )
+                        st.success(f"✅ {msg}")
+                        time.sleep(0.7)
+                        st.rerun()
+                    else:
+                        st.error(msg)
 
     st.markdown(f"### 👨‍👩‍👧‍👦 Matching members: {len(final_df)} (Mula sa {total_families} Pamilya)")
     if not final_df.empty:
@@ -1860,12 +2141,12 @@ elif app_mode in ["📊 Parish Directory & Family Search", "📊 Parish Census &
     if app_mode == "📊 Parish Census & Member Manager":
         render_parish_directory_and_census_view(
             f"📊 Parish Census & Member Manager — {st.session_state.assigned_parish}",
-            "Kumpletong Talaan ng Pamilya, Member Status, at Age Categories (Total Seniors, Adults, Youth, Kids)."
+            "Kumpletong Talaan ng Pamilya, Member Status, at Active Age Categories (Total Seniors, Adults, Youth, Kids)."
         )
     else:
         render_parish_directory_and_census_view(
             "CHURCH OF THE TEMPLE OF GOD — SEARCH FAMILY / PARISH",
-            "Kumpletong Talaan ng Pamilya, Member Status, at Age Categories (Total Seniors, Adults, Youth, Kids)."
+            "Kumpletong Talaan ng Pamilya, Member Status, at Active Age Categories (Total Seniors, Adults, Youth, Kids)."
         )
     st.stop()
 
@@ -2157,26 +2438,32 @@ elif app_mode == "🤝 Notion CRM (Visitors & Members)":
     st.stop()
 
 # =====================================================================
-# 4. MAGDAGDAG NG MIYEMBRO & LITRATO
+# 4. MAGDAGDAG NG MIYEMBRO & LITRATO (AUTO-ADD SA EXCEL & GOOGLE DRIVE)
 # =====================================================================
 elif app_mode == "➕ Magdagdag ng Miyembro & Litrato":
-    render_title_with_logo("Magdagdag ng Miyembro", "Mag-input ng bagong miyembro at i-save ang litrato sa iyong Google Drive cloud storage.")
+    render_title_with_logo(
+        "Magdagdag ng Miyembro",
+        "Awtomatikong idaragdag ang bagong miyembro sa Excel Database ng Parokya at ise-save ang litrato sa iyong Google Drive Cloud."
+    )
     with st.form("add_form"):
         c1, c2 = st.columns(2)
         with c1:
             mp = st.selectbox("Parish:", [st.session_state.assigned_parish] if st.session_state.user_role == "Parish Leader" else PARISH_ORDER)
-            fid = st.text_input("Family ID (hal. CTG-LN-FAM-0001):")
-            m_head = st.text_input("Head of Family:")
-            fn = st.text_input("Buong Pangalan:")
+            fid = st.text_input("Family ID (hal. CTG-LN-FAM-0001):").strip()
+            m_head = st.text_input("Head of Family:").strip()
+            fn = st.text_input("Buong Pangalan:").strip()
             m_rel = st.selectbox("Relasyon sa Pamilya:", ["HEAD OF FAMILY", "HUSBAND", "WIFE", "SON", "DAUGHTER", "RELATIVE", "OTHER"])
+            m_addr = st.text_input("Current Address (Tirahan):").strip()
         with c2:
             m_sex = st.selectbox("Kasarian:", ["MALE", "FEMALE"])
+            m_age = st.text_input("Edad (Age):").strip()
             m_cat = st.selectbox("Kategorya:", ["KIDS", "YOUTH", "ADULT", "SENIOR CITIZEN"])
             m_st = st.selectbox("Status:", ["ACTIVE", "INACTIVE", "NON-MEMBER"])
-            m_con = st.text_input("Contact Number:")
+            m_con = st.text_input("Contact Number:").strip()
             pho = st.file_uploader("Litrato (Direktang i-save sa Google Drive):", type=["jpg", "png", "jpeg"])
-        m_rem = st.text_area("Remarks / Tala para sa Miyembro:")
-        if st.form_submit_button("I-save at I-upload sa Google Drive", type="primary"):
+        m_rem = st.text_area("Remarks / Tala para sa Miyembro:").strip()
+
+        if st.form_submit_button("💾 I-save sa App Excel at I-upload sa Google Drive", type="primary"):
             if fid and fn:
                 drive_link_text = "Walang inilakip na litrato."
                 if pho is not None:
@@ -2187,22 +2474,44 @@ elif app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                             drive_link_text = f"Google Drive Link: {link}"
                             st.success(f"✅ Matagumpay na na-upload ang litrato sa Google Drive! ([Buksan ang Link]({link}))")
                         else:
-                            st.warning(f"⚠️ {msg} (Nai-save pa rin ang rekord nang walang litrato sa drive)")
+                            st.warning(f"⚠️ {msg}")
 
-                st.success(f"Naidagdag si **{fn}** sa pamilyang `{fid}` ({mp})!")
+                new_member_payload = {
+                    "Parish": mp,
+                    "Family ID": fid,
+                    "Head of Family": m_head if m_head else fn,
+                    "Full Name": fn,
+                    "Relationship": m_rel,
+                    "Sex": m_sex,
+                    "Age": m_age,
+                    "Status": m_st,
+                    "Contact No.": m_con,
+                    "Current Address (If living separately)": m_addr,
+                    "Category": m_cat,
+                    "Church Member": "NO" if "NON" in m_st else "YES",
+                    "Remarks": f"{m_rem} ({drive_link_text})".strip() if drive_link_text != "Walang inilakip na litrato." else m_rem,
+                }
+
+                with st.spinner("Idinadagdag sa Excel Database at sini-sync sa Google Drive..."):
+                    ok_ex, ex_msg = append_new_member_to_excel_and_sync(ACTIVE_SPREADSHEET_URL, new_member_payload)
+                    if ok_ex:
+                        st.success(f"✅ Naidagdag na si **{fn}** sa `{mp}` ({fid})! {ex_msg}")
+                    else:
+                        st.warning(f"⚠️ Na-record ang miyembro ngunit may abiso sa Excel sync: {ex_msg}")
+
                 backup_action_to_admin_cloud(
-                    "New Member Added & Cloud Photo",
+                    "New Member Added to Excel & Cloud",
                     fn,
                     mp,
                     f"Family ID: {fid}",
-                    f"Head: {m_head} | Rel: {m_rel} | Contact: {m_con} | {drive_link_text}",
+                    f"Head: {m_head} | Rel: {m_rel} | Status: {m_st} | Cat: {m_cat} | Contact: {m_con} | {drive_link_text}",
                     f"Remarks: {m_rem}",
-                    st.session_state.assigned_parish
+                    get_current_chat_identity()
                 )
                 if pho is not None and 'link' in locals() and link:
                     st.image(pho, caption=f"Litrato ni {fn} (Naka-save sa Drive)", width=180)
             else:
-                st.warning("Punan ang Family ID at Pangalan.")
+                st.warning("Punan ang Family ID at Buong Pangalan.")
     st.stop()
 
 # =====================================================================
@@ -2242,12 +2551,16 @@ elif app_mode == "📢 Announcement Broadcaster":
     st.stop()
 
 # =====================================================================
-# 7. APP SETTINGS
+# 7. APP SETTINGS (THEME, EXCEL DRIVE MANAGER, AT API CREDENTIALS)
 # =====================================================================
 elif app_mode == "🛠️ App Settings":
-    render_title_with_logo("🛠️ App Controller, Theme & Configuration Settings", "I-customize ang hitsura ng app at API settings.")
+    render_title_with_logo("🛠️ App Controller, Theme, Excel Sync & Configuration Settings", "I-customize ang hitsura ng app, i-manage ang Google Drive Excel File, at i-update ang API settings.")
 
-    tab_ui, tab_api = st.tabs(["🎨 Theme, Display & App Controller", "🔑 API & Google Drive / Gmail Credentials"])
+    tab_ui, tab_excel, tab_api = st.tabs([
+        "🎨 Theme, Display & App Controller",
+        "📊 Google Drive Excel File & Sync Manager",
+        "🔑 API & Google Drive / Gmail Credentials"
+    ])
 
     with tab_ui:
         st.subheader("🎛️ App Appearance & Controller Settings")
@@ -2303,6 +2616,37 @@ elif app_mode == "🛠️ App Settings":
                 time.sleep(0.5)
                 st.rerun()
 
+    with tab_excel:
+        st.subheader("📊 Google Drive Excel Link & Direct File Replacement (Walang Palit ng Code)")
+        st.caption("Kung pinalitan mo ang Excel file sa Google Drive o may bago kang link, maaari mo itong ilagay o i-upload dito nang hindi binabago ang code.")
+
+        new_sheet_url = st.text_input(
+            "🔗 Google Drive Excel Link o File ID:",
+            value=ACTIVE_SPREADSHEET_URL
+        )
+        if st.button("💾 I-save ang Bagong Google Drive Excel Link & I-sync Agad", type="primary"):
+            st.session_state.custom_secrets["CLOUD_SPREADSHEET_URL"] = new_sheet_url.strip()
+            save_cloud_url_config(new_sheet_url.strip())
+            st.cache_data.clear()
+            st.cache_resource.clear()
+            st.success("✅ Na-update na ang Google Drive Excel Link at na-sync na ang bagong data!")
+            time.sleep(0.7)
+            st.rerun()
+
+        st.divider()
+        st.markdown("#### 📤 O Mag-upload ng Bagong Master Excel File (`.xlsx`) Direkta Dito")
+        uploaded_xlsx = st.file_uploader("Pumili ng bagong CTG Excel file (.xlsx):", type=["xlsx"])
+        if uploaded_xlsx is not None:
+            if st.button("🚀 I-apply ang In-upload na Excel sa App at I-sync sa Google Drive", type="primary"):
+                with st.spinner("Sini-save at sini-sync sa Google Drive..."):
+                    x_bytes = uploaded_xlsx.read()
+                    ok_u, msg_u = sync_excel_bytes_to_drive(x_bytes, ACTIVE_SPREADSHEET_URL)
+                    st.cache_data.clear()
+                    st.cache_resource.clear()
+                    st.success(f"✅ {msg_u}")
+                    time.sleep(0.8)
+                    st.rerun()
+
     with tab_api:
         if st.session_state.user_role != "Master Admin":
             st.info("🔒 Ang API & Google Drive Cloud Storage credentials ay maaari lamang baguhin ng Master Admin.")
@@ -2320,12 +2664,12 @@ elif app_mode == "🛠️ App Settings":
                 gcs = st.text_input("GMAIL_CLIENT_SECRET", value=st.session_state.custom_secrets.get("GMAIL_CLIENT_SECRET", ""), type="password")
                 grt = st.text_input("GMAIL_REFRESH_TOKEN", value=st.session_state.custom_secrets.get("GMAIL_REFRESH_TOKEN", ""), type="password")
                 if st.form_submit_button("💾 I-save ang API & Cloud Credentials", type="primary"):
-                    st.session_state.custom_secrets = {
+                    st.session_state.custom_secrets.update({
                         "GEMINI_API_KEY": ng, "GEMINI_API_KEY_2": ng2, "NOTION_TOKEN": nt,
                         "NOTION_CRM_DB_ID": ndb, "NOTION_PRAYER_DB_ID": npdb,
                         "NOTION_QUESTIONS_DB_ID": nqdb, "NOTION_COUNSELLING_DB_ID": ncdb,
                         "GMAIL_CLIENT_ID": gci, "GMAIL_CLIENT_SECRET": gcs, "GMAIL_REFRESH_TOKEN": grt
-                    }
+                    })
                     st.cache_data.clear()
                     st.success("Na-save na ang mga credentials!")
                     time.sleep(1)
