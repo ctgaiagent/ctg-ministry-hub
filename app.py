@@ -17,6 +17,9 @@ from googleapiclient.http import MediaIoBaseUpload
 
 load_dotenv()
 
+# ==========================================
+# 🖼️ AUTOMATIC LOGO FINDER & HEADER HELPER
+# ==========================================
 def find_logo_file():
     preferred_names = [
         "logo.png", "logo.jpg", "logo.jpeg",
@@ -86,6 +89,9 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# ==========================================
+# 🎛️ INITIALIZE UI & THEME CONTROLLER STATES
+# ==========================================
 if "ui_theme" not in st.session_state:
     st.session_state.ui_theme = "🌙 Dark Mode"
 if "ui_font_size" not in st.session_state:
@@ -163,6 +169,17 @@ def apply_dynamic_app_styles():
             word-wrap: break-word;
             font-size: {font_scale};
         }}
+        .urgent-card {{
+            background-color: #FEF2F2;
+            border-left: 4px solid #DC2626;
+            padding: {card_pad};
+            margin-bottom: {card_margin};
+            border-radius: 8px;
+            color: #7F1D1D !important;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            font-size: {font_scale};
+        }}
         .submitted-parish-badge {{
             background-color: #ECFDF5; border: 1px solid #10B981; color: #065F46 !important;
             padding: 6px 12px; border-radius: 6px; font-weight: 600; font-size: 0.88rem; margin-bottom: 8px; display: inline-block;
@@ -175,13 +192,25 @@ def apply_dynamic_app_styles():
             background-color: {side_box_bg}; border: 1px solid {side_box_border}; border-top: 4px solid #0F766E;
             padding: {card_pad}; border-radius: 8px; margin-bottom: {card_margin}; color: {side_box_text} !important; font-size: 0.88rem;
         }}
+        .sidebar-log-card {{
+            background-color: {side_box_bg};
+            border-left: 3px solid #38BDF8;
+            border: 1px solid {side_box_border};
+            padding: 8px 10px;
+            border-radius: 5px;
+            margin-bottom: 6px;
+            color: {side_box_text} !important;
+            font-size: 0.80rem;
+        }}
         [data-testid="collapsedControl"], [data-testid="stSidebarCollapseButton"] {{
             display: flex !important; visibility: visible !important; opacity: 1 !important; z-index: 999999 !important;
             background-color: #1E3A8A !important; color: #FFFFFF !important; border-radius: 8px !important; padding: 4px !important; margin: 6px !important;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.45) !important;
         }}
         [data-testid="stAppDeployButton"] {{ display: none !important; }}
         #MainMenu {{ visibility: hidden !important; display: none !important; }}
         footer {{ visibility: hidden !important; display: none !important; }}
+        .viewerBadge_container__1QSob, .styles_viewerBadge__1yB5_, .viewerBadge_link__1S137, .viewerBadge_text__1JaDK {{ display: none !important; }}
         </style>
     """, unsafe_allow_html=True)
 
@@ -505,30 +534,38 @@ def build_status_summary_and_lists(df):
         cat_group = classify_category(row.get("Category", ""))
         counts[st_group][cat_group] += 1
         mini_rec = {
-            "Full name": row.get("Full Name", ""), "Family ID": row.get("Family ID", ""),
-            "Category": row.get("Category", ""), "Status": row.get("Status", ""),
+            "Full name": row.get("Full Name", ""),
+            "Family ID": row.get("Family ID", ""),
+            "Category": row.get("Category", ""),
+            "Status": row.get("Status", ""),
             "Church member": row.get("Church Member", "")
         }
-        if st_group == "ACTIVE": active_rows.append(mini_rec)
-        elif st_group == "INACTIVE": inactive_rows.append(mini_rec)
-        elif st_group == "NON-MEMBER": non_member_rows.append(mini_rec)
-            
+        if st_group == "ACTIVE":
+            active_rows.append(mini_rec)
+        elif st_group == "INACTIVE":
+            inactive_rows.append(mini_rec)
+        elif st_group == "NON-MEMBER":
+            non_member_rows.append(mini_rec)
+
     def make_summary_row(label, grp_key):
         c = counts[grp_key]
         s, a, y, k, nc = c["Seniors"], c["Adults"], c["Youth"], c["Kids"], c["No category"]
         say = s + a + y
         tot = say + k + nc
         return [label, s, a, y, say, k, nc, tot]
-        
+
     r_act = make_summary_row("Active members", "ACTIVE")
     r_inact = make_summary_row("Inactive members", "INACTIVE")
     r_non = make_summary_row("Non-members", "NON-MEMBER")
     r_oth = make_summary_row("Other / No status", "OTHER")
     tot_row = [
         "TOTAL PERSONS",
-        r_act[1] + r_inact[1] + r_non[1] + r_oth[1], r_act[2] + r_inact[2] + r_non[2] + r_oth[2],
-        r_act[3] + r_inact[3] + r_non[3] + r_oth[3], r_act[4] + r_inact[4] + r_non[4] + r_oth[4],
-        r_act[5] + r_inact[5] + r_non[5] + r_oth[5], r_act[6] + r_inact[6] + r_non[6] + r_oth[6],
+        r_act[1] + r_inact[1] + r_non[1] + r_oth[1],
+        r_act[2] + r_inact[2] + r_non[2] + r_oth[2],
+        r_act[3] + r_inact[3] + r_non[3] + r_oth[3],
+        r_act[4] + r_inact[4] + r_non[4] + r_oth[4],
+        r_act[5] + r_inact[5] + r_non[5] + r_oth[5],
+        r_act[6] + r_inact[6] + r_non[6] + r_oth[6],
         r_act[7] + r_inact[7] + r_non[7] + r_oth[7],
     ]
     summary_cols = ["Status", "Seniors", "Adults", "Youth", "Seniors + Adults + Youth", "Kids", "No category", "Total persons"]
@@ -572,6 +609,9 @@ def safe_generate_content(client, model, contents, config=None):
                     break
     raise Exception(f"Gemini API Error: {last_err}")
 
+# ==========================================
+# ☁️ GOOGLE DRIVE CLOUD STORAGE UPLOADER
+# ==========================================
 def upload_file_to_google_drive(file_bytes, filename, mime_type="image/jpeg"):
     g_id = get_secret("GMAIL_CLIENT_ID")
     g_sec = get_secret("GMAIL_CLIENT_SECRET")
@@ -613,7 +653,8 @@ if not st.session_state.authenticated:
     with col2:
         if LOGO_PATH and os.path.exists(LOGO_PATH):
             c_img1, c_img2, c_img3 = st.columns([1, 1, 1])
-            with c_img2: st.image(LOGO_PATH, width=110)
+            with c_img2:
+                st.image(LOGO_PATH, width=110)
         st.title("CTG Ministry Hub Login")
         st.caption("Ilagay ang iyong Username at Password.")
         with st.form("login_form"):
@@ -669,10 +710,12 @@ def query_notion_crm(search_query: str = "") -> str:
                 seen_db.add(c_id)
                 try:
                     df_part = load_notion_crm_data(n_tok, c_id)
-                    if not df_part.empty: frames.append(df_part)
+                    if not df_part.empty:
+                        frames.append(df_part)
                 except Exception:
                     continue
-        if not frames: return "Walang nakitang rekord sa Notion database."
+        if not frames:
+            return "Walang nakitang rekord sa Notion database."
         df_notion = pd.concat(frames, ignore_index=True).fillna("")
         for m_col in ["_page_id", "_last_edited", "_created_time"]:
             if m_col in df_notion.columns:
@@ -680,7 +723,8 @@ def query_notion_crm(search_query: str = "") -> str:
         if search_query and search_query.strip():
             mask = df_notion.astype(str).apply(lambda x: x.str.contains(search_query.strip(), case=False, na=False)).any(axis=1)
             df_notion = df_notion[mask]
-        if df_notion.empty: return f"Walang nahanap sa Notion para sa '{search_query}'."
+        if df_notion.empty:
+            return f"Walang nahanap sa Notion para sa '{search_query}'."
         return "Mga rekord sa Notion:\n" + df_notion.head(25).to_csv(index=False)
     except Exception as e:
         return f"Error sa Notion: {str(e)}"
@@ -799,7 +843,8 @@ global_records_df = build_combined_records_df(df_p_global, df_q_global, df_co_gl
 # ⚙️ SIDEBAR CONTROL PANEL
 # =====================================================================
 with st.sidebar:
-    if LOGO_PATH and os.path.exists(LOGO_PATH): st.image(LOGO_PATH, width=85)
+    if LOGO_PATH and os.path.exists(LOGO_PATH):
+        st.image(LOGO_PATH, width=85)
     st.header("⚙️ Ministry Control Panel")
     st.write(f"👤 Role: **{st.session_state.user_role}**")
     st.info(f"📍 Parish Access:\n**{st.session_state.assigned_parish}**")
@@ -888,9 +933,17 @@ with st.sidebar:
             "📊 Parish Census & Member Manager",
             "💬 AI Chat Assistant",
             "➕ Magdagdag ng Miyembro & Litrato",
+            "🙏 Prayer Wall & Categorizer",
             "🛠️ App Settings"
         ]
-    app_mode = st.radio("Pumili ng Pahina:", nav_options)
+
+    default_nav_idx = 0
+    if "app_mode_override" in st.session_state:
+        target_nav = st.session_state.pop("app_mode_override")
+        if target_nav in nav_options:
+            default_nav_idx = nav_options.index(target_nav)
+
+    app_mode = st.radio("Pumili ng Pahina:", nav_options, index=default_nav_idx)
     selected_model = st.selectbox("Gemini Model:", ["gemini-3.8-flash", "gemini-3.1-pro-preview"], index=0)
     st.divider()
     if st.button("🗑️ I-clear ang Chat History"):
@@ -903,7 +956,8 @@ with st.sidebar:
 
 def generate_ai_ministry_draft(service_category, sender_name, parish_name, topic, details, lang, model_name):
     valid_keys = get_valid_gemini_keys()
-    if not valid_keys: return "⚠️ Wala pang GEMINI_API_KEY."
+    if not valid_keys:
+        return "⚠️ Wala pang GEMINI_API_KEY."
     client = genai.Client(api_key=valid_keys[0])
     prompt = (
         f"Ikaw si CTG Gabay AI, sumusulat ng opisyal, magalang, at punong-puno ng malasakit na tugon mula sa "
@@ -916,6 +970,148 @@ def generate_ai_ministry_draft(service_category, sender_name, parish_name, topic
     res = safe_generate_content(client, model_name, prompt)
     return res.text
 
+# =====================================================================
+# 👨‍👩‍👧‍👦 PINAG-ISANG DIRECTORY, FAMILY SEARCH & CENSUS ENGINE
+# =====================================================================
+def render_parish_directory_and_census_view(page_heading: str, page_subtitle: str = ""):
+    render_title_with_logo(page_heading, page_subtitle)
+    if master_members_df.empty:
+        st.error(f"Hindi makita o mabasa ang Excel file ({excel_filename}).")
+        return
+
+    if st.session_state.user_role == "Master Admin":
+        parish_options = ["Lahat ng Parokya"] + PARISH_ORDER
+    else:
+        parish_options = [st.session_state.assigned_parish]
+
+    col_p, col_f, col_s = st.columns([1.15, 1.25, 1.6])
+    with col_p:
+        selected_parish = st.selectbox("1. Pumili ng Parish:", parish_options)
+
+    if selected_parish == "Lahat ng Parokya":
+        parish_filtered_df = master_members_df.copy()
+    else:
+        parish_filtered_df = master_members_df[master_members_df["Parish"] == selected_parish].copy()
+
+    family_display_list = ["Lahat ng Family ID"]
+    family_map = {}
+    for fid_val, grp in parish_filtered_df.groupby("Family ID", sort=True):
+        fid_clean = str(fid_val).strip()
+        if not fid_clean:
+            continue
+        heads = [str(h).strip() for h in grp["Head of Family"].unique() if str(h).strip() and str(h).strip().lower() != "nan"]
+        head_label = heads[0] if heads else str(grp.iloc[0]["Full Name"]).strip()
+        disp_str = f"{fid_clean} — ({head_label}) [{len(grp)} miyembro]"
+        family_display_list.append(disp_str)
+        family_map[disp_str] = fid_clean
+
+    with col_f:
+        selected_family_disp = st.selectbox("2. Pumili ng Family ID:", family_display_list)
+        selected_family_id = family_map.get(selected_family_disp, "Lahat ng Family ID")
+
+    with col_s:
+        keyword_search = st.text_input(
+            "3. Search Family ID o Pangalan (Optional):",
+            placeholder="Hal. CTG-LN-FAM-0001 o Juan Reyes"
+        ).strip()
+
+    expand_full_family = st.checkbox(
+        "👨‍👩‍👧‍👦 Ipakita ang BUONG PAMILYA kapag nag-search ng Family ID o Pangalan (Makikita lahat sa Summary, Active/Inactive/Non-Member, at Matching Members)",
+        value=True
+    )
+
+    final_df = parish_filtered_df.copy()
+
+    if selected_family_id != "Lahat ng Family ID":
+        final_df = final_df[final_df["Family ID"].astype(str).str.strip().str.upper() == selected_family_id.upper()]
+
+    if keyword_search:
+        direct_mask = (
+            final_df["Family ID"].astype(str).str.contains(keyword_search, case=False, na=False) |
+            final_df["Full Name"].astype(str).str.contains(keyword_search, case=False, na=False) |
+            final_df["Head of Family"].astype(str).str.contains(keyword_search, case=False, na=False) |
+            final_df["Remarks"].astype(str).str.contains(keyword_search, case=False, na=False)
+        )
+        matched_rows = final_df[direct_mask]
+        if expand_full_family and not matched_rows.empty:
+            matched_fids = matched_rows["Family ID"].astype(str).str.strip().unique().tolist()
+            final_df = final_df[final_df["Family ID"].astype(str).str.strip().isin(matched_fids)]
+        else:
+            final_df = matched_rows
+
+    search_label = selected_parish
+    if selected_family_id != "Lahat ng Family ID":
+        search_label += f" • Family ID: {selected_family_id}"
+    if keyword_search:
+        search_label += f" • Search: '{keyword_search}'"
+
+    st.divider()
+
+    # LAHAT NG TABLES SA IBABA AY SABAY-SABAY NA NAKABASE SA `final_df`
+    summary_df, df_act_list, df_inact_list, df_non_list = build_status_summary_and_lists(final_df)
+
+    total_families = final_df["Family ID"].nunique() if not final_df.empty else 0
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("👨‍👩‍👧‍👦 Pamilyang Nahanap", total_families)
+    k2.metric("👥 Kabuuang Miyembro", len(final_df))
+    k3.metric("🟢 Active Members", len(df_act_list))
+    k4.metric("🟡 Inactive Members", len(df_inact_list))
+    k5.metric("🔵 Non-Members", len(df_non_list))
+
+    st.markdown("### 📋 MEMBER STATUS SUMMARY")
+    st.caption(f"** Kasalukuyang Filter / Search:** {search_label}")
+    st.dataframe(summary_df, use_container_width=True, hide_index=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    col_act, col_inact, col_non = st.columns(3)
+    with col_act:
+        st.success(f"**ACTIVE MEMBERS ({len(df_act_list)})**")
+        st.dataframe(df_act_list, use_container_width=True, hide_index=True)
+    with col_inact:
+        st.warning(f"**INACTIVE MEMBERS ({len(df_inact_list)})**")
+        st.dataframe(df_inact_list, use_container_width=True, hide_index=True)
+    with col_non:
+        st.info(f"**NON-MEMBERS ({len(df_non_list)})**")
+        st.dataframe(df_non_list, use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    st.markdown(f"### 👨‍👩‍👧‍👦 Matching members: {len(final_df)} (Mula sa {total_families} Pamilya)")
+    if not final_df.empty:
+        st.dataframe(
+            final_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Remarks": st.column_config.TextColumn("Remarks (Full Note)", width="large"),
+                "Current Address (If living separately)": st.column_config.TextColumn("Current Address", width="large"),
+                "Full Name": st.column_config.TextColumn("Full Name", width="medium"),
+                "Head of Family": st.column_config.TextColumn("Head of Family", width="medium"),
+            }
+        )
+
+        df_with_remarks = final_df[final_df["Remarks"].astype(str).str.strip() != ""]
+        with st.expander(f"📝 Basahin nang Buo ang Remarks at Detalye ng Miyembro ({len(df_with_remarks)} may Remarks)", expanded=True):
+            if not df_with_remarks.empty:
+                for _, r_row in df_with_remarks.iterrows():
+                    st.markdown(
+                        f"<div class='full-text-card'>"
+                        f"<b>👤 {r_row['Full Name']}</b> ({r_row['Parish']} • <code>{r_row['Family ID']}</code> • {r_row['Status']})<br>"
+                        f"🏠 <b>Head of Family:</b> {r_row['Head of Family'] or 'N/A'} | <b>Relasyon:</b> {r_row['Relationship'] or 'N/A'}<br>"
+                        f"📍 <b>Address:</b> {r_row['Current Address (If living separately)'] or 'N/A'}<br>"
+                        f"📝 <b>Buong Remarks:</b> {r_row['Remarks']}"
+                        f"</div>",
+                        unsafe_allow_html=True
+                    )
+            else:
+                st.caption("Walang nakalagay na espesyal na Remarks sa mga nakalistang miyembro sa itaas.")
+    else:
+        st.warning("Walang nahanap na kumpletong record para sa iyong hinahanap.")
+
+# =====================================================================
+# 🛠️ WORKFLOW QUEUE CARDS
+# =====================================================================
 def render_workflow_queue_section(df_source: pd.DataFrame, category_label: str, key_prefix: str, default_lang: str):
     if df_source.empty:
         st.info(f"Walang nakitang rekord para sa **{category_label}**.")
@@ -1205,14 +1401,12 @@ def render_workflow_queue_section(df_source: pd.DataFrame, category_label: str, 
 # 🧭 PARISH LEADER PORTAL (WIZARD & SUMMARY)
 # =====================================================================
 if app_mode == "🧭 Parish Leader Portal (Wizard & Summary)":
-    if st.session_state.user_role == "Master Admin":
-        render_title_with_logo(f"Parish Portal Overview — {st.session_state.assigned_parish}", "Guided workflow at summary para sa parokya.")
-    else:
-        render_title_with_logo(f"📍 Parish Workspace: {st.session_state.assigned_parish}", "Maligayang pagdating sa iyong pang-araw-araw na gabay at ministry portal.")
+    render_title_with_logo(
+        f"📍 Parish Workspace: {st.session_state.assigned_parish}",
+        "Maligayang pagdating sa iyong pang-araw-araw na gabay at ministry portal."
+    )
 
-    df_crm, df_p, df_q, df_co = df_crm_global, df_p_global, df_q_global, df_co_global
     records_master_df = global_records_df
-
     p_records = records_master_df[records_master_df["Parokya"].apply(lambda x: normalize_parish_match(x, st.session_state.assigned_parish))] if not records_master_df.empty else pd.DataFrame()
     pending_p_count = len(p_records[p_records["Status"].str.contains("Assigned", case=False, na=False)]) if not p_records.empty else 0
 
@@ -1221,20 +1415,29 @@ if app_mode == "🧭 Parish Leader Portal (Wizard & Summary)":
     chk2 = st.checkbox("2. I-check ang listahan ng mga bisita at miyembro ngayong linggo sa Parish Census tab.", value=False)
     chk3 = st.checkbox("3. Magpadala ng ulat o sumulat ng tugon gamit ang AI Assistant kung kinakailangan.", value=False)
 
-    if chk1 and pending_p_count > 0:
-        if st.button("👉 Pumunta sa Parish Inbox para Tugunan", type="primary"):
+    col_w1, col_w2 = st.columns(2)
+    with col_w1:
+        if st.button("👉 Pumunta sa Parish Inbox para Tugunan", type="primary", use_container_width=True):
             st.session_state.app_mode_override = "📥 Parish Inbox & Action Hub"
+            st.rerun()
+    with col_w2:
+        if st.button("📊 Buksan ang Parish Census & Member Manager", use_container_width=True):
+            st.session_state.app_mode_override = "📊 Parish Census & Member Manager"
             st.rerun()
 
     st.divider()
     st.markdown("### 🤖 Guided AI Assistant para sa Parish Leader")
     st.caption("Magtanong dito kung paano kakausapin ang mga miyembro, humingi ng ideya sa Bible study, o gabay sa pamumuno.")
     with st.form("wizard_ai_form"):
-        w_prompt = st.text_input("Magtanong sa CTG Gabay AI:", placeholder="Hal. Paano ko hihikayatin ang mga kabataan na sumali sa fellowship?")
+        w_prompt = st.text_input("Magtanong sa CTG Gabay AI:", placeholder="Hal. Paano ko kakausapin ang isang miyembrong matagal nang hindi sumisimba?")
         w_submit = st.form_submit_button("Humingi ng Gabay sa AI", use_container_width=True)
         if w_submit and w_prompt:
             client = genai.Client(api_key=get_valid_gemini_keys()[0])
-            ans = safe_generate_content(client, selected_model, f"Bilang isang tagapayo sa simbahan ng CTG sa parokya ng {st.session_state.assigned_parish}, sagutin ito nang may malasakit at gabay sa Bibliya sa wikang Tagalog: {w_prompt}")
+            ans = safe_generate_content(
+                client,
+                selected_model,
+                f"Bilang isang tagapayo sa simbahan ng CTG sa parokya ng {st.session_state.assigned_parish}, sagutin ito nang may malasakit at gabay sa Bibliya sa wikang Tagalog: {w_prompt}"
+            )
             st.success("Gabay mula sa AI:")
             st.markdown(ans.text)
     st.stop()
@@ -1246,52 +1449,32 @@ elif app_mode == "📥 Parish Inbox & Action Hub":
     render_title_with_logo(f"📍 Parish Workspace: {st.session_state.assigned_parish}", "Task-focused inbox para sa pagtugon sa mga nag-aabang ng tulong o dasal.")
     df_crm, df_p, df_q, df_co = df_crm_global, df_p_global, df_q_global, df_co_global
     tp, tq, tc = st.tabs(["🙏 Prayer Requests", "📖 Church Questions", "🤝 Counselling"])
-    with tp: render_workflow_queue_section(df_p, "Prayer Request", "p_inbox", "Tagalog")
-    with tq: render_workflow_queue_section(df_q, "Church Question", "q_inbox", "Tagalog")
-    with tc: render_workflow_queue_section(df_co, "Counselling Request", "c_inbox", "Tagalog")
+    with tp:
+        render_workflow_queue_section(df_p, "Prayer Request", "p_inbox", st.session_state.ui_default_lang)
+    with tq:
+        render_workflow_queue_section(df_q, "Church Question", "q_inbox", st.session_state.ui_default_lang)
+    with tc:
+        render_workflow_queue_section(df_co, "Counselling Request", "c_inbox", st.session_state.ui_default_lang)
     st.stop()
 
 # =====================================================================
-# 📊 PARISH CENSUS & MEMBER MANAGER (DATA-DRIVEN DASHBOARD)
+# 📊 PARISH DIRECTORY / CENSUS & FAMILY SEARCH (MASTER ADMIN & PARISH LEADER)
 # =====================================================================
-elif app_mode == "📊 Parish Census & Member Manager":
-    render_title_with_logo(f"📊 Parish Census & Member Manager — {st.session_state.assigned_parish}", "Subaybayan ang mga miyembro, pamilya, at mga talaan.")
-    if master_members_df.empty:
-        st.error("Walang nakitang Excel database para sa mga miyembro.")
-        st.stop()
-
-    parish_df = master_members_df[master_members_df["Parish"] == st.session_state.assigned_parish].copy()
-    summary_df, df_act_list, df_inact_list, df_non_list = build_status_summary_and_lists(parish_df)
-
-    st.markdown("### 📊 Quick Stats & Summary ng Aking Parokya")
-    st.dataframe(summary_df, use_container_width=True, hide_index=True)
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    st.markdown("### 📋 MGA TALAAN NG MGA MIYEMBRO AYON SA STATUS")
-    col_act, col_inact, col_non = st.columns(3)
-    with col_act:
-        st.success(f"**ACTIVE MEMBERS ({len(df_act_list)})**")
-        st.dataframe(df_act_list, use_container_width=True, hide_index=True)
-    with col_inact:
-        st.warning(f"**INACTIVE MEMBERS ({len(df_inact_list)})**")
-        st.dataframe(df_inact_list, use_container_width=True, hide_index=True)
-    with col_non:
-        st.info(f"**NON-MEMBERS ({len(df_non_list)})**")
-        st.dataframe(df_non_list, use_container_width=True, hide_index=True)
-
-    st.divider()
-    st.markdown("### 🔍 Family Search & Remarks View")
-    fam_search = st.text_input("Hanapin ang Family ID o Pangalan ng Miyembro:", placeholder="Hal. CTG-PL-FAM-001").strip()
-    search_df = parish_df.copy()
-    if fam_search:
-        search_df = search_df[search_df.astype(str).apply(lambda x: x.str.contains(fam_search, case=False, na=False)).any(axis=1)]
-
-    st.dataframe(search_df, use_container_width=True, hide_index=True)
+elif app_mode in ["📊 Parish Directory & Family Search", "📊 Parish Census & Member Manager"]:
+    if app_mode == "📊 Parish Census & Member Manager":
+        render_parish_directory_and_census_view(
+            f"📊 Parish Census & Member Manager — {st.session_state.assigned_parish}",
+            "Kapag nag-search ng Family ID o Pangalan, awtomatikong ipapakita ang buong pamilya sa Summary, Active/Inactive/Non-Member, at Matching Members."
+        )
+    else:
+        render_parish_directory_and_census_view(
+            "CHURCH OF THE TEMPLE OF GOD — SEARCH FAMILY / PARISH",
+            "Kapag nag-search ng Family ID o Pangalan, awtomatikong ipapakita ang buong pamilya sa Summary, Active/Inactive/Non-Member, at Matching Members."
+        )
     st.stop()
 
 # =====================================================================
-# 📈 PAGE 0: LIVE ACTIVITY & UPDATE DASHBOARD (MASTER ADMIN ONLY)
+# 📈 LIVE ACTIVITY & UPDATE DASHBOARD (MASTER ADMIN ONLY)
 # =====================================================================
 elif app_mode == "📈 Live Activity & Update Dashboard":
     if st.session_state.user_role != "Master Admin":
@@ -1401,112 +1584,6 @@ elif app_mode == "📈 Live Activity & Update Dashboard":
     st.stop()
 
 # =====================================================================
-# 1. PARISH DIRECTORY & FAMILY SEARCH
-# =====================================================================
-elif app_mode == "📊 Parish Directory & Family Search":
-    render_title_with_logo("CHURCH OF THE TEMPLE OF GOD — SEARCH FAMILY / PARISH")
-    if master_members_df.empty:
-        st.error(f"Hindi makita o mabasa ang Excel file ({excel_filename}).")
-        st.stop()
-        
-    if st.session_state.user_role == "Master Admin":
-        parish_options = ["Lahat ng Parokya"] + PARISH_ORDER
-    else:
-        parish_options = [st.session_state.assigned_parish]
-        
-    col_p, col_f, col_s = st.columns([1.2, 1.2, 1.6])
-    with col_p:
-        selected_parish = st.selectbox("1. Pumili ng Parish:", parish_options)
-        
-    if selected_parish == "Lahat ng Parokya":
-        parish_filtered_df = master_members_df.copy()
-    else:
-        parish_filtered_df = master_members_df[master_members_df["Parish"] == selected_parish].copy()
-        
-    available_family_ids = ["Lahat ng Family ID"] + sorted(parish_filtered_df["Family ID"].unique().tolist())
-    with col_f:
-        selected_family_id = st.selectbox("2. Pumili ng Family ID:", available_family_ids)
-    with col_s:
-        keyword_search = st.text_input(
-            "3. Search Family ID o Pangalan (Optional):",
-            placeholder="Hal. CTG-LN-FAM-0001 o Juan Reyes"
-        ).strip()
-        
-    final_df = parish_filtered_df.copy()
-    if selected_family_id != "Lahat ng Family ID":
-        final_df = final_df[final_df["Family ID"] == selected_family_id]
-        
-    if keyword_search:
-        final_df = final_df[
-            final_df["Family ID"].astype(str).str.contains(keyword_search, case=False, na=False) |
-            final_df["Full Name"].astype(str).str.contains(keyword_search, case=False, na=False) |
-            final_df["Head of Family"].astype(str).str.contains(keyword_search, case=False, na=False) |
-            final_df["Remarks"].astype(str).str.contains(keyword_search, case=False, na=False)
-        ]
-        
-    search_label = selected_parish
-    if selected_family_id != "Lahat ng Family ID":
-        search_label += f" • {selected_family_id}"
-    if keyword_search:
-        search_label += f" • Search: '{keyword_search}'"
-        
-    st.divider()
-    
-    summary_df, df_act_list, df_inact_list, df_non_list = build_status_summary_and_lists(final_df)
-    
-    st.markdown("### 📋 MEMBER STATUS SUMMARY")
-    st.caption(f"**Search:** {search_label}")
-    st.dataframe(summary_df, use_container_width=True, hide_index=True)
-    
-    st.markdown("<br>", unsafe_allow_html=True)
-    
-    col_act, col_inact, col_non = st.columns(3)
-    with col_act:
-        st.success(f"**ACTIVE MEMBERS ({len(df_act_list)})**")
-        st.dataframe(df_act_list, use_container_width=True, hide_index=True)
-    with col_inact:
-        st.warning(f"**INACTIVE MEMBERS ({len(df_inact_list)})**")
-        st.dataframe(df_inact_list, use_container_width=True, hide_index=True)
-    with col_non:
-        st.info(f"**NON-MEMBERS ({len(df_non_list)})**")
-        st.dataframe(df_non_list, use_container_width=True, hide_index=True)
-        
-    st.divider()
-    
-    total_families = final_df["Family ID"].nunique()
-    st.markdown(f"### 👨‍👩‍👧‍👦 Matching members: {len(final_df)} (Mula sa {total_families} Pamilya)")
-    if not final_df.empty:
-        st.dataframe(
-            final_df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Remarks": st.column_config.TextColumn("Remarks (Full Note)", width="large"),
-                "Current Address (If living separately)": st.column_config.TextColumn("Current Address", width="large"),
-                "Full Name": st.column_config.TextColumn("Full Name", width="medium"),
-                "Head of Family": st.column_config.TextColumn("Head of Family", width="medium"),
-            }
-        )
-        
-        df_with_remarks = final_df[final_df["Remarks"].astype(str).str.strip() != ""]
-        with st.expander(f"📝 Basahin nang Buo ang Remarks at Detalye ng Miyembro ({len(df_with_remarks)} may Remarks)", expanded=True):
-            if not df_with_remarks.empty:
-                for _, r_row in df_with_remarks.iterrows():
-                    st.markdown(
-                        f"<div class='full-text-card'>"
-                        f"<b>👤 {r_row['Full Name']}</b> ({r_row['Parish']} • <code>{r_row['Family ID']}</code> • {r_row['Status']})<br>"
-                        f"📍 <b>Address:</b> {r_row['Current Address (If living separately)'] or 'N/A'}<br>"
-                        f"📝 <b>Buong Remarks:</b> {r_row['Remarks']}"
-                        f"</div>",
-                        unsafe_allow_html=True
-                    )
-            else:
-                st.caption("Walang nakalagay na espesyal na Remarks sa mga nakalistang miyembro sa itaas.")
-    else:
-        st.warning("Walang nahanap na kumpletong record para sa iyong hinahanap.")
-    st.stop()
-
-# =====================================================================
 # 2. MASTER ADMIN CONTROLLER / APPROVAL HUB
 # =====================================================================
 elif app_mode == "🛡️ Master Admin Controller & Approval Queue":
@@ -1514,12 +1591,16 @@ elif app_mode == "🛡️ Master Admin Controller & Approval Queue":
         "Master Admin Controller & Approval Hub",
         "Ipasa ang mga request sa kaukulang Parokya, tingnan kung sino ang nag-submit, at i-approve/i-send sa Gmail o SMS."
     )
-    
+
+    lang_choices = ["Tagalog", "Ilokano", "English"]
+    def_lang_idx = lang_choices.index(st.session_state.ui_default_lang) if st.session_state.ui_default_lang in lang_choices else 0
+
     top1, top2, top3 = st.columns([1.8, 1.2, 1])
     with top1:
-        def_lang = st.selectbox("🌐 Default na Wika para sa AI Draft:", ["Tagalog", "Ilokano", "English"], index=0)
+        def_lang = st.selectbox("🌐 Default na Wika para sa AI Draft:", lang_choices, index=def_lang_idx)
     with top2:
-        show_side_panel = st.checkbox("📜 Ipakita ang Records Panel sa Gilid", value=True)
+        show_side_panel = st.checkbox("📜 Ipakita ang Records Panel sa Gilid", value=st.session_state.ui_show_side_records)
+        st.session_state.ui_show_side_records = show_side_panel
     with top3:
         if st.button("🔄 I-refresh ang Data", use_container_width=True):
             st.cache_data.clear()
@@ -1556,9 +1637,12 @@ elif app_mode == "🛡️ Master Admin Controller & Approval Queue":
             "📜 Buong Records & Requester Info",
             "📋 All CRM"
         ])
-        with tp: render_workflow_queue_section(df_p, "Prayer Request", "pray", def_lang)
-        with tq: render_workflow_queue_section(df_q, "Church Question", "qna", def_lang)
-        with tc: render_workflow_queue_section(df_co, "Counselling Request", "counsel", def_lang)
+        with tp:
+            render_workflow_queue_section(df_p, "Prayer Request", "pray", def_lang)
+        with tq:
+            render_workflow_queue_section(df_q, "Church Question", "qna", def_lang)
+        with tc:
+            render_workflow_queue_section(df_co, "Counselling Request", "counsel", def_lang)
         with trec:
             st.subheader("📜 Kumpletong Talaan ng mga Nagawa at Impormasyon ng mga Nag-request")
             if records_master_df.empty:
@@ -1637,6 +1721,12 @@ elif app_mode == "🛡️ Master Admin Controller & Approval Queue":
                         f"</div>",
                         unsafe_allow_html=True
                     )
+                    with st.expander(f"🔍 Buong Detalye at Tugon — {r_item['Pangalan ng Nag-request']}"):
+                        st.write(f"**🏠 Tirahan:** {r_item['Tirahan']}")
+                        st.write(f"**⛪ Katayuan:** {r_item['Katayuan sa Simbahan']} | **📅 Petsa:** {r_item['Petsa ng Request']}")
+                        st.write(f"**⏱️ Huling Update:** {r_item['Huling Na-update']}")
+                        st.markdown(f"**💬 Kahilingan / Tanong:**\n> {r_item['Detalye ng Request']}")
+                        st.markdown(f"**✉️ Tugon / AI Draft:**\n> {r_item['Tugon / AI Draft'] or 'Wala pang tugon.'}")
     st.stop()
 
 # =====================================================================
@@ -1644,15 +1734,30 @@ elif app_mode == "🛡️ Master Admin Controller & Approval Queue":
 # =====================================================================
 elif app_mode == "🤝 Notion CRM (Visitors & Members)":
     render_title_with_logo("Church CRM: Visitors & Members (Notion)")
-    if st.button("🔄 I-refresh"): st.cache_data.clear(); st.rerun()
+    if st.button("🔄 I-refresh"):
+        st.cache_data.clear()
+        st.rerun()
     n_tok = st.session_state.custom_secrets.get("NOTION_TOKEN", NOTION_TOKEN)
     n_db = st.session_state.custom_secrets.get("NOTION_CRM_DB_ID", NOTION_CRM_DB_ID)
     df_n = load_notion_crm_data(n_tok, n_db)
     if not df_n.empty:
         disp = df_n.drop(columns=["_page_id", "_last_edited", "_created_time"], errors="ignore")
         q = st.text_input("🔍 Search CRM:").strip()
-        if q: disp = disp[disp.astype(str).apply(lambda x: x.str.contains(q, case=False, na=False)).any(axis=1)]
+        if q:
+            disp = disp[disp.astype(str).apply(lambda x: x.str.contains(q, case=False, na=False)).any(axis=1)]
         st.dataframe(disp, use_container_width=True, hide_index=True)
+        st.divider()
+        st.subheader("📖 Buong Detalye ng Bawat Rekord sa Notion CRM (Full View)")
+        for idx, row in disp.iterrows():
+            first_col = disp.columns[0]
+            title_val = str(row[first_col]).strip() or f"Record #{idx + 1}"
+            details_html = f"<div class='full-text-card'><b>📌 {title_val}</b><br><hr style='margin:6px 0;'>"
+            for c_name in disp.columns:
+                val_str = str(row[c_name]).strip()
+                if val_str:
+                    details_html += f"<b>• {c_name}:</b> {val_str}<br>"
+            details_html += "</div>"
+            st.markdown(details_html, unsafe_allow_html=True)
     st.stop()
 
 # =====================================================================
@@ -1715,8 +1820,10 @@ elif app_mode == "🙏 Prayer Wall & Categorizer":
         if rp:
             client = genai.Client(api_key=get_valid_gemini_keys()[0])
             res = safe_generate_content(client, selected_model, f"Suriin ang prayer request na ito sa wikang {plang}: {rp}")
-            st.success("Tapos na!"); st.markdown(res.text)
-        else: st.warning("Maglagay muna ng mensahe.")
+            st.success("Tapos na!")
+            st.markdown(res.text)
+        else:
+            st.warning("Maglagay muna ng mensahe.")
     st.stop()
 
 # =====================================================================
@@ -1734,7 +1841,8 @@ elif app_mode == "📢 Announcement Broadcaster":
             body = safe_generate_content(client, selected_model, f"Gumawa ng pormal na announcement tungkol sa {et}. Detalye: {ed}. Isulat sa {blang}.").text
             res = send_email_via_gmail(em, f"CTG Announcement: {et}", body)
             st.success(res)
-        else: st.warning("Punan ang lahat.")
+        else:
+            st.warning("Punan ang lahat.")
     st.stop()
 
 # =====================================================================
@@ -1780,15 +1888,24 @@ elif app_mode == "🛠️ App Settings":
             )
 
         st.divider()
-        if st.button("✅ I-apply ang Theme at Controller Settings", type="primary", use_container_width=True):
-            st.session_state.ui_theme = new_ui_theme
-            st.session_state.ui_font_size = new_ui_font
-            st.session_state.ui_density = new_ui_dens
-            st.session_state.ui_default_lang = new_ui_lang
-            st.session_state.ui_show_side_records = new_side_rec
-            st.success("Na-update na ang Theme at App Controller!")
-            time.sleep(0.5)
-            st.rerun()
+        col_btn_ui1, col_btn_ui2 = st.columns([1.5, 1.5])
+        with col_btn_ui1:
+            if st.button("✅ I-apply ang Theme at Controller Settings", type="primary", use_container_width=True):
+                st.session_state.ui_theme = new_ui_theme
+                st.session_state.ui_font_size = new_ui_font
+                st.session_state.ui_density = new_ui_dens
+                st.session_state.ui_default_lang = new_ui_lang
+                st.session_state.ui_show_side_records = new_side_rec
+                st.success("Na-update na ang Theme at App Controller!")
+                time.sleep(0.5)
+                st.rerun()
+        with col_btn_ui2:
+            if st.button("🧹 I-clear ang App Cache & Refresh Data", use_container_width=True):
+                st.cache_data.clear()
+                st.cache_resource.clear()
+                st.success("Na-clear na ang cache at na-refresh ang data!")
+                time.sleep(0.5)
+                st.rerun()
 
     with tab_api:
         if st.session_state.user_role != "Master Admin":
@@ -1814,7 +1931,9 @@ elif app_mode == "🛠️ App Settings":
                         "GMAIL_CLIENT_ID": gci, "GMAIL_CLIENT_SECRET": gcs, "GMAIL_REFRESH_TOKEN": grt
                     }
                     st.cache_data.clear()
-                    st.success("Na-save na ang mga credentials!"); time.sleep(1); st.rerun()
+                    st.success("Na-save na ang mga credentials!")
+                    time.sleep(1)
+                    st.rerun()
     st.stop()
 
 # =====================================================================
@@ -1822,28 +1941,41 @@ elif app_mode == "🛠️ App Settings":
 # =====================================================================
 render_title_with_logo("CTG Gabay AI — Ministry Assistant", "Mag-type sa Tagalog, Ilokano, o English.")
 valid_keys = get_valid_gemini_keys()
-if not valid_keys: st.warning("Wala pang GEMINI_API_KEY."); st.stop()
+if not valid_keys:
+    st.warning("Wala pang GEMINI_API_KEY.")
+    st.stop()
 
-if "messages" not in st.session_state: st.session_state.messages = []
-if "current_model" not in st.session_state: st.session_state.current_model = selected_model
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "current_model" not in st.session_state:
+    st.session_state.current_model = selected_model
 
 pref_lang = st.selectbox("🌐 Wika ng Sagot:", ["Awto", "Tagalog", "Ilokano", "English"], index=0)
 sys_inst = f"Ikaw si CTG Gabay AI. Parish: {st.session_state.assigned_parish}. Tagalog, Ilokano, English."
 
 def create_chat(api_key, model_name):
     client = genai.Client(api_key=api_key)
-    return client.chats.create(model=model_name, config=types.GenerateContentConfig(system_instruction=sys_inst, tools=[query_excel_database, query_notion_crm, send_email_via_gmail], temperature=0.3))
+    return client.chats.create(
+        model=model_name,
+        config=types.GenerateContentConfig(
+            system_instruction=sys_inst,
+            tools=[query_excel_database, query_notion_crm, send_email_via_gmail],
+            temperature=0.3
+        )
+    )
 
 if "chat_session" not in st.session_state or st.session_state.current_model != selected_model:
     st.session_state.current_model = selected_model
     st.session_state.chat_session = create_chat(valid_keys[0], selected_model)
 
 for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]): st.markdown(msg["content"])
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
 
 if user_prompt := st.chat_input("Magtanong..."):
     st.session_state.messages.append({"role": "user", "content": user_prompt})
-    with st.chat_message("user"): st.markdown(user_prompt)
+    with st.chat_message("user"):
+        st.markdown(user_prompt)
     with st.chat_message("assistant"):
         res = st.session_state.chat_session.send_message(user_prompt)
         st.markdown(res.text)
