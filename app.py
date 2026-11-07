@@ -1,6 +1,7 @@
 import os
 import io
 import re
+import json
 import time
 import base64
 import requests
@@ -81,6 +82,9 @@ CLOUD_SPREADSHEET_URL = (
     "https://docs.google.com/spreadsheets/d/15_znwPmjK95vTgf5lStbKKPCjEGw6oDp/"
     "edit?usp=sharing&ouid=107511419052324683693&rtpof=true&sd=true"
 )
+
+LOCAL_CHAT_FILE = "ctg_ministry_internal_chat.json"
+DRIVE_CHAT_FILENAME = "ctg_ministry_internal_chat_cloud.json"
 
 st.set_page_config(
     page_title="CTG Ministry Hub - Gabay AI",
@@ -201,6 +205,74 @@ def apply_dynamic_app_styles():
             margin-bottom: 6px;
             color: {side_box_text} !important;
             font-size: 0.80rem;
+        }}
+        .chat-bubble-mine {{
+            background-color: #1E3A8A;
+            border: 1px solid #3B82F6;
+            color: #FFFFFF !important;
+            padding: 10px 14px;
+            border-radius: 12px 12px 2px 12px;
+            margin-bottom: 8px;
+            margin-left: 15%;
+            font-size: {font_scale};
+        }}
+        .chat-bubble-other {{
+            background-color: {side_box_bg};
+            border-left: 4px solid #10B981;
+            border-top: 1px solid {side_box_border};
+            border-right: 1px solid {side_box_border};
+            border-bottom: 1px solid {side_box_border};
+            color: {side_box_text} !important;
+            padding: 10px 14px;
+            border-radius: 12px 12px 12px 2px;
+            margin-bottom: 8px;
+            margin-right: 15%;
+            font-size: {font_scale};
+        }}
+        .chat-bubble-broadcast {{
+            background-color: #4C1D95;
+            border: 1px solid #A78BFA;
+            color: #F5F3FF !important;
+            padding: 10px 14px;
+            border-radius: 10px;
+            margin-bottom: 8px;
+            font-size: {font_scale};
+        }}
+        .category-header-seniors {{
+            background-color: #3B0764;
+            border: 1px solid #A855F7;
+            color: #F3E8FF !important;
+            padding: 10px 14px;
+            border-radius: 8px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }}
+        .category-header-adults {{
+            background-color: #1E3A8A;
+            border: 1px solid #60A5FA;
+            color: #DBEAFE !important;
+            padding: 10px 14px;
+            border-radius: 8px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }}
+        .category-header-youth {{
+            background-color: #065F46;
+            border: 1px solid #34D399;
+            color: #D1FAE5 !important;
+            padding: 10px 14px;
+            border-radius: 8px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }}
+        .category-header-kids {{
+            background-color: #78350F;
+            border: 1px solid #FBBF24;
+            color: #FEF3C7 !important;
+            padding: 10px 14px;
+            border-radius: 8px;
+            font-weight: 700;
+            margin-bottom: 8px;
         }}
         [data-testid="collapsedControl"], [data-testid="stSidebarCollapseButton"] {{
             display: flex !important; visibility: visible !important; opacity: 1 !important; z-index: 999999 !important;
@@ -576,6 +648,31 @@ def build_status_summary_and_lists(df):
     df_non_list = pd.DataFrame(non_member_rows, columns=mini_cols) if non_member_rows else pd.DataFrame(columns=mini_cols)
     return summary_df, df_act_list, df_inact_list, df_non_list
 
+def build_age_category_tables(df):
+    seniors_rows, adults_rows, youth_rows, kids_rows = [], [], [], []
+    cat_cols = ["Name", "Category", "Status"]
+    for _, row in df.iterrows():
+        c_grp = classify_category(row.get("Category", ""))
+        item = {
+            "Name": row.get("Full Name", ""),
+            "Category": row.get("Category", "") if str(row.get("Category", "")).strip() else c_grp.upper(),
+            "Status": row.get("Status", "")
+        }
+        if c_grp == "Seniors":
+            seniors_rows.append(item)
+        elif c_grp == "Adults":
+            adults_rows.append(item)
+        elif c_grp == "Youth":
+            youth_rows.append(item)
+        elif c_grp == "Kids":
+            kids_rows.append(item)
+
+    df_seniors = pd.DataFrame(seniors_rows, columns=cat_cols) if seniors_rows else pd.DataFrame(columns=cat_cols)
+    df_adults = pd.DataFrame(adults_rows, columns=cat_cols) if adults_rows else pd.DataFrame(columns=cat_cols)
+    df_youth = pd.DataFrame(youth_rows, columns=cat_cols) if youth_rows else pd.DataFrame(columns=cat_cols)
+    df_kids = pd.DataFrame(kids_rows, columns=cat_cols) if kids_rows else pd.DataFrame(columns=cat_cols)
+    return df_seniors, df_adults, df_youth, df_kids
+
 def get_valid_gemini_keys():
     raw_keys = [
         st.session_state.get("custom_secrets", {}).get("GEMINI_API_KEY", ""),
@@ -610,14 +707,14 @@ def safe_generate_content(client, model, contents, config=None):
     raise Exception(f"Gemini API Error: {last_err}")
 
 # ==========================================
-# ☁️ GOOGLE DRIVE CLOUD STORAGE UPLOADER
+# ☁️ GOOGLE DRIVE CLOUD STORAGE & MESSENGER SYNC
 # ==========================================
-def upload_file_to_google_drive(file_bytes, filename, mime_type="image/jpeg"):
+def get_google_drive_service():
     g_id = get_secret("GMAIL_CLIENT_ID")
     g_sec = get_secret("GMAIL_CLIENT_SECRET")
     g_ref = get_secret("GMAIL_REFRESH_TOKEN")
     if not all([g_id, g_sec, g_ref]):
-        return None, "Error: Kulang ang Google Drive/Gmail credentials sa App Settings."
+        return None
     try:
         creds = Credentials(
             token=None,
@@ -626,13 +723,100 @@ def upload_file_to_google_drive(file_bytes, filename, mime_type="image/jpeg"):
             client_id=g_id.strip(),
             client_secret=g_sec.strip()
         )
-        service = build("drive", "v3", credentials=creds)
+        return build("drive", "v3", credentials=creds)
+    except Exception:
+        return None
+
+def upload_file_to_google_drive(file_bytes, filename, mime_type="image/jpeg"):
+    service = get_google_drive_service()
+    if service is None:
+        return None, "Error: Kulang ang Google Drive/Gmail credentials sa App Settings."
+    try:
         file_metadata = {'name': filename}
         media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype=mime_type, resumable=True)
         file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
         return file.get('webViewLink'), "Matagumpay na na-upload sa Google Drive!"
     except Exception as e:
         return None, f"Google Drive Upload Error: {str(e)}"
+
+@st.cache_data(ttl=12)
+def load_internal_chat_messages() -> list:
+    messages = []
+    if os.path.exists(LOCAL_CHAT_FILE):
+        try:
+            with open(LOCAL_CHAT_FILE, "r", encoding="utf-8") as f:
+                messages = json.load(f)
+        except Exception:
+            messages = []
+
+    service = get_google_drive_service()
+    if service is not None:
+        try:
+            res = service.files().list(
+                q=f"name='{DRIVE_CHAT_FILENAME}' and trashed=false",
+                spaces="drive",
+                fields="files(id, name)",
+                pageSize=1
+            ).execute()
+            files = res.get("files", [])
+            if files:
+                file_id = files[0]["id"]
+                content = service.files().get_media(fileId=file_id).execute()
+                cloud_msgs = json.loads(content.decode("utf-8"))
+                if isinstance(cloud_msgs, list):
+                    existing_ids = {m.get("id") for m in messages if isinstance(m, dict)}
+                    for cm in cloud_msgs:
+                        if isinstance(cm, dict) and cm.get("id") not in existing_ids:
+                            messages.append(cm)
+                    messages = sorted(messages, key=lambda x: x.get("timestamp", ""))
+                    with open(LOCAL_CHAT_FILE, "w", encoding="utf-8") as f:
+                        json.dump(messages, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+    return messages
+
+def save_internal_chat_message(sender: str, recipient: str, text: str) -> bool:
+    msgs = load_internal_chat_messages()
+    new_msg = {
+        "id": f"msg_{int(time.time() * 1000)}_{len(msgs)}",
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "sender": sender,
+        "recipient": recipient,
+        "message": text.strip()
+    }
+    msgs.append(new_msg)
+    try:
+        with open(LOCAL_CHAT_FILE, "w", encoding="utf-8") as f:
+            json.dump(msgs, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+    service = get_google_drive_service()
+    if service is not None:
+        try:
+            payload_bytes = json.dumps(msgs, ensure_ascii=False, indent=2).encode("utf-8")
+            media = MediaIoBaseUpload(io.BytesIO(payload_bytes), mimetype="application/json", resumable=False)
+            res = service.files().list(
+                q=f"name='{DRIVE_CHAT_FILENAME}' and trashed=false",
+                spaces="drive",
+                fields="files(id)",
+                pageSize=1
+            ).execute()
+            files = res.get("files", [])
+            if files:
+                service.files().update(fileId=files[0]["id"], media_body=media).execute()
+            else:
+                service.files().create(body={"name": DRIVE_CHAT_FILENAME}, media_body=media).execute()
+        except Exception:
+            pass
+
+    st.cache_data.clear()
+    return True
+
+def get_current_chat_identity() -> str:
+    if st.session_state.get("user_role") == "Master Admin":
+        return "MASTER ADMIN"
+    return str(st.session_state.get("assigned_parish", "PARISH USER")).upper().strip()
 
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
@@ -838,6 +1022,17 @@ def load_all_ministry_DataFrames():
 
 df_crm_global, df_p_global, df_q_global, df_co_global = load_all_ministry_DataFrames()
 global_records_df = build_combined_records_df(df_p_global, df_q_global, df_co_global)
+all_chat_msgs_global = load_internal_chat_messages()
+my_chat_id = get_current_chat_identity()
+
+# Filter messages visible to current user for sidebar badge
+visible_chats_for_me = [
+    m for m in all_chat_msgs_global
+    if st.session_state.user_role == "Master Admin"
+    or m.get("sender") == my_chat_id
+    or m.get("recipient") == my_chat_id
+    or m.get("recipient") == "LAHAT NG USERS (BROADCAST)"
+]
 
 # =====================================================================
 # ⚙️ SIDEBAR CONTROL PANEL
@@ -919,6 +1114,7 @@ with st.sidebar:
             "📈 Live Activity & Update Dashboard",
             "📊 Parish Directory & Family Search",
             "🛡️ Master Admin Controller & Approval Queue",
+            "🗣️ Ministry Messenger (Admin & Users Chat)",
             "🤝 Notion CRM (Visitors & Members)",
             "💬 AI Chat Assistant",
             "➕ Magdagdag ng Miyembro & Litrato",
@@ -931,6 +1127,7 @@ with st.sidebar:
             "🧭 Parish Leader Portal (Wizard & Summary)",
             "📥 Parish Inbox & Action Hub",
             "📊 Parish Census & Member Manager",
+            "🗣️ Ministry Messenger (Admin & Users Chat)",
             "💬 AI Chat Assistant",
             "➕ Magdagdag ng Miyembro & Litrato",
             "🙏 Prayer Wall & Categorizer",
@@ -944,9 +1141,10 @@ with st.sidebar:
             default_nav_idx = nav_options.index(target_nav)
 
     app_mode = st.radio("Pumili ng Pahina:", nav_options, index=default_nav_idx)
+    st.caption(f"💬 Ministry Messenger: **{len(visible_chats_for_me)}** mensahe sa iyong inbox")
     selected_model = st.selectbox("Gemini Model:", ["gemini-3.8-flash", "gemini-3.1-pro-preview"], index=0)
     st.divider()
-    if st.button("🗑️ I-clear ang Chat History"):
+    if st.button("🗑️ I-clear ang AI Chat History"):
         st.session_state.messages = []
         st.session_state.pop("chat_session", None)
         st.rerun()
@@ -971,7 +1169,164 @@ def generate_ai_ministry_draft(service_category, sender_name, parish_name, topic
     return res.text
 
 # =====================================================================
-# 👨‍👩‍👧‍👦 PINAG-ISANG DIRECTORY, FAMILY SEARCH & CENSUS ENGINE
+# 🗣️ INTERNAL MINISTRY MESSENGER (PRIVATE USER-TO-USER, USER-TO-ADMIN & BROADCAST)
+# =====================================================================
+def render_ministry_messenger_page():
+    my_id = get_current_chat_identity()
+    is_master = (st.session_state.user_role == "Master Admin")
+
+    render_title_with_logo(
+        "🗣️ CTG Ministry Messenger — Private & Broadcast Chat",
+        f"Ikaw ay naka-login bilang: {my_id}. Ang pribadong usapan ay tanging sa pagitan lamang ninyo ng kausap mo at ng Master Admin."
+    )
+
+    all_msgs = load_internal_chat_messages()
+
+    # Build dropdown list of chat partners
+    if is_master:
+        partner_options = ["📢 LAHAT NG USERS (BROADCAST)"] + PARISH_ORDER
+    else:
+        other_parishes = [p for p in PARISH_ORDER if p != my_id]
+        partner_options = ["🛡️ MASTER ADMIN", "📢 LAHAT NG USERS (BROADCAST)"] + other_parishes
+
+    col_top1, col_top2 = st.columns([2.6, 1])
+    with col_top1:
+        selected_partner_raw = st.selectbox(
+            "💬 Pumili ng User / Parokya na Gusto Mong Kausapin (Dropdown):",
+            partner_options,
+            key="messenger_partner_select"
+        )
+    with col_top2:
+        st.write("")
+        if st.button("🔄 I-refresh ang mga Mensahe", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
+
+    # Clean partner identifier
+    if "LAHAT NG USERS" in selected_partner_raw:
+        partner_id = "LAHAT NG USERS (BROADCAST)"
+    elif "MASTER ADMIN" in selected_partner_raw:
+        partner_id = "MASTER ADMIN"
+    else:
+        partner_id = selected_partner_raw.strip()
+
+    if is_master:
+        tab_conv, tab_all_monitor = st.tabs([
+            f"💬 Chat Box: {partner_id}",
+            "👁️ Master Admin: Monitor All Private & Broadcast Chats (Lahat ng Usapan)"
+        ])
+    else:
+        tab_conv = st.container()
+        tab_all_monitor = None
+
+    with tab_conv:
+        if partner_id == "LAHAT NG USERS (BROADCAST)":
+            st.info("📢 **Broadcast Mode:** Ang mensaheng ipapadala mo rito ay mababasa ng **lahat ng Parokya at Master Admin**.")
+            conv_msgs = [
+                m for m in all_msgs
+                if m.get("recipient") == "LAHAT NG USERS (BROADCAST)"
+            ]
+        else:
+            st.success(
+                f"🔒 **Private Conversation ({my_id} ↔ {partner_id}):** "
+                f"Hindi ito makikita ng ibang parokya. Tanging ikaw, si **{partner_id}**, at ang **Master Admin** lamang ang makakabasa nito."
+            )
+            conv_msgs = [
+                m for m in all_msgs
+                if (m.get("sender") == my_id and m.get("recipient") == partner_id)
+                or (m.get("sender") == partner_id and m.get("recipient") == my_id)
+            ]
+
+        chat_box = st.container(height=420, border=True)
+        with chat_box:
+            if not conv_msgs:
+                st.caption(f"Wala pang mensahe sa pagitan ng **{my_id}** at **{partner_id}**. Mag-type sa ibaba para magsimula!")
+            else:
+                for m in conv_msgs:
+                    s_name = m.get("sender", "Unknown")
+                    r_name = m.get("recipient", "Unknown")
+                    t_str = m.get("timestamp", "")
+                    body_txt = m.get("message", "")
+
+                    if r_name == "LAHAT NG USERS (BROADCAST)":
+                        st.markdown(
+                            f"<div class='chat-bubble-broadcast'>"
+                            f"<b>📢 {s_name}</b> → <i>Lahat ng Users</i> <span style='float:right;font-size:0.78rem;'>🕒 {t_str}</span><br>"
+                            f"{body_txt}"
+                            f"</div>",
+                            unsafe_allow_html=True
+                        )
+                    elif s_name == my_id:
+                        st.markdown(
+                            f"<div class='chat-bubble-mine'>"
+                            f"<b>👤 Ikaw ({s_name})</b> → <b>{r_name}</b> <span style='float:right;font-size:0.78rem;'>🕒 {t_str}</span><br>"
+                            f"{body_txt}"
+                            f"</div>",
+                            unsafe_allow_html=True
+                        )
+                    else:
+                        st.markdown(
+                            f"<div class='chat-bubble-other'>"
+                            f"<b>🏛️ {s_name}</b> → <b>{r_name}</b> <span style='float:right;font-size:0.78rem;'>🕒 {t_str}</span><br>"
+                            f"{body_txt}"
+                            f"</div>",
+                            unsafe_allow_html=True
+                        )
+
+        with st.form("send_internal_chat_form", clear_on_submit=True):
+            c_in, c_btn = st.columns([4, 1])
+            with c_in:
+                msg_input = st.text_input(
+                    f"Mensahe para kay {partner_id}:",
+                    placeholder=f"Mag-type ng mensahe para kay {partner_id}...",
+                    label_visibility="collapsed"
+                )
+            with c_btn:
+                send_btn = st.form_submit_button("📨 Ipadala", type="primary", use_container_width=True)
+
+            if send_btn:
+                if msg_input and msg_input.strip():
+                    save_internal_chat_message(my_id, partner_id, msg_input.strip())
+                    st.success(f"Naipadala na kay {partner_id}!")
+                    st.rerun()
+                else:
+                    st.warning("Mag-type muna ng mensahe.")
+
+    if is_master and tab_all_monitor is not None:
+        with tab_all_monitor:
+            st.subheader("👁️ Master Admin Exclusive: Lahat ng Pribado at Broadcast na Usapan ng mga Users")
+            st.caption("Bilang Master Admin, nakikita mo rito ang lahat ng chat sa pagitan ng kahit sinong Parish Leaders at Admin.")
+            flt_col1, flt_col2 = st.columns([1.5, 2])
+            with flt_col1:
+                mon_parish = st.selectbox(
+                    "Salain ayon sa User / Parokya:",
+                    ["Lahat ng Usapan", "MASTER ADMIN", "LAHAT NG USERS (BROADCAST)"] + PARISH_ORDER,
+                    key="mon_chat_filter"
+                )
+            with flt_col2:
+                mon_search = st.text_input("🔍 Hanapin sa mga mensahe:", key="mon_chat_search").strip()
+
+            mon_list = list(reversed(all_msgs))
+            if mon_parish != "Lahat ng Usapan":
+                mon_list = [
+                    m for m in mon_list
+                    if m.get("sender") == mon_parish or m.get("recipient") == mon_parish
+                ]
+            if mon_search:
+                mon_list = [
+                    m for m in mon_list
+                    if mon_search.lower() in f"{m.get('sender','')} {m.get('recipient','')} {m.get('message','')}".lower()
+                ]
+
+            if not mon_list:
+                st.info("Walang nakitang mensahe sa napiling filter.")
+            else:
+                mon_df = pd.DataFrame(mon_list)[["timestamp", "sender", "recipient", "message"]]
+                mon_df.columns = ["Petsa at Oras", "Nagpadala (Sender)", "Pinadalhan (Recipient)", "Mensahe"]
+                st.dataframe(mon_df, use_container_width=True, hide_index=True)
+
+# =====================================================================
+# 👨‍👩‍👧‍👦 PINAG-ISANG DIRECTORY, FAMILY SEARCH & CENSUS ENGINE (LAHAT NG ADMIN AT USERS)
 # =====================================================================
 def render_parish_directory_and_census_view(page_heading: str, page_subtitle: str = ""):
     render_title_with_logo(page_heading, page_subtitle)
@@ -1016,7 +1371,7 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
         ).strip()
 
     expand_full_family = st.checkbox(
-        "👨‍👩‍👧‍👦 Ipakita ang BUONG PAMILYA kapag nag-search ng Family ID o Pangalan (Makikita lahat sa Summary, Active/Inactive/Non-Member, at Matching Members)",
+        "👨‍👩‍👧‍👦 Ipakita ang BUONG PAMILYA kapag nag-search ng Family ID o Pangalan (Makikita lahat sa Summary, Active/Inactive/Non-Member, Age Categories, at Matching Members)",
         value=True
     )
 
@@ -1047,10 +1402,13 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
 
     st.divider()
 
-    # LAHAT NG TABLES SA IBABA AY SABAY-SABAY NA NAKABASE SA `final_df`
+    # SABAY-SABAY NA PAGBUO NG STATUS TABLES AT AGE CATEGORY TABLES MULA SA `final_df`
     summary_df, df_act_list, df_inact_list, df_non_list = build_status_summary_and_lists(final_df)
+    df_seniors, df_adults, df_youth, df_kids = build_age_category_tables(final_df)
 
     total_families = final_df["Family ID"].nunique() if not final_df.empty else 0
+
+    # TOP SUMMARY METRICS (PAMILYA & STATUS)
     k1, k2, k3, k4, k5 = st.columns(5)
     k1.metric("👨‍👩‍👧‍👦 Pamilyang Nahanap", total_families)
     k2.metric("👥 Kabuuang Miyembro", len(final_df))
@@ -1058,12 +1416,21 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
     k4.metric("🟡 Inactive Members", len(df_inact_list))
     k5.metric("🔵 Non-Members", len(df_non_list))
 
+    # TOP TOTAL COUNTERS PARA SA SENIORS, ADULTS, YOUTH, KIDS
+    c_tot1, c_tot2, c_tot3, c_tot4 = st.columns(4)
+    c_tot1.metric("👴 TOTAL SENIORS", len(df_seniors))
+    c_tot2.metric("🧑 TOTAL ADULTS", len(df_adults))
+    c_tot3.metric("👦 TOTAL YOUTH", len(df_youth))
+    c_tot4.metric("👶 TOTAL KIDS", len(df_kids))
+
     st.markdown("### 📋 MEMBER STATUS SUMMARY")
-    st.caption(f"** Kasalukuyang Filter / Search:** {search_label}")
+    st.caption(f"**Kasalukuyang Filter / Search:** {search_label}")
     st.dataframe(summary_df, use_container_width=True, hide_index=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
+    # 3 COLUMNS: ACTIVE, INACTIVE, NON-MEMBERS
+    st.markdown("### 📊 MGA TALAAN AYON SA MEMBER STATUS (ACTIVE / INACTIVE / NON-MEMBER)")
     col_act, col_inact, col_non = st.columns(3)
     with col_act:
         st.success(f"**ACTIVE MEMBERS ({len(df_act_list)})**")
@@ -1074,6 +1441,24 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
     with col_non:
         st.info(f"**NON-MEMBERS ({len(df_non_list)})**")
         st.dataframe(df_non_list, use_container_width=True, hide_index=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # 4 COLUMNS: TOTAL SENIORS, TOTAL ADULTS, TOTAL YOUTH, TOTAL KIDS (NAME, CATEGORY, STATUS)
+    st.markdown("### 👥 MGA TALAAN AYON SA KATEGORYA (SENIORS • ADULTS • YOUTH • KIDS)")
+    col_sen, col_adu, col_you, col_kid = st.columns(4)
+    with col_sen:
+        st.markdown(f"<div class='category-header-seniors'>👴 TOTAL SENIORS ({len(df_seniors)})</div>", unsafe_allow_html=True)
+        st.dataframe(df_seniors, use_container_width=True, hide_index=True)
+    with col_adu:
+        st.markdown(f"<div class='category-header-adults'>🧑 TOTAL ADULTS ({len(df_adults)})</div>", unsafe_allow_html=True)
+        st.dataframe(df_adults, use_container_width=True, hide_index=True)
+    with col_you:
+        st.markdown(f"<div class='category-header-youth'>👦 TOTAL YOUTH ({len(df_youth)})</div>", unsafe_allow_html=True)
+        st.dataframe(df_youth, use_container_width=True, hide_index=True)
+    with col_kid:
+        st.markdown(f"<div class='category-header-kids'>👶 TOTAL KIDS ({len(df_kids)})</div>", unsafe_allow_html=True)
+        st.dataframe(df_kids, use_container_width=True, hide_index=True)
 
     st.divider()
 
@@ -1413,16 +1798,20 @@ if app_mode == "🧭 Parish Leader Portal (Wizard & Summary)":
     st.markdown("### 📋 Daily Action Checklist (Pang-araw-araw na Gabay)")
     chk1 = st.checkbox(f"1. Mayroon kang ({pending_p_count}) bagong request o panalangin na nakatalaga sa iyong parokya.", value=(pending_p_count > 0))
     chk2 = st.checkbox("2. I-check ang listahan ng mga bisita at miyembro ngayong linggo sa Parish Census tab.", value=False)
-    chk3 = st.checkbox("3. Magpadala ng ulat o sumulat ng tugon gamit ang AI Assistant kung kinakailangan.", value=False)
+    chk3 = st.checkbox("3. Buksan ang Ministry Messenger para makipag-ugnayan kay Master Admin o sa ibang Parokya.", value=False)
 
-    col_w1, col_w2 = st.columns(2)
+    col_w1, col_w2, col_w3 = st.columns(3)
     with col_w1:
-        if st.button("👉 Pumunta sa Parish Inbox para Tugunan", type="primary", use_container_width=True):
+        if st.button("👉 Pumunta sa Parish Inbox", type="primary", use_container_width=True):
             st.session_state.app_mode_override = "📥 Parish Inbox & Action Hub"
             st.rerun()
     with col_w2:
-        if st.button("📊 Buksan ang Parish Census & Member Manager", use_container_width=True):
+        if st.button("📊 Buksan ang Parish Census", use_container_width=True):
             st.session_state.app_mode_override = "📊 Parish Census & Member Manager"
+            st.rerun()
+    with col_w3:
+        if st.button("🗣️ Buksan ang Ministry Messenger", use_container_width=True):
+            st.session_state.app_mode_override = "🗣️ Ministry Messenger (Admin & Users Chat)"
             st.rerun()
 
     st.divider()
@@ -1440,6 +1829,13 @@ if app_mode == "🧭 Parish Leader Portal (Wizard & Summary)":
             )
             st.success("Gabay mula sa AI:")
             st.markdown(ans.text)
+    st.stop()
+
+# =====================================================================
+# 🗣️ MINISTRY MESSENGER PAGE ROUTE
+# =====================================================================
+elif app_mode == "🗣️ Ministry Messenger (Admin & Users Chat)":
+    render_ministry_messenger_page()
     st.stop()
 
 # =====================================================================
@@ -1464,12 +1860,12 @@ elif app_mode in ["📊 Parish Directory & Family Search", "📊 Parish Census &
     if app_mode == "📊 Parish Census & Member Manager":
         render_parish_directory_and_census_view(
             f"📊 Parish Census & Member Manager — {st.session_state.assigned_parish}",
-            "Kapag nag-search ng Family ID o Pangalan, awtomatikong ipapakita ang buong pamilya sa Summary, Active/Inactive/Non-Member, at Matching Members."
+            "Kumpletong Talaan ng Pamilya, Member Status, at Age Categories (Total Seniors, Adults, Youth, Kids)."
         )
     else:
         render_parish_directory_and_census_view(
             "CHURCH OF THE TEMPLE OF GOD — SEARCH FAMILY / PARISH",
-            "Kapag nag-search ng Family ID o Pangalan, awtomatikong ipapakita ang buong pamilya sa Summary, Active/Inactive/Non-Member, at Matching Members."
+            "Kumpletong Talaan ng Pamilya, Member Status, at Age Categories (Total Seniors, Adults, Youth, Kids)."
         )
     st.stop()
 
