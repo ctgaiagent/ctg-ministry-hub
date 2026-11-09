@@ -116,9 +116,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ==========================================
-# 🎛️ INITIALIZE UI & THEME CONTROLLER STATES
-# ==========================================
 if "ui_theme" not in st.session_state:
     st.session_state.ui_theme = "🌙 Dark Mode"
 if "ui_font_size" not in st.session_state:
@@ -410,7 +407,6 @@ def sync_excel_bytes_to_drive(excel_bytes: bytes, spreadsheet_url: str) -> tuple
 @st.cache_data(ttl=45)
 def fetch_live_excel_bytes(spreadsheet_url: str) -> tuple[bytes, str]:
     doc_id = extract_id_from_url(spreadsheet_url)
-    # 1. Subukan kunin ang pinakabagong bersyon mula sa Google Drive API o Export Link
     service = get_google_drive_service()
     if service is not None and doc_id and len(doc_id) > 15:
         try:
@@ -433,7 +429,6 @@ def fetch_live_excel_bytes(spreadsheet_url: str) -> tuple[bytes, str]:
         except Exception:
             pass
 
-    # 2. Fallback sa local file kung offline o hindi ma-download
     if os.path.exists(LOCAL_EXCEL_CACHE):
         try:
             with open(LOCAL_EXCEL_CACHE, "rb") as f:
@@ -2438,7 +2433,7 @@ elif app_mode == "🤝 Notion CRM (Visitors & Members)":
     st.stop()
 
 # =====================================================================
-# 4. MAGDAGDAG NG MIYEMBRO & LITRATO (AUTO-ADD SA EXCEL & GOOGLE DRIVE)
+# 4. MAGDAGDAG NG MIYEMBRO & LITRATO
 # =====================================================================
 elif app_mode == "➕ Magdagdag ng Miyembro & Litrato":
     render_title_with_logo(
@@ -2551,7 +2546,7 @@ elif app_mode == "📢 Announcement Broadcaster":
     st.stop()
 
 # =====================================================================
-# 7. APP SETTINGS (THEME, EXCEL DRIVE MANAGER, AT API CREDENTIALS)
+# 7. APP SETTINGS
 # =====================================================================
 elif app_mode == "🛠️ App Settings":
     render_title_with_logo("🛠️ App Controller, Theme, Excel Sync & Configuration Settings", "I-customize ang hitsura ng app, i-manage ang Google Drive Excel File, at i-update ang API settings.")
