@@ -116,6 +116,9 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# ==========================================
+# 🎛️ INITIALIZE UI & THEME CONTROLLER STATES
+# ==========================================
 if "ui_theme" not in st.session_state:
     st.session_state.ui_theme = "🌙 Dark Mode"
 if "ui_font_size" not in st.session_state:
@@ -363,6 +366,18 @@ def get_google_drive_service():
         return build("drive", "v3", credentials=creds)
     except Exception:
         return None
+
+def upload_file_to_google_drive(file_bytes, filename, mime_type="image/jpeg"):
+    service = get_google_drive_service()
+    if service is None:
+        return None, "Error: Kulang ang Google Drive/Gmail credentials sa App Settings."
+    try:
+        file_metadata = {'name': filename}
+        media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype=mime_type, resumable=True)
+        file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
+        return file.get('webViewLink'), "Matagumpay na na-upload sa Google Drive!"
+    except Exception as e:
+        return None, f"Google Drive Upload Error: {str(e)}"
 
 def sync_excel_bytes_to_drive(excel_bytes: bytes, spreadsheet_url: str) -> tuple[bool, str]:
     try:
@@ -904,16 +919,30 @@ def get_valid_gemini_keys():
         st.session_state.get("custom_secrets", {}).get("GEMINI_API_KEY_2", ""),
         GEMINI_API_KEY, GEMINI_API_KEY_2,
     ]
-    return [str(k).strip() for k in raw_keys if k and str(k).strip()]
+    seen = set()
+    valid = []
+    for k in raw_keys:
+        ks = str(k).strip()
+        if ks and ks not in seen:
+            seen.add(ks)
+            valid.append(ks)
+    return valid
 
 def safe_generate_content(client, model, contents, config=None):
     max_retries = 3
     valid_keys = get_valid_gemini_keys()
-    fallback_models = [model, "gemini-3.8-flash", "gemini-3.1-pro-preview", "gemini-2.5-flash"]
+    fallback_models = [model, "gemini-2.5-flash", "gemini-3.8-flash", "gemini-3.1-pro-preview"]
+    seen_m = set()
+    ordered_models = []
+    for m in fallback_models:
+        if m and m not in seen_m:
+            seen_m.add(m)
+            ordered_models.append(m)
+
     last_err = ""
     for api_key in valid_keys:
         active_client = genai.Client(api_key=api_key)
-        for current_model in fallback_models:
+        for current_model in ordered_models:
             delay = 2
             for attempt in range(max_retries):
                 try:
@@ -923,7 +952,7 @@ def safe_generate_content(client, model, contents, config=None):
                         return active_client.models.generate_content(model=current_model, contents=contents)
                 except Exception as e:
                     last_err = str(e)
-                    if "503" in last_err or "UNAVAILABLE" in last_err:
+                    if "503" in last_err or "UNAVAILABLE" in last_err or "429" in last_err:
                         if attempt < max_retries - 1:
                             time.sleep(delay)
                             delay *= 2
@@ -931,17 +960,29 @@ def safe_generate_content(client, model, contents, config=None):
                     break
     raise Exception(f"Gemini API Error: {last_err}")
 
-def upload_file_to_google_drive(file_bytes, filename, mime_type="image/jpeg"):
-    service = get_google_drive_service()
-    if service is None:
-        return None, "Error: Kulang ang Google Drive/Gmail credentials sa App Settings."
-    try:
-        file_metadata = {'name': filename}
-        media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype=mime_type, resumable=True)
-        file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
-        return file.get('webViewLink'), "Matagumpay na na-upload sa Google Drive!"
-    except Exception as e:
-        return None, f"Google Drive Upload Error: {str(e)}"
+# =====================================================================
+# 🌐 GOOGLE SEARCH / WEB BROWSING TOOL FOR AI ASSISTANT
+# =====================================================================
+def search_web_for_answers(search_query: str) -> str:
+    """Naghahanap sa buong internet gamit ang Google Search para masagot ang anumang katanungan sa labas ng Notion at Excel."""
+    valid_keys = get_valid_gemini_keys()
+    if not valid_keys:
+        return "Walang Gemini API Key."
+    for api_key in valid_keys:
+        try:
+            client = genai.Client(api_key=api_key)
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=f"Maghanap sa internet at magbigay ng tumpak, kumpleto, at napapanahong impormasyon tungkol sa tanong na ito: {search_query}",
+                config=types.GenerateContentConfig(
+                    tools=[types.Tool(google_search=types.GoogleSearch())],
+                    temperature=0.3
+                )
+            )
+            return response.text
+        except Exception:
+            continue
+    return "Hindi makakonekta sa Web Search sa ngayon."
 
 @st.cache_data(ttl=12)
 def load_internal_chat_messages() -> list:
@@ -1063,6 +1104,7 @@ if not st.session_state.authenticated:
     st.stop()
 
 def query_excel_database(search_query: str) -> str:
+    """Naghahanap ng miyembro o pamilya sa CTG Excel Database."""
     if master_members_df.empty:
         return "Error: Walang laman o hindi makita ang Excel database."
     try:
@@ -1072,10 +1114,10 @@ def query_excel_database(search_query: str) -> str:
         match = df_scope[df_scope.astype(str).apply(lambda x: x.str.contains(search_query, case=False, na=False)).any(axis=1)]
         if not match.empty:
             results = []
-            for _, row in match.head(20).iterrows():
+            for _, row in match.head(25).iterrows():
                 results.append(
                     f"Parish: {row['Parish']} | Family ID: {row['Family ID']} | "
-                    f"Full Name: {row['Full Name']} | Status: {row['Status']} | Remarks: {row['Remarks']}"
+                    f"Full Name: {row['Full Name']} | Category: {row['Category']} | Status: {row['Status']} | Remarks: {row['Remarks']}"
                 )
             return f"May {len(match)} na nahanap sa Excel Database:\n" + "\n".join(results)
         return f"Walang nahanap na record sa Excel para sa '{search_query}'."
@@ -1083,6 +1125,7 @@ def query_excel_database(search_query: str) -> str:
         return f"Error sa pagbasa ng Excel: {str(e)}"
 
 def query_notion_crm(search_query: str = "") -> str:
+    """Naghahanap ng Prayer Requests, Church Questions, Counselling, at Visitors sa Notion Database."""
     try:
         n_tok = st.session_state.custom_secrets.get("NOTION_TOKEN", NOTION_TOKEN)
         db_ids = [
@@ -1118,6 +1161,7 @@ def query_notion_crm(search_query: str = "") -> str:
         return f"Error sa Notion: {str(e)}"
 
 def send_email_via_gmail(recipient_email: str, subject: str, body_text: str, attachment_bytes: bytes = None, attachment_filename: str = None) -> str:
+    """Nagpapadala ng opisyal na email gamit ang Gmail API."""
     g_id = st.session_state.custom_secrets.get("GMAIL_CLIENT_ID", GMAIL_CLIENT_ID)
     g_sec = st.session_state.custom_secrets.get("GMAIL_CLIENT_SECRET", GMAIL_CLIENT_SECRET)
     g_ref = st.session_state.custom_secrets.get("GMAIL_REFRESH_TOKEN", GMAIL_REFRESH_TOKEN)
@@ -1351,7 +1395,7 @@ with st.sidebar:
 
     app_mode = st.radio("Pumili ng Pahina:", nav_options, index=default_nav_idx)
     st.caption(f"💬 Ministry Messenger: **{len(visible_chats_for_me)}** mensahe sa iyong inbox")
-    selected_model = st.selectbox("Gemini Model:", ["gemini-3.8-flash", "gemini-3.1-pro-preview"], index=0)
+    selected_model = st.selectbox("Gemini Model:", ["gemini-2.5-flash", "gemini-3.8-flash", "gemini-3.1-pro-preview"], index=0)
     st.divider()
     if st.button("🗑️ I-clear ang AI Chat History"):
         st.session_state.messages = []
@@ -2546,7 +2590,7 @@ elif app_mode == "📢 Announcement Broadcaster":
     st.stop()
 
 # =====================================================================
-# 7. APP SETTINGS
+# 7. APP SETTINGS (THEME, EXCEL DRIVE MANAGER, AT API CREDENTIALS)
 # =====================================================================
 elif app_mode == "🛠️ App Settings":
     render_title_with_logo("🛠️ App Controller, Theme, Excel Sync & Configuration Settings", "I-customize ang hitsura ng app, i-manage ang Google Drive Excel File, at i-update ang API settings.")
@@ -2672,12 +2716,15 @@ elif app_mode == "🛠️ App Settings":
     st.stop()
 
 # =====================================================================
-# 8. CHAT ASSISTANT
+# 8. CHAT ASSISTANT (MAY WEB SEARCH BROWSING & AI DRAFT ANSWER MODE)
 # =====================================================================
-render_title_with_logo("CTG Gabay AI — Ministry Assistant", "Mag-type sa Tagalog, Ilokano, o English.")
+render_title_with_logo(
+    "CTG Gabay AI — Ministry Assistant & Web Search",
+    "Magtanong tungkol sa Excel/Notion database, magpagawa ng AI Draft Answer, o mag-search ng kahit anong paksa sa internet."
+)
 valid_keys = get_valid_gemini_keys()
 if not valid_keys:
-    st.warning("Wala pang GEMINI_API_KEY.")
+    st.warning("Wala pang GEMINI_API_KEY. Mangyaring ilagay ito sa App Settings.")
     st.stop()
 
 if "messages" not in st.session_state:
@@ -2685,8 +2732,29 @@ if "messages" not in st.session_state:
 if "current_model" not in st.session_state:
     st.session_state.current_model = selected_model
 
-pref_lang = st.selectbox("🌐 Wika ng Sagot:", ["Awto", "Tagalog", "Ilokano", "English"], index=0)
-sys_inst = f"Ikaw si CTG Gabay AI. Parish: {st.session_state.assigned_parish}. Tagalog, Ilokano, English."
+col_chat_opt1, col_chat_opt2 = st.columns([1.3, 1.7])
+with col_chat_opt1:
+    pref_lang = st.selectbox("🌐 Wika ng Sagot:", ["Awto (Kung ano ang tanong)", "Tagalog", "Ilokano", "English"], index=0)
+with col_chat_opt2:
+    assistant_mode = st.selectbox(
+        "🤖 Mode ng Assistant:",
+        [
+            "💬 All-in-One Assistant (Ministry Data + Internet Search)",
+            "✍️ AI Draft Answer Generator (Gawaan ng Mensahe / Tugon sa Miyembro)"
+        ],
+        index=0
+    )
+
+lang_rule = "Sumagot gamit ang wikang ginamit ng nagtatanong." if "Awto" in pref_lang else f"Sumagot nang buo sa wikang {pref_lang}."
+sys_inst = (
+    f"Ikaw si CTG Gabay AI, ang opisyal at matalinong AI assistant ng Church of the Temple of God (CTG) "
+    f"para sa parokya ng {st.session_state.assigned_parish}.\n"
+    f"- {lang_rule}\n"
+    f"- Gamitin ang `query_excel_database` kung nagtatanong tungkol sa mga miyembro o pamilya sa Excel.\n"
+    f"- Gamitin ang `query_notion_crm` kung nagtatanong tungkol sa Prayer Requests, Questions, Counselling, o Visitors sa Notion.\n"
+    f"- Gamitin ang `search_web_for_answers` kung ang tanong ay pangkalahatang kaalaman, balita, Bible references, o kahit anong impormasyon sa labas ng Excel/Notion.\n"
+    f"- Kung humihingi ng Draft Answer o tugon, gumawa ng magalang, malinaw, at punong-puno ng malasakit na mensaheng handang ipadala sa email o SMS."
+)
 
 def create_chat(api_key, model_name):
     client = genai.Client(api_key=api_key)
@@ -2694,7 +2762,7 @@ def create_chat(api_key, model_name):
         model=model_name,
         config=types.GenerateContentConfig(
             system_instruction=sys_inst,
-            tools=[query_excel_database, query_notion_crm, send_email_via_gmail],
+            tools=[query_excel_database, query_notion_crm, send_email_via_gmail, search_web_for_answers],
             temperature=0.3
         )
     )
@@ -2703,15 +2771,43 @@ if "chat_session" not in st.session_state or st.session_state.current_model != s
     st.session_state.current_model = selected_model
     st.session_state.chat_session = create_chat(valid_keys[0], selected_model)
 
+def send_chat_message_safely(prompt_text: str) -> str:
+    final_prompt = prompt_text
+    if "AI Draft Answer" in assistant_mode:
+        final_prompt = (
+            f"Gumawa ng opisyal at magalang na AI Draft Answer / Tugon mula sa Church of the Temple of God ({st.session_state.assigned_parish}) "
+            f"na may kasamang Bible verse at comforting message para dito ({lang_rule}):\n\n{prompt_text}"
+        )
+    elif "Awto" not in pref_lang:
+        final_prompt = f"[Sagutin sa wikang {pref_lang}] {prompt_text}"
+
+    try:
+        res = st.session_state.chat_session.send_message(final_prompt)
+        return res.text
+    except Exception:
+        # Automatic failover sa ibang API key o fallback model kung mag-error
+        for backup_key in valid_keys:
+            for fallback_m in ["gemini-2.5-flash", selected_model, "gemini-3.8-flash"]:
+                try:
+                    st.session_state.chat_session = create_chat(backup_key, fallback_m)
+                    res = st.session_state.chat_session.send_message(final_prompt)
+                    return res.text
+                except Exception:
+                    continue
+        # Final fallback direct call
+        client = genai.Client(api_key=valid_keys[0])
+        return safe_generate_content(client, "gemini-2.5-flash", final_prompt).text
+
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-if user_prompt := st.chat_input("Magtanong..."):
+if user_prompt := st.chat_input("Magtanong tungkol sa ministry, magpagawa ng AI Draft Answer, o mag-search sa internet..."):
     st.session_state.messages.append({"role": "user", "content": user_prompt})
     with st.chat_message("user"):
         st.markdown(user_prompt)
     with st.chat_message("assistant"):
-        res = st.session_state.chat_session.send_message(user_prompt)
-        st.markdown(res.text)
-        st.session_state.messages.append({"role": "assistant", "content": res.text})
+        with st.spinner("Nag-iisip at naghahanap ng sagot si CTG Gabay AI..."):
+            reply_text = send_chat_message_safely(user_prompt)
+            st.markdown(reply_text)
+            st.session_state.messages.append({"role": "assistant", "content": reply_text})
