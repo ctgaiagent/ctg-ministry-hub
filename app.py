@@ -419,7 +419,7 @@ def sync_excel_bytes_to_drive(excel_bytes: bytes, spreadsheet_url: str) -> tuple
     except Exception as e:
         return True, f"Na-save sa App Excel! (Cloud Sync Notice: {str(e)})"
 
-@st.cache_data(ttl=45)
+@st.cache_data(ttl=300)
 def fetch_live_excel_bytes(spreadsheet_url: str) -> tuple[bytes, str]:
     doc_id = extract_id_from_url(spreadsheet_url)
     service = get_google_drive_service()
@@ -436,7 +436,7 @@ def fetch_live_excel_bytes(spreadsheet_url: str) -> tuple[bytes, str]:
     if doc_id and len(doc_id) > 15:
         try:
             download_url = f"https://docs.google.com/spreadsheets/d/{doc_id}/export?format=xlsx"
-            res = requests.get(download_url, timeout=25)
+            res = requests.get(download_url, timeout=20)
             if res.status_code == 200 and len(res.content) > 1000:
                 with open(LOCAL_EXCEL_CACHE, "wb") as f:
                     f.write(res.content)
@@ -461,7 +461,7 @@ def fetch_live_excel_bytes(spreadsheet_url: str) -> tuple[bytes, str]:
 
     return b"", "Walang mahanap na Excel file."
 
-@st.cache_data(ttl=45)
+@st.cache_data(ttl=300)
 def load_complete_parish_members(spreadsheet_url: str):
     excel_bytes, src_label = fetch_live_excel_bytes(spreadsheet_url)
     if not excel_bytes:
@@ -679,7 +679,7 @@ def extract_notion_property(prop_data: dict) -> str:
         return str(prop_data.get("last_edited_time") or "")
     return ""
 
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=300)
 def load_notion_crm_data(token: str, db_id: str) -> pd.DataFrame:
     if not token or not db_id:
         return pd.DataFrame()
@@ -699,7 +699,7 @@ def load_notion_crm_data(token: str, db_id: str) -> pd.DataFrame:
         payload = {"page_size": 100}
         if next_cursor:
             payload["start_cursor"] = next_cursor
-        res = requests.post(url, headers=headers, json=payload, timeout=25)
+        res = requests.post(url, headers=headers, json=payload, timeout=20)
         if res.status_code != 200:
             raise Exception(f"Notion API Error ({res.status_code}): {res.text}")
         data = res.json()
@@ -929,9 +929,9 @@ def get_valid_gemini_keys():
     return valid
 
 def safe_generate_content(client, model, contents, config=None):
-    max_retries = 3
+    max_retries = 2
     valid_keys = get_valid_gemini_keys()
-    fallback_models = [model, "gemini-2.5-flash", "gemini-3.8-flash", "gemini-3.1-pro-preview"]
+    fallback_models = [model, "gemini-2.5-flash", "gemini-2.5-pro"]
     seen_m = set()
     ordered_models = []
     for m in fallback_models:
@@ -943,7 +943,7 @@ def safe_generate_content(client, model, contents, config=None):
     for api_key in valid_keys:
         active_client = genai.Client(api_key=api_key)
         for current_model in ordered_models:
-            delay = 2
+            delay = 1.5
             for attempt in range(max_retries):
                 try:
                     if config:
@@ -955,7 +955,6 @@ def safe_generate_content(client, model, contents, config=None):
                     if "503" in last_err or "UNAVAILABLE" in last_err or "429" in last_err:
                         if attempt < max_retries - 1:
                             time.sleep(delay)
-                            delay *= 2
                             continue
                     break
     raise Exception(f"Gemini API Error: {last_err}")
@@ -984,7 +983,7 @@ def search_web_for_answers(search_query: str) -> str:
             continue
     return "Hindi makakonekta sa Web Search sa ngayon."
 
-@st.cache_data(ttl=12)
+@st.cache_data(ttl=25)
 def load_internal_chat_messages() -> list:
     messages = []
     if os.path.exists(LOCAL_CHAT_FILE):
@@ -1103,111 +1102,6 @@ if not st.session_state.authenticated:
                     st.error("Maling Username o Password.")
     st.stop()
 
-def query_excel_database(search_query: str) -> str:
-    """Naghahanap ng miyembro o pamilya sa CTG Excel Database."""
-    if master_members_df.empty:
-        return "Error: Walang laman o hindi makita ang Excel database."
-    try:
-        df_scope = master_members_df.copy()
-        if st.session_state.user_role == "Parish Leader":
-            df_scope = df_scope[df_scope["Parish"] == st.session_state.assigned_parish]
-        match = df_scope[df_scope.astype(str).apply(lambda x: x.str.contains(search_query, case=False, na=False)).any(axis=1)]
-        if not match.empty:
-            results = []
-            for _, row in match.head(25).iterrows():
-                results.append(
-                    f"Parish: {row['Parish']} | Family ID: {row['Family ID']} | "
-                    f"Full Name: {row['Full Name']} | Category: {row['Category']} | Status: {row['Status']} | Remarks: {row['Remarks']}"
-                )
-            return f"May {len(match)} na nahanap sa Excel Database:\n" + "\n".join(results)
-        return f"Walang nahanap na record sa Excel para sa '{search_query}'."
-    except Exception as e:
-        return f"Error sa pagbasa ng Excel: {str(e)}"
-
-def query_notion_crm(search_query: str = "") -> str:
-    """Naghahanap ng Prayer Requests, Church Questions, Counselling, at Visitors sa Notion Database."""
-    try:
-        n_tok = st.session_state.custom_secrets.get("NOTION_TOKEN", NOTION_TOKEN)
-        db_ids = [
-            st.session_state.custom_secrets.get("NOTION_CRM_DB_ID", NOTION_CRM_DB_ID),
-            st.session_state.custom_secrets.get("NOTION_PRAYER_DB_ID", NOTION_PRAYER_DB_ID),
-            st.session_state.custom_secrets.get("NOTION_QUESTIONS_DB_ID", NOTION_QUESTIONS_DB_ID),
-            st.session_state.custom_secrets.get("NOTION_COUNSELLING_DB_ID", NOTION_COUNSELLING_DB_ID),
-        ]
-        frames, seen_db = [], set()
-        for d_id in db_ids:
-            c_id = clean_notion_id(d_id)
-            if c_id and c_id not in seen_db:
-                seen_db.add(c_id)
-                try:
-                    df_part = load_notion_crm_data(n_tok, c_id)
-                    if not df_part.empty:
-                        frames.append(df_part)
-                except Exception:
-                    continue
-        if not frames:
-            return "Walang nakitang rekord sa Notion database."
-        df_notion = pd.concat(frames, ignore_index=True).fillna("")
-        for m_col in ["_page_id", "_last_edited", "_created_time"]:
-            if m_col in df_notion.columns:
-                df_notion = df_notion.drop(columns=[m_col])
-        if search_query and search_query.strip():
-            mask = df_notion.astype(str).apply(lambda x: x.str.contains(search_query.strip(), case=False, na=False)).any(axis=1)
-            df_notion = df_notion[mask]
-        if df_notion.empty:
-            return f"Walang nahanap sa Notion para sa '{search_query}'."
-        return "Mga rekord sa Notion:\n" + df_notion.head(25).to_csv(index=False)
-    except Exception as e:
-        return f"Error sa Notion: {str(e)}"
-
-def send_email_via_gmail(recipient_email: str, subject: str, body_text: str, attachment_bytes: bytes = None, attachment_filename: str = None) -> str:
-    """Nagpapadala ng opisyal na email gamit ang Gmail API."""
-    g_id = st.session_state.custom_secrets.get("GMAIL_CLIENT_ID", GMAIL_CLIENT_ID)
-    g_sec = st.session_state.custom_secrets.get("GMAIL_CLIENT_SECRET", GMAIL_CLIENT_SECRET)
-    g_ref = st.session_state.custom_secrets.get("GMAIL_REFRESH_TOKEN", GMAIL_REFRESH_TOKEN)
-    if not all([g_id, g_sec, g_ref]):
-        return "Error: Kulang ang GMAIL credentials."
-    try:
-        creds = Credentials(token=None, refresh_token=g_ref.strip(), token_uri="https://oauth2.googleapis.com/token", client_id=g_id.strip(), client_secret=g_sec.strip())
-        service = build("gmail", "v1", credentials=creds)
-        msg = EmailMessage()
-        msg.set_content(body_text)
-        msg["To"] = recipient_email.strip()
-        msg["Subject"] = subject
-        if attachment_bytes and attachment_filename:
-            msg.add_attachment(attachment_bytes, maintype="text", subtype="csv", filename=attachment_filename)
-        encoded_msg = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-        service.users().messages().send(userId="me", body={"raw": encoded_msg}).execute()
-        return f"Matagumpay na naipadala ang email kay {recipient_email}!"
-    except Exception as e:
-        return f"Error sa Gmail: {str(e)}"
-
-def backup_action_to_admin_cloud(action_type: str, sender_name: str, parish: str, topic: str, details: str, draft_reply: str, actor: str):
-    if not st.session_state.get("auto_cloud_backup", True):
-        return
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    subject = f"[CTG Cloud Backup Log] {action_type} — {sender_name} ({parish})"
-    body = (
-        f"CTG MINISTRY HUB — AUTOMATIC CLOUD BACKUP LOG\n"
-        f"==================================================\n"
-        f"Petsa at Oras: {now_str}\n"
-        f"Uri ng Aksyon: {action_type}\n"
-        f"Nag-update / Actor: {actor}\n"
-        f"Pangalan ng Nag-request: {sender_name}\n"
-        f"Parokya: {parish}\n"
-        f"Paksa: {topic}\n"
-        f"--------------------------------------------------\n"
-        f"DETALYE NG REQUEST:\n{details}\n\n"
-        f"--------------------------------------------------\n"
-        f"TUGON / DRAFT SA SISTEMA:\n{draft_reply}\n"
-        f"==================================================\n"
-        f"Naka-save nang ligtas sa iyong Gmail / Google Cloud ({BACKUP_ADMIN_EMAIL})."
-    )
-    try:
-        send_email_via_gmail(BACKUP_ADMIN_EMAIL, subject, body)
-    except Exception:
-        pass
-
 if "custom_secrets" not in st.session_state:
     st.session_state.custom_secrets = {
         "GEMINI_API_KEY": GEMINI_API_KEY, "GEMINI_API_KEY_2": GEMINI_API_KEY_2,
@@ -1273,6 +1167,97 @@ df_crm_global, df_p_global, df_q_global, df_co_global = load_all_ministry_DataFr
 global_records_df = build_combined_records_df(df_p_global, df_q_global, df_co_global)
 all_chat_msgs_global = load_internal_chat_messages()
 my_chat_id = get_current_chat_identity()
+
+def query_excel_database(search_query: str) -> str:
+    """Naghahanap ng miyembro o pamilya sa CTG Excel Database."""
+    if master_members_df.empty:
+        return "Error: Walang laman o hindi makita ang Excel database."
+    try:
+        df_scope = master_members_df.copy()
+        if st.session_state.user_role == "Parish Leader":
+            df_scope = df_scope[df_scope["Parish"] == st.session_state.assigned_parish]
+        match = df_scope[df_scope.astype(str).apply(lambda x: x.str.contains(search_query, case=False, na=False)).any(axis=1)]
+        if not match.empty:
+            results = []
+            for _, row in match.head(25).iterrows():
+                results.append(
+                    f"Parish: {row['Parish']} | Family ID: {row['Family ID']} | "
+                    f"Full Name: {row['Full Name']} | Category: {row['Category']} | Status: {row['Status']} | Remarks: {row['Remarks']}"
+                )
+            return f"May {len(match)} na nahanap sa Excel Database:\n" + "\n".join(results)
+        return f"Walang nahanap na record sa Excel para sa '{search_query}'."
+    except Exception as e:
+        return f"Error sa pagbasa ng Excel: {str(e)}"
+
+# ⚡ INSTANT IN-MEMORY NOTION QUERY (0.01s SPEED)
+def query_notion_crm(search_query: str = "") -> str:
+    """Naghahanap ng Prayer Requests, Church Questions, Counselling, at Visitors sa Notion Database."""
+    try:
+        frames = []
+        if not global_records_df.empty:
+            frames.append(global_records_df)
+        if not df_crm_global.empty:
+            clean_crm = df_crm_global.drop(columns=["_page_id", "_last_edited", "_created_time"], errors="ignore")
+            frames.append(clean_crm)
+        if not frames:
+            return "Walang nakitang rekord sa Notion database."
+        df_notion = pd.concat(frames, ignore_index=True).fillna("")
+        if search_query and search_query.strip():
+            mask = df_notion.astype(str).apply(lambda x: x.str.contains(search_query.strip(), case=False, na=False)).any(axis=1)
+            df_notion = df_notion[mask]
+        if df_notion.empty:
+            return f"Walang nahanap sa Notion para sa '{search_query}'."
+        return "Mga rekord sa Notion:\n" + df_notion.head(20).to_csv(index=False)
+    except Exception as e:
+        return f"Error sa Notion: {str(e)}"
+
+def send_email_via_gmail(recipient_email: str, subject: str, body_text: str, attachment_bytes: bytes = None, attachment_filename: str = None) -> str:
+    """Nagpapadala ng opisyal na email gamit ang Gmail API."""
+    g_id = st.session_state.custom_secrets.get("GMAIL_CLIENT_ID", GMAIL_CLIENT_ID)
+    g_sec = st.session_state.custom_secrets.get("GMAIL_CLIENT_SECRET", GMAIL_CLIENT_SECRET)
+    g_ref = st.session_state.custom_secrets.get("GMAIL_REFRESH_TOKEN", GMAIL_REFRESH_TOKEN)
+    if not all([g_id, g_sec, g_ref]):
+        return "Error: Kulang ang GMAIL credentials."
+    try:
+        creds = Credentials(token=None, refresh_token=g_ref.strip(), token_uri="https://oauth2.googleapis.com/token", client_id=g_id.strip(), client_secret=g_sec.strip())
+        service = build("gmail", "v1", credentials=creds)
+        msg = EmailMessage()
+        msg.set_content(body_text)
+        msg["To"] = recipient_email.strip()
+        msg["Subject"] = subject
+        if attachment_bytes and attachment_filename:
+            msg.add_attachment(attachment_bytes, maintype="text", subtype="csv", filename=attachment_filename)
+        encoded_msg = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+        service.users().messages().send(userId="me", body={"raw": encoded_msg}).execute()
+        return f"Matagumpay na naipadala ang email kay {recipient_email}!"
+    except Exception as e:
+        return f"Error sa Gmail: {str(e)}"
+
+def backup_action_to_admin_cloud(action_type: str, sender_name: str, parish: str, topic: str, details: str, draft_reply: str, actor: str):
+    if not st.session_state.get("auto_cloud_backup", True):
+        return
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    subject = f"[CTG Cloud Backup Log] {action_type} — {sender_name} ({parish})"
+    body = (
+        f"CTG MINISTRY HUB — AUTOMATIC CLOUD BACKUP LOG\n"
+        f"==================================================\n"
+        f"Petsa at Oras: {now_str}\n"
+        f"Uri ng Aksyon: {action_type}\n"
+        f"Nag-update / Actor: {actor}\n"
+        f"Pangalan ng Nag-request: {sender_name}\n"
+        f"Parokya: {parish}\n"
+        f"Paksa: {topic}\n"
+        f"--------------------------------------------------\n"
+        f"DETALYE NG REQUEST:\n{details}\n\n"
+        f"--------------------------------------------------\n"
+        f"TUGON / DRAFT SA SISTEMA:\n{draft_reply}\n"
+        f"==================================================\n"
+        f"Naka-save nang ligtas sa iyong Gmail / Google Cloud ({BACKUP_ADMIN_EMAIL})."
+    )
+    try:
+        send_email_via_gmail(BACKUP_ADMIN_EMAIL, subject, body)
+    except Exception:
+        pass
 
 visible_chats_for_me = [
     m for m in all_chat_msgs_global
@@ -1395,7 +1380,7 @@ with st.sidebar:
 
     app_mode = st.radio("Pumili ng Pahina:", nav_options, index=default_nav_idx)
     st.caption(f"💬 Ministry Messenger: **{len(visible_chats_for_me)}** mensahe sa iyong inbox")
-    selected_model = st.selectbox("Gemini Model:", ["gemini-2.5-flash", "gemini-3.8-flash", "gemini-3.1-pro-preview"], index=0)
+    selected_model = st.selectbox("Gemini Model (Fastest):", ["gemini-2.5-flash", "gemini-2.5-pro"], index=0)
     st.divider()
     if st.button("🗑️ I-clear ang AI Chat History"):
         st.session_state.messages = []
@@ -1412,7 +1397,7 @@ def generate_ai_ministry_draft(service_category, sender_name, parish_name, topic
     client = genai.Client(api_key=valid_keys[0])
     prompt = (
         f"Ikaw si CTG Gabay AI, sumusulat ng opisyal, magalang, at punong-puno ng malasakit na tugon mula sa "
-        f"Church of the Temple of God (CTG) - {parish_name}.\n"
+        f"Church of the Temple of God (CTG) - {parish_name} (kung saan ang araw ng pagsamba at pangunahing pagtitipon ay tuwing Sabado / Saturday / Sabbath Day).\n"
         f"Uri ng Request: {service_category}\n"
         f"Pangalan ng Nagpadala: {sender_name}\nPaksa: {topic}\nDetalye:\n\"{details}\"\n\n"
         f"1. Ilagay sa unang linya: '[Urgency Analysis: Low / Medium / High]'\n"
@@ -2108,7 +2093,7 @@ def render_workflow_queue_section(df_source: pd.DataFrame, category_label: str, 
 if app_mode == "🧭 Parish Leader Portal (Wizard & Summary)":
     render_title_with_logo(
         f"📍 Parish Workspace: {st.session_state.assigned_parish}",
-        "Maligayang pagdating sa iyong pang-araw-araw na gabay at ministry portal."
+        "Maligayang pagdating sa iyong pang-araw-araw na gabay at ministry portal ng Church of the Temple of God."
     )
 
     records_master_df = global_records_df
@@ -2117,7 +2102,7 @@ if app_mode == "🧭 Parish Leader Portal (Wizard & Summary)":
 
     st.markdown("### 📋 Daily Action Checklist (Pang-araw-araw na Gabay)")
     chk1 = st.checkbox(f"1. Mayroon kang ({pending_p_count}) bagong request o panalangin na nakatalaga sa iyong parokya.", value=(pending_p_count > 0))
-    chk2 = st.checkbox("2. I-check ang listahan ng mga bisita at miyembro ngayong linggo sa Parish Census tab.", value=False)
+    chk2 = st.checkbox("2. I-check ang listahan ng mga bisita at miyembro para sa darating na Sabado (Saturday Service) sa Parish Census tab.", value=False)
     chk3 = st.checkbox("3. Buksan ang Ministry Messenger para makipag-ugnayan kay Master Admin o sa ibang Parokya.", value=False)
 
     col_w1, col_w2, col_w3 = st.columns(3)
@@ -2136,16 +2121,17 @@ if app_mode == "🧭 Parish Leader Portal (Wizard & Summary)":
 
     st.divider()
     st.markdown("### 🤖 Guided AI Assistant para sa Parish Leader")
-    st.caption("Magtanong dito kung paano kakausapin ang mga miyembro, humingi ng ideya sa Bible study, o gabay sa pamumuno.")
+    st.caption("Magtanong dito kung paano kakausapin ang mga miyembro, humingi ng ideya sa Bible study tuwing Sabado, o gabay sa pamumuno.")
     with st.form("wizard_ai_form"):
-        w_prompt = st.text_input("Magtanong sa CTG Gabay AI:", placeholder="Hal. Paano ko kakausapin ang isang miyembrong matagal nang hindi sumisimba?")
+        w_prompt = st.text_input("Magtanong sa CTG Gabay AI:", placeholder="Hal. Paano ko kakausapin ang isang miyembrong matagal nang hindi nakakadalo sa pagsamba tuwing Sabado?")
         w_submit = st.form_submit_button("Humingi ng Gabay sa AI", use_container_width=True)
         if w_submit and w_prompt:
             client = genai.Client(api_key=get_valid_gemini_keys()[0])
             ans = safe_generate_content(
                 client,
                 selected_model,
-                f"Bilang isang tagapayo sa simbahan ng CTG sa parokya ng {st.session_state.assigned_parish}, sagutin ito nang may malasakit at gabay sa Bibliya sa wikang Tagalog: {w_prompt}"
+                f"Bilang isang tagapayo sa simbahan ng Church of the Temple of God (CTG) sa parokya ng {st.session_state.assigned_parish} "
+                f"(kung saan ang araw ng pagsamba ay tuwing Sabado / Saturday), sagutin ito nang may malasakit at gabay sa Bibliya sa wikang Tagalog: {w_prompt}"
             )
             st.success("Gabay mula sa AI:")
             st.markdown(ans.text)
@@ -2563,7 +2549,11 @@ elif app_mode == "🙏 Prayer Wall & Categorizer":
     if st.button("Suriin sa AI", type="primary"):
         if rp:
             client = genai.Client(api_key=get_valid_gemini_keys()[0])
-            res = safe_generate_content(client, selected_model, f"Suriin ang prayer request na ito sa wikang {plang}: {rp}")
+            res = safe_generate_content(
+                client,
+                selected_model,
+                f"Bilang bahagi ng Church of the Temple of God (CTG), suriin ang prayer request na ito sa wikang {plang}: {rp}"
+            )
             st.success("Tapos na!")
             st.markdown(res.text)
         else:
@@ -2582,7 +2572,12 @@ elif app_mode == "📢 Announcement Broadcaster":
     if st.button("Magpadala", type="primary"):
         if et and ed and em:
             client = genai.Client(api_key=get_valid_gemini_keys()[0])
-            body = safe_generate_content(client, selected_model, f"Gumawa ng pormal na announcement tungkol sa {et}. Detalye: {ed}. Isulat sa {blang}.").text
+            body = safe_generate_content(
+                client,
+                selected_model,
+                f"Gumawa ng pormal na announcement mula sa Church of the Temple of God (CTG) "
+                f"(kung saan ang araw ng pagsamba ay tuwing Sabado / Saturday) tungkol sa {et}. Detalye: {ed}. Isulat sa {blang}."
+            ).text
             res = send_email_via_gmail(em, f"CTG Announcement: {et}", body)
             st.success(res)
         else:
@@ -2716,11 +2711,11 @@ elif app_mode == "🛠️ App Settings":
     st.stop()
 
 # =====================================================================
-# 8. CHAT ASSISTANT (MAY WEB SEARCH BROWSING & AI DRAFT ANSWER MODE)
+# 8. TURBO STREAMING CHAT ASSISTANT (WEB SEARCH + INSTANT DB + AI DRAFT)
 # =====================================================================
 render_title_with_logo(
-    "CTG Gabay AI — Ministry Assistant & Web Search",
-    "Magtanong tungkol sa Excel/Notion database, magpagawa ng AI Draft Answer, o mag-search ng kahit anong paksa sa internet."
+    "⚡ CTG Gabay AI — Fast Streaming Ministry Assistant & Web Search",
+    "Opisyal na AI Assistant ng Church of the Temple of God (Saturday Worship) — konektado sa Excel, Notion, at Google Search."
 )
 valid_keys = get_valid_gemini_keys()
 if not valid_keys:
@@ -2747,13 +2742,14 @@ with col_chat_opt2:
 
 lang_rule = "Sumagot gamit ang wikang ginamit ng nagtatanong." if "Awto" in pref_lang else f"Sumagot nang buo sa wikang {pref_lang}."
 sys_inst = (
-    f"Ikaw si CTG Gabay AI, ang opisyal at matalinong AI assistant ng Church of the Temple of God (CTG) "
-    f"para sa parokya ng {st.session_state.assigned_parish}.\n"
+    f"Ikaw si CTG Gabay AI, ang opisyal at mabilis na AI assistant ng Church of the Temple of God (CTG) "
+    f"para sa parokya ng {st.session_state.assigned_parish}. Tandaan na ang opisyal na pangalan ng simbahan ay "
+    f"'Church of the Temple of God' at ang araw ng pagsamba at pangunahing pagtitipon (Worship / Sabbath Service) ay tuwing SABADO (Saturday).\n"
     f"- {lang_rule}\n"
-    f"- Gamitin ang `query_excel_database` kung nagtatanong tungkol sa mga miyembro o pamilya sa Excel.\n"
-    f"- Gamitin ang `query_notion_crm` kung nagtatanong tungkol sa Prayer Requests, Questions, Counselling, o Visitors sa Notion.\n"
-    f"- Gamitin ang `search_web_for_answers` kung ang tanong ay pangkalahatang kaalaman, balita, Bible references, o kahit anong impormasyon sa labas ng Excel/Notion.\n"
-    f"- Kung humihingi ng Draft Answer o tugon, gumawa ng magalang, malinaw, at punong-puno ng malasakit na mensaheng handang ipadala sa email o SMS."
+    f"- Gamitin LAMANG ang `query_excel_database` kung partikular na hinahanap ang isang miyembro o Family ID sa Excel.\n"
+    f"- Gamitin LAMANG ang `query_notion_crm` kung partikular na tinatanong ang Prayer Requests, Questions, Counselling, o Visitors sa Notion.\n"
+    f"- Gamitin ang `search_web_for_answers` kung ang tanong ay tungkol sa kasalukuyang balita o real-time internet facts.\n"
+    f"- Kung kaya mo nang sagutin nang direkta (hal. Bible verses, payo, general knowledge, o pagbuo ng AI Draft Answer), sumagot agad nang hindi tumatawag ng tool para mas mabilis!"
 )
 
 def create_chat(api_key, model_name):
@@ -2771,32 +2767,41 @@ if "chat_session" not in st.session_state or st.session_state.current_model != s
     st.session_state.current_model = selected_model
     st.session_state.chat_session = create_chat(valid_keys[0], selected_model)
 
-def send_chat_message_safely(prompt_text: str) -> str:
+def stream_chat_response(prompt_text: str):
     final_prompt = prompt_text
     if "AI Draft Answer" in assistant_mode:
         final_prompt = (
             f"Gumawa ng opisyal at magalang na AI Draft Answer / Tugon mula sa Church of the Temple of God ({st.session_state.assigned_parish}) "
-            f"na may kasamang Bible verse at comforting message para dito ({lang_rule}):\n\n{prompt_text}"
+            f"(kung saan ang araw ng pagsamba ay tuwing Sabado / Saturday) na may kasamang Bible verse at comforting message para dito ({lang_rule}):\n\n{prompt_text}"
         )
     elif "Awto" not in pref_lang:
         final_prompt = f"[Sagutin sa wikang {pref_lang}] {prompt_text}"
 
     try:
-        res = st.session_state.chat_session.send_message(final_prompt)
-        return res.text
+        for chunk in st.session_state.chat_session.send_message_stream(final_prompt):
+            if chunk.text:
+                yield chunk.text
+        return
     except Exception:
-        # Automatic failover sa ibang API key o fallback model kung mag-error
-        for backup_key in valid_keys:
-            for fallback_m in ["gemini-2.5-flash", selected_model, "gemini-3.8-flash"]:
-                try:
-                    st.session_state.chat_session = create_chat(backup_key, fallback_m)
-                    res = st.session_state.chat_session.send_message(final_prompt)
-                    return res.text
-                except Exception:
-                    continue
-        # Final fallback direct call
+        pass
+
+    for backup_key in valid_keys:
+        for fallback_m in ["gemini-2.5-flash", selected_model]:
+            try:
+                st.session_state.chat_session = create_chat(backup_key, fallback_m)
+                for chunk in st.session_state.chat_session.send_message_stream(final_prompt):
+                    if chunk.text:
+                        yield chunk.text
+                return
+            except Exception:
+                continue
+
+    try:
         client = genai.Client(api_key=valid_keys[0])
-        return safe_generate_content(client, "gemini-2.5-flash", final_prompt).text
+        res = safe_generate_content(client, "gemini-2.5-flash", final_prompt)
+        yield res.text
+    except Exception as e:
+        yield f"⚠️ Paumanhin, nagkaroon ng pansamantalang aberya sa koneksyon: {str(e)}"
 
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
@@ -2807,7 +2812,5 @@ if user_prompt := st.chat_input("Magtanong tungkol sa ministry, magpagawa ng AI 
     with st.chat_message("user"):
         st.markdown(user_prompt)
     with st.chat_message("assistant"):
-        with st.spinner("Nag-iisip at naghahanap ng sagot si CTG Gabay AI..."):
-            reply_text = send_chat_message_safely(user_prompt)
-            st.markdown(reply_text)
-            st.session_state.messages.append({"role": "assistant", "content": reply_text})
+        full_reply = st.write_stream(stream_chat_response(user_prompt))
+        st.session_state.messages.append({"role": "assistant", "content": str(full_reply)})
