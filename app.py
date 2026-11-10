@@ -89,6 +89,20 @@ LOCAL_CONFIG_FILE = "ctg_app_cloud_config.json"
 LOCAL_CHAT_FILE = "ctg_ministry_internal_chat.json"
 DRIVE_CHAT_FILENAME = "ctg_ministry_internal_chat_cloud.json"
 
+# Default Baseline Member Counts per Parish (mula sa Summary For Posting)
+DEFAULT_PARISH_MEMBER_BASELINES = {
+    "LIPAY NORTE PARISH": {"say": 90, "youth": 29, "kids": 26},
+    "MALANAS PARISH": {"say": 17, "youth": 10, "kids": 3},
+    "POBLACION PARISH": {"say": 26, "youth": 4, "kids": 7},
+    "DUPLAS PARISH": {"say": 22, "youth": 3, "kids": 0},
+    "SANTIAGO PARISH": {"say": 8, "youth": 3, "kids": 0},
+    "CABA PARISH": {"say": 21, "youth": 6, "kids": 2},
+    "MANILA PARISH": {"say": 18, "youth": 3, "kids": 2},
+    "ANDABUEN PARISH": {"say": 37, "youth": 7, "kids": 4},
+    "APAYAO PARISH": {"say": 11, "youth": 1, "kids": 0},
+    "HONGKONG PARISH": {"say": 11, "youth": 0, "kids": 0},
+}
+
 def load_saved_cloud_url() -> str:
     if "custom_secrets" in st.session_state and st.session_state.custom_secrets.get("CLOUD_SPREADSHEET_URL"):
         return st.session_state.custom_secrets["CLOUD_SPREADSHEET_URL"].strip()
@@ -1016,6 +1030,27 @@ def build_age_category_tables(df):
     df_kids = pd.DataFrame(kids_rows, columns=cat_cols) if kids_rows else pd.DataFrame(columns=cat_cols)
     return df_seniors, df_adults, df_youth, df_kids
 
+def get_parish_member_denominators(parish_name: str) -> dict:
+    base = DEFAULT_PARISH_MEMBER_BASELINES.get(parish_name, {"say": 20, "youth": 5, "kids": 5}).copy()
+    if not master_members_df.empty:
+        sub = master_members_df[master_members_df["Parish"] == parish_name]
+        if not sub.empty:
+            act_say, act_y, act_k = 0, 0, 0
+            for _, r in sub.iterrows():
+                if classify_member_status(r.get("Status", ""), r.get("Church Member", "")) == "ACTIVE":
+                    c_g = classify_category(r.get("Category", ""))
+                    if c_g in ["Seniors", "Adults", "Youth"]:
+                        act_say += 1
+                    if c_g == "Youth":
+                        act_y += 1
+                    elif c_g == "Kids":
+                        act_k += 1
+            if act_say > 0:
+                base["say"] = act_say
+                base["youth"] = act_y
+                base["kids"] = act_k
+    return base
+
 def get_valid_gemini_keys():
     raw_keys = [
         st.session_state.get("custom_secrets", {}).get("GEMINI_API_KEY", ""),
@@ -1372,7 +1407,7 @@ visible_chats_for_me = [
 ]
 
 # =====================================================================
-# 📊 WEEKLY REPORT AI VISION & EXCEL EXTRACTION + MONITORING DATABASE
+# 📊 WEEKLY REPORT AI VISION, GOOGLE DRIVE AUTO-SYNC & 3 TABLES BUILDER
 # =====================================================================
 def load_weekly_monitoring_records() -> dict:
     if os.path.exists(LOCAL_WEEKLY_REPORTS_DB):
@@ -1401,9 +1436,9 @@ def save_weekly_monitoring_record(parish: str, month: str, week_num: str, report
         "kids_k": int(extracted_data.get("kids_k", 0)),
         "adal_a": int(extracted_data.get("adal_a", 0)),
         "adal_y": int(extracted_data.get("adal_y", 0)),
-        "house_visitation": str(extracted_data.get("house_visitation", "")),
-        "missionary_work": str(extracted_data.get("missionary_work", "")),
-        "indoctrination": str(extracted_data.get("indoctrination", "")),
+        "house_visitation": str(extracted_data.get("house_visitation", "0")),
+        "missionary_work": str(extracted_data.get("missionary_work", "0")),
+        "indoctrination": str(extracted_data.get("indoctrination", "0")),
         "remarks": str(extracted_data.get("remarks", "")),
         "priest": str(extracted_data.get("priest", "")),
         "drive_link": drive_link,
@@ -1447,11 +1482,12 @@ def extract_weekly_report_from_excel_bytes(file_bytes: bytes) -> dict:
     result = {
         "mass_a": 0, "mass_y": 0, "pampamilya_a": 0, "pampamilya_y": 0,
         "online_a": 0, "online_y": 0, "youth_y": 0, "kids_k": 0,
-        "adal_a": 0, "adal_y": 0, "priest": "", "report_date": "01/02/27", "remarks": ""
+        "adal_a": 0, "adal_y": 0, "house_visitation": "0", "missionary_work": "0",
+        "indoctrination": "0", "priest": "", "report_date": "01/02/27", "remarks": ""
     }
     try:
         wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
-        ws = wb.active
+        ws = wb["PARISH WEEKLY REPORT"] if "PARISH WEEKLY REPORT" in wb.sheetnames else wb.active
         section = None
         for r_idx in range(1, ws.max_row + 1):
             col_a = str(ws.cell(row=r_idx, column=1).value or "").strip()
@@ -1510,12 +1546,79 @@ def extract_weekly_report_from_excel_bytes(file_bytes: bytes) -> dict:
         pass
     return result
 
+def sync_weekly_reports_from_google_drive_folder(folder_url: str, target_month: str = "January", target_week: str = "1st Week") -> tuple[int, str]:
+    service = get_google_drive_service()
+    if service is None:
+        return 0, "Walang Google Drive API connection."
+    folder_id = extract_id_from_url(folder_url)
+    if not folder_id:
+        return 0, "Walang nakitang Folder Link sa Settings."
+
+    synced_count = 0
+    try:
+        res = service.files().list(
+            q=f"'{folder_id}' in parents and trashed=false",
+            spaces="drive",
+            fields="files(id, name, mimeType)",
+            pageSize=50
+        ).execute()
+        items = res.get("files", [])
+
+        for item in items:
+            i_name = item.get("name", "")
+            i_id = item.get("id", "")
+            i_mime = item.get("mimeType", "")
+
+            if i_mime == "application/vnd.google-apps.folder":
+                matched_p = None
+                for p in PARISH_ORDER:
+                    clean_p = p.replace("PARISH", "").strip()
+                    if clean_p.lower() in i_name.lower():
+                        matched_p = p
+                        break
+                if matched_p:
+                    sub_res = service.files().list(
+                        q=f"'{i_id}' in parents and trashed=false",
+                        spaces="drive",
+                        fields="files(id, name, mimeType, webViewLink)",
+                        pageSize=30
+                    ).execute()
+                    for sub_f in sub_res.get("files", []):
+                        sf_name = sub_f.get("name", "")
+                        if sf_name.lower().endswith(".xlsx"):
+                            content = service.files().get_media(fileId=sub_f["id"]).execute()
+                            ext_data = extract_weekly_report_from_excel_bytes(content)
+                            save_weekly_monitoring_record(
+                                matched_p, target_month, target_week,
+                                ext_data.get("report_date", "01/02/27"),
+                                ext_data,
+                                drive_link=sub_f.get("webViewLink", "")
+                            )
+                            synced_count += 1
+            elif i_name.lower().endswith(".xlsx"):
+                for p in PARISH_ORDER:
+                    clean_p = p.replace("PARISH", "").strip()
+                    if clean_p.lower() in i_name.lower():
+                        content = service.files().get_media(fileId=i_id).execute()
+                        ext_data = extract_weekly_report_from_excel_bytes(content)
+                        save_weekly_monitoring_record(
+                            p, target_month, target_week,
+                            ext_data.get("report_date", "01/02/27"),
+                            ext_data
+                        )
+                        synced_count += 1
+                        break
+        return synced_count, f"Matagumpay na na-sync ang {synced_count} parish files mula sa Google Drive!"
+    except Exception as e:
+        return synced_count, f"Drive Folder Sync Notice: {str(e)}"
+
 def extract_weekly_report_via_ai_vision(file_bytes: bytes, mime_type: str, model_name: str = "gemini-2.5-flash") -> dict:
     valid_keys = get_valid_gemini_keys()
     default_res = {
         "mass_a": 0, "mass_y": 0, "pampamilya_a": 0, "pampamilya_y": 0,
         "online_a": 0, "online_y": 0, "youth_y": 0, "kids_k": 0,
-        "adal_a": 0, "adal_y": 0, "priest": "", "report_date": "01/02/27", "remarks": ""
+        "adal_a": 0, "adal_y": 0, "house_visitation": "0", "missionary_work": "0",
+        "indoctrination": "0", "priest": "", "report_date": "01/02/27", "remarks": ""
     }
     if not valid_keys:
         return default_res
@@ -1526,7 +1629,8 @@ def extract_weekly_report_via_ai_vision(file_bytes: bytes, mime_type: str, model
         "Ibalik LAMANG ang valid JSON object na may keys: "
         "{\"mass_a\": int, \"mass_y\": int, \"pampamilya_a\": int, \"pampamilya_y\": int, "
         "\"online_a\": int, \"online_y\": int, \"youth_y\": int, \"kids_k\": int, "
-        "\"adal_a\": int, \"adal_y\": int, \"priest\": str, \"report_date\": str, \"remarks\": str}"
+        "\"adal_a\": int, \"adal_y\": int, \"house_visitation\": str, \"missionary_work\": str, "
+        "\"indoctrination\": str, \"priest\": str, \"report_date\": str, \"remarks\": str}"
     )
     for api_key in valid_keys:
         try:
@@ -1547,10 +1651,25 @@ def extract_weekly_report_via_ai_vision(file_bytes: bytes, mime_type: str, model
             continue
     return default_res
 
-def build_parish_monitoring_dataframe(selected_month: str, selected_week: str, filter_parish: str = "Lahat ng Parokya") -> pd.DataFrame:
+def parse_int_from_text(val_str: str) -> int:
+    nums = re.findall(r"\d+", str(val_str or ""))
+    return int(nums[0]) if nums else 0
+
+def calc_pct_str(attendees: int, total_members: int) -> str:
+    if total_members <= 0:
+        return "0%"
+    pct = round((attendees / total_members) * 100)
+    return f"{pct}%"
+
+# 1️⃣ TABLE 1: PARISH MONITORING REPORT (ATTENDANCE ONLY + TOTAL PERCENTAGE ROWS)
+def build_parish_monitoring_attendance_df(selected_month: str, selected_week: str, filter_parish: str = "Lahat ng Parokya") -> pd.DataFrame:
     db = load_weekly_monitoring_records()
     rows = []
     week_num_only = re.sub(r"\D", "", str(selected_week)) or "1"
+    first_col_name = f"(Weekly Report-{selected_week} of {selected_month.upper()} 2027)"
+
+    sum_m_att, sum_p_att, sum_o_att, sum_y_att, sum_k_att, sum_ad_att = 0, 0, 0, 0, 0, 0
+    sum_say_mem, sum_y_mem, sum_k_mem = 0, 0, 0
 
     for p_name in PARISH_ORDER:
         if filter_parish != "Lahat ng Parokya" and not normalize_parish_match(p_name, filter_parish):
@@ -1558,19 +1677,35 @@ def build_parish_monitoring_dataframe(selected_month: str, selected_week: str, f
         key = f"{p_name.upper()}__{selected_month.upper()}__{selected_week}"
         rec = db.get(key, {})
         r_date = rec.get("report_date", "01/02/27")
-        m_a, m_y = rec.get("mass_a", 0), rec.get("mass_y", 0)
-        p_a, p_y = rec.get("pampamilya_a", 0), rec.get("pampamilya_y", 0)
-        o_a, o_y = rec.get("online_a", 0), rec.get("online_y", 0)
-        y_y = rec.get("youth_y", 0)
-        k_k = rec.get("kids_k", 0)
-        ad_a, ad_y = rec.get("adal_a", 0), rec.get("adal_y", 0)
+        m_a, m_y = int(rec.get("mass_a", 0)), int(rec.get("mass_y", 0))
+        p_a, p_y = int(rec.get("pampamilya_a", 0)), int(rec.get("pampamilya_y", 0))
+        o_a, o_y = int(rec.get("online_a", 0)), int(rec.get("online_y", 0))
+        y_y = int(rec.get("youth_y", 0))
+        k_k = int(rec.get("kids_k", 0))
+        ad_a, ad_y = int(rec.get("adal_a", 0)), int(rec.get("adal_y", 0))
+
+        denoms = get_parish_member_denominators(p_name)
+        tot_say = denoms["say"]
+        tot_y = denoms["youth"]
+        tot_k = denoms["kids"]
+
+        sum_m_att += (m_a + m_y)
+        sum_p_att += (p_a + p_y)
+        sum_o_att += (o_a + o_y)
+        sum_y_att += y_y
+        sum_k_att += k_k
+        sum_ad_att += (ad_a + ad_y)
+
+        sum_say_mem += tot_say
+        sum_y_mem += tot_y
+        sum_k_mem += tot_k
 
         short_parish = p_name.replace("PARISH", "").strip()
         if "HONGKONG" in short_parish:
             short_parish = "HONGKONG CHAPTER"
 
         rows.append({
-            f"(Weekly Report-{selected_week} of {selected_month.upper()} 2027)": f"{short_parish} ({r_date})",
+            first_col_name: f"{short_parish} ({r_date})",
             "Week": week_num_only,
             "Mass": f"A-{m_a} | Y-{m_y}",
             "Pampamilya": f"A-{p_a} | Y-{p_y}",
@@ -1578,11 +1713,140 @@ def build_parish_monitoring_dataframe(selected_month: str, selected_week: str, f
             "Youth Fellowship": f"Y-{y_y}",
             "Kids Fellowship": f"K-{k_k}",
             "Adal ti Evangelio": f"A-{ad_a} | Y-{ad_y}",
-            "HOUSE Visitation: REQUIREMENTS 10 FAMILIES MEMBER OR NON-MEMBER": rec.get("house_visitation", ""),
-            "Missionary Work": rec.get("missionary_work", ""),
-            "INDOCTRINATION: FAMILY NAME OF A FAMILY UNDER INDOCTRINATION": rec.get("indoctrination", ""),
-            "Remarks": rec.get("remarks", "")
         })
+        rows.append({
+            first_col_name: "Total:",
+            "Week": "",
+            "Mass": calc_pct_str(m_a + m_y, tot_say),
+            "Pampamilya": calc_pct_str(p_a + p_y, tot_say),
+            "Online Ministry": calc_pct_str(o_a + o_y, tot_say),
+            "Youth Fellowship": calc_pct_str(y_y, tot_y),
+            "Kids Fellowship": calc_pct_str(k_k, tot_k),
+            "Adal ti Evangelio": calc_pct_str(ad_a + ad_y, tot_say),
+        })
+
+    if filter_parish == "Lahat ng Parokya" and rows:
+        rows.append({
+            first_col_name: "OVERALL TOTAL PERCENTAGE (ALL PARISHES):",
+            "Week": "ALL",
+            "Mass": f"{sum_m_att}/{sum_say_mem} ({calc_pct_str(sum_m_att, sum_say_mem)})",
+            "Pampamilya": f"{sum_p_att}/{sum_say_mem} ({calc_pct_str(sum_p_att, sum_say_mem)})",
+            "Online Ministry": f"{sum_o_att}/{sum_say_mem} ({calc_pct_str(sum_o_att, sum_say_mem)})",
+            "Youth Fellowship": f"{sum_y_att}/{sum_y_mem} ({calc_pct_str(sum_y_att, sum_y_mem)})",
+            "Kids Fellowship": f"{sum_k_att}/{sum_k_mem} ({calc_pct_str(sum_k_att, sum_k_mem)})",
+            "Adal ti Evangelio": f"{sum_ad_att}/{sum_say_mem} ({calc_pct_str(sum_ad_att, sum_say_mem)})",
+        })
+
+    return pd.DataFrame(rows)
+
+# 2️⃣ TABLE 2: SUMMARY FOR POSTING (TOTAL MEMBERS / TOTAL OF ATTENDEES / TOTAL AVERAGE % PER PARISH - WALANG HOUSE VISIT & INDOCTRINATION)
+def build_summary_for_posting_per_parish_df(parish_name: str, selected_month: str, selected_week: str) -> pd.DataFrame:
+    db = load_weekly_monitoring_records()
+    key = f"{parish_name.upper()}__{selected_month.upper()}__{selected_week}"
+    rec = db.get(key, {})
+
+    denoms = get_parish_member_denominators(parish_name)
+    tot_say = denoms["say"]
+    tot_y = denoms["youth"]
+    tot_k = denoms["kids"]
+
+    m_att = int(rec.get("mass_a", 0)) + int(rec.get("mass_y", 0))
+    p_att = int(rec.get("pampamilya_a", 0)) + int(rec.get("pampamilya_y", 0))
+    o_att = int(rec.get("online_a", 0)) + int(rec.get("online_y", 0))
+    y_att = int(rec.get("youth_y", 0))
+    k_att = int(rec.get("kids_k", 0))
+    ad_att = int(rec.get("adal_a", 0)) + int(rec.get("adal_y", 0))
+
+    short_p = parish_name.replace("PARISH", "").strip()
+    if "HONGKONG" in short_p:
+        short_p = "HONG KONG"
+
+    rows = [
+        {
+            short_p: "TOTAL MEMBERS",
+            "Mass": str(tot_say),
+            "Pampamilya": str(tot_say),
+            "Online Ministry": str(tot_say),
+            "Youth Fellowship": str(tot_y),
+            "Kids Fellowship": str(tot_k),
+            "Adal ti Evangelio": str(tot_say),
+        },
+        {
+            short_p: "TOTAL OF ATTENDEES",
+            "Mass": str(m_att),
+            "Pampamilya": str(p_att),
+            "Online Ministry": str(o_att),
+            "Youth Fellowship": str(y_att),
+            "Kids Fellowship": str(k_att),
+            "Adal ti Evangelio": str(ad_att),
+        },
+        {
+            short_p: "TOTAL AVERAGE",
+            "Mass": calc_pct_str(m_att, tot_say),
+            "Pampamilya": calc_pct_str(p_att, tot_say),
+            "Online Ministry": calc_pct_str(o_att, tot_say),
+            "Youth Fellowship": calc_pct_str(y_att, tot_y),
+            "Kids Fellowship": calc_pct_str(k_att, tot_k),
+            "Adal ti Evangelio": calc_pct_str(ad_att, tot_say),
+        }
+    ]
+    return pd.DataFrame(rows)
+
+# 3️⃣ TABLE 3: SEPARATE TABLE SA BABA PARA SA HOUSE VISITATION, MISSIONARY WORK, INDOCTRINATION & REMARKS (MAY TOTAL DIN SA BABA)
+def build_visitation_missionary_indoctrination_df(selected_month: str, selected_week: str, filter_parish: str = "Lahat ng Parokya") -> pd.DataFrame:
+    db = load_weekly_monitoring_records()
+    rows = []
+    week_num_only = re.sub(r"\D", "", str(selected_week)) or "1"
+
+    total_hv = 0
+    total_mw = 0
+    total_ind = 0
+    parish_count = 0
+
+    for p_name in PARISH_ORDER:
+        if filter_parish != "Lahat ng Parokya" and not normalize_parish_match(p_name, filter_parish):
+            continue
+        parish_count += 1
+        key = f"{p_name.upper()}__{selected_month.upper()}__{selected_week}"
+        rec = db.get(key, {})
+        r_date = rec.get("report_date", "01/02/27")
+
+        hv_raw = str(rec.get("house_visitation", "0")).strip() or "0"
+        mw_raw = str(rec.get("missionary_work", "0")).strip() or "0"
+        ind_raw = str(rec.get("indoctrination", "0")).strip() or "0"
+        rem_raw = str(rec.get("remarks", "")).strip()
+
+        hv_num = parse_int_from_text(hv_raw)
+        mw_num = parse_int_from_text(mw_raw)
+        ind_num = parse_int_from_text(ind_raw)
+
+        total_hv += hv_num
+        total_mw += mw_num
+        total_ind += ind_num
+
+        short_parish = p_name.replace("PARISH", "").strip()
+        if "HONGKONG" in short_parish:
+            short_parish = "HONGKONG CHAPTER"
+
+        hv_pct = calc_pct_str(hv_num, 10)
+        rows.append({
+            "Parish & Date": f"{short_parish} ({r_date})",
+            "Week": week_num_only,
+            "HOUSE Visitation: REQUIREMENTS 10 FAMILIES MEMBER OR NON-MEMBER": f"{hv_raw} ({hv_pct})",
+            "Missionary Work": mw_raw,
+            "INDOCTRINATION: FAMILY NAME OF A FAMILY UNDER INDOCTRINATION": ind_raw,
+            "Remarks": rem_raw
+        })
+
+    req_hv_total = max(parish_count * 10, 10)
+    rows.append({
+        "Parish & Date": "TOTAL & PERCENTAGE:",
+        "Week": "",
+        "HOUSE Visitation: REQUIREMENTS 10 FAMILIES MEMBER OR NON-MEMBER": f"Total: {total_hv} / {req_hv_total} ({calc_pct_str(total_hv, req_hv_total)})",
+        "Missionary Work": f"Total: {total_mw}",
+        "INDOCTRINATION: FAMILY NAME OF A FAMILY UNDER INDOCTRINATION": f"Total: {total_ind}",
+        "Remarks": " Kabuuang Bilang (All Selected Parishes)"
+    })
     return pd.DataFrame(rows)
 
 def render_weekly_report_page():
@@ -1590,27 +1854,65 @@ def render_weekly_report_page():
     my_parish = st.session_state.get("assigned_parish", "Lahat ng Parokya")
 
     st.markdown("<div class='pmr-banner'>CHURCH OF THE TEMPLE OF GOD</div>", unsafe_allow_html=True)
-    st.markdown("<div class='pmr-subbanner'>Parish Monitoring Report — Weekly Report Upload & AI Sync (Saturday Worship)</div>", unsafe_allow_html=True)
+    st.markdown("<div class='pmr-subbanner'>Parish Monitoring Report — Weekly Report Upload, Summary for Posting & Google Drive Sync</div>", unsafe_allow_html=True)
 
-    col_up_left, col_up_right = st.columns([1.25, 1.45])
+    # TOP FILTER & GOOGLE DRIVE AUTO-SYNC BAR
+    top_f1, top_f2, top_f3, top_f4 = st.columns([1.1, 1.1, 1.4, 1.3])
+    with top_f1:
+        view_month = st.selectbox(
+            "📅 Buwan (2027):",
+            ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"],
+            key="mon_view_month"
+        )
+    with top_f2:
+        view_week = st.selectbox(
+            "🗓️ Linggo (Week):",
+            ["1st Week", "2nd Week", "3rd Week", "4th Week", "5th Week"],
+            key="mon_view_week"
+        )
+    with top_f3:
+        if is_master:
+            view_parish_scope = st.selectbox(
+                "🏛️ Master Admin View Filter:",
+                ["Lahat ng Parokya (Master Admin Full View)"] + PARISH_ORDER,
+                key="mon_view_parish"
+            )
+            effective_parish_filter = "Lahat ng Parokya" if "Lahat ng Parokya" in view_parish_scope else view_parish_scope
+        else:
+            st.info(f"📍 Parish View: **{my_parish}**")
+            effective_parish_filter = my_parish
+    with top_f4:
+        st.write("")
+        if st.button("🔄 Auto-Sync Data Mula sa Google Drive", use_container_width=True, type="primary"):
+            with st.spinner("Binabasa ang mga Excel files mula sa Google Drive Folder..."):
+                folder_url = st.session_state.custom_secrets.get("WEEKLY_REPORT_FOLDER_URL", ACTIVE_WEEKLY_FOLDER_URL)
+                cnt, msg = sync_weekly_reports_from_google_drive_folder(folder_url, view_month, view_week)
+                st.cache_data.clear()
+                st.success(msg)
+                time.sleep(0.6)
+                st.rerun()
+
+    st.divider()
+
+    col_up_left, col_up_right = st.columns([1.2, 1.5])
 
     with col_up_left:
         st.markdown("### 📤 1. Upload the Image / Excel File Here!")
-        st.caption("I-upload ang larawan (screenshot/picture) o Excel file ng inyong Weekly Report. Awtomatikong babasahin ito ng AI at ise-save sa Google Drive folder ng inyong Parokya.")
+        st.caption("I-upload ang larawan (screenshot/picture) o Excel file ng inyong Weekly Report. Awtomatikong babasahin ito ng AI, ilalagay sa Google Drive folder ng Parokya, at ia-update ang mga tables sa ibaba.")
 
         with st.form("weekly_report_upload_form"):
             c_m, c_w = st.columns(2)
             with c_m:
                 sel_month = st.selectbox(
-                    "Buwan (2027):",
+                    "Buwan ng Report:",
                     ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"],
-                    index=0
+                    index=["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"].index(view_month)
                 )
             with c_w:
                 sel_week = st.selectbox(
-                    "Linggo (Week):",
+                    "Linggo ng Report:",
                     ["1st Week", "2nd Week", "3rd Week", "4th Week", "5th Week"],
-                    index=0
+                    index=["1st Week", "2nd Week", "3rd Week", "4th Week", "5th Week"].index(view_week)
                 )
 
             target_parish = st.selectbox(
@@ -1622,9 +1924,17 @@ def render_weekly_report_page():
                 "📸 Pumili ng Weekly Report Image (.jpg, .png) o Excel (.xlsx):",
                 type=["jpg", "jpeg", "png", "xlsx"]
             )
+            c_hv, c_mw, c_ind = st.columns(3)
+            with c_hv:
+                up_hv = st.text_input("House Visitation (Bilang):", value="0")
+            with c_mw:
+                up_mw = st.text_input("Missionary Work (Bilang):", value="0")
+            with c_ind:
+                up_ind = st.text_input("Indoctrination (Bilang/Pamilya):", value="0")
+
             extra_remarks = st.text_input("Remarks / Tala (Optional):").strip()
 
-            submit_up = st.form_submit_button("🚀 I-upload sa Google Drive & Basahin ang Data sa AI", type="primary", use_container_width=True)
+            submit_up = st.form_submit_button("🚀 I-upload sa Google Drive & I-update ang Tables", type="primary", use_container_width=True)
 
             if submit_up:
                 if uploaded_rep is None:
@@ -1653,6 +1963,12 @@ def render_weekly_report_page():
 
                         if rep_date_input.strip():
                             extracted["report_date"] = rep_date_input.strip()
+                        if up_hv.strip() and up_hv.strip() != "0":
+                            extracted["house_visitation"] = up_hv.strip()
+                        if up_mw.strip() and up_mw.strip() != "0":
+                            extracted["missionary_work"] = up_mw.strip()
+                        if up_ind.strip() and up_ind.strip() != "0":
+                            extracted["indoctrination"] = up_ind.strip()
                         if extra_remarks:
                             extracted["remarks"] = extra_remarks
 
@@ -1680,15 +1996,13 @@ def render_weekly_report_page():
 
     with col_up_right:
         st.markdown("### ✏️ 2. AI Extracted Data & Manual Verification Editor")
-        st.caption("Ito ang mga datos na nakuha mula sa in-upload na report. Maaari mo ring i-verify o i-edit nang direkta bago i-save sa Parish Monitoring Table.")
+        st.caption("I-verify o i-edit ang Attendance, House Visitation, Missionary Work, Indoctrination, at Remarks para sa napiling Parokya.")
 
         last_info = st.session_state.get("last_extracted_pwr", {})
         def_p = last_info.get("parish", my_parish if not is_master else PARISH_ORDER[0])
-        def_m = last_info.get("month", "January")
-        def_w = last_info.get("week", "1st Week")
 
         db_all = load_weekly_monitoring_records()
-        cur_rec = db_all.get(f"{def_p.upper()}__{def_m.upper()}__{def_w}", last_info.get("data", {}))
+        cur_rec = db_all.get(f"{def_p.upper()}__{view_month.upper()}__{view_week}", last_info.get("data", {}))
 
         with st.form("verify_weekly_counts_form"):
             v_c1, v_c2, v_c3 = st.columns(3)
@@ -1696,10 +2010,10 @@ def render_weekly_report_page():
                 v_parish = st.selectbox("Parokya:", PARISH_ORDER if is_master else [my_parish], index=PARISH_ORDER.index(def_p) if def_p in PARISH_ORDER and is_master else 0)
             with v_c2:
                 months_list = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
-                v_month = st.selectbox("Buwan:", months_list, index=months_list.index(def_m) if def_m in months_list else 0)
+                v_month = st.selectbox("Buwan:", months_list, index=months_list.index(view_month))
             with v_c3:
                 weeks_list = ["1st Week", "2nd Week", "3rd Week", "4th Week", "5th Week"]
-                v_week = st.selectbox("Linggo:", weeks_list, index=weeks_list.index(def_w) if def_w in weeks_list else 0)
+                v_week = st.selectbox("Linggo:", weeks_list, index=weeks_list.index(view_week))
 
             a1, a2, a3, a4, a5 = st.columns(5)
             with a1:
@@ -1718,55 +2032,66 @@ def render_weekly_report_page():
                 ad_a = st.number_input("Adal ti Evang. (A):", min_value=0, value=int(cur_rec.get("adal_a", 0)))
                 ad_y = st.number_input("Adal ti Evang. (Y):", min_value=0, value=int(cur_rec.get("adal_y", 0)))
 
-            v_date = st.text_input("Petsa sa Table (MM/DD/YY):", value=str(cur_rec.get("report_date", "01/02/27")))
-            v_rem = st.text_input("Remarks para sa Monitoring Table:", value=str(cur_rec.get("remarks", "")))
+            b1, b2, b3, b4 = st.columns(4)
+            with b1:
+                v_date = st.text_input("Petsa (MM/DD/YY):", value=str(cur_rec.get("report_date", "01/02/27")))
+            with b2:
+                v_hv = st.text_input("House Visitation (Req 10):", value=str(cur_rec.get("house_visitation", "0")))
+            with b3:
+                v_mw = st.text_input("Missionary Work:", value=str(cur_rec.get("missionary_work", "0")))
+            with b4:
+                v_ind = st.text_input("Indoctrination:", value=str(cur_rec.get("indoctrination", "0")))
 
-            if st.form_submit_button("💾 I-save at I-update sa Parish Monitoring Table", use_container_width=True):
+            v_rem = st.text_input("Remarks para sa Parokya:", value=str(cur_rec.get("remarks", "")))
+
+            if st.form_submit_button("💾 I-save at I-update sa Lahat ng Monitoring Tables", use_container_width=True):
                 updated_payload = {
                     "mass_a": m_a, "mass_y": m_y,
                     "pampamilya_a": p_a, "pampamilya_y": p_y,
                     "online_a": o_a, "online_y": o_y,
                     "youth_y": y_y, "kids_k": k_k,
                     "adal_a": ad_a, "adal_y": ad_y,
+                    "house_visitation": v_hv,
+                    "missionary_work": v_mw,
+                    "indoctrination": v_ind,
                     "remarks": v_rem
                 }
                 save_weekly_monitoring_record(v_parish, v_month, v_week, v_date, updated_payload, drive_link=cur_rec.get("drive_link", ""))
-                st.success(f"✅ Na-update na ang Parish Monitoring Table para sa **{v_parish}** ({v_month} - {v_week})!")
+                st.success(f"✅ Na-update na ang lahat ng Monitoring Tables para sa **{v_parish}** ({v_month} - {v_week})!")
                 st.rerun()
 
     st.divider()
 
     # =====================================================================
-    # 📋 IBABA NG UPLOADAN: PARISH MONITORING REPORT TABLE (PER PARISH & MASTER ADMIN)
+    # 📊 TABLE 1: PARISH MONITORING REPORT (ATTENDANCE + TOTAL PERCENTAGE SA BABA)
     # =====================================================================
-    st.markdown("### 📊 3. Parish Monitoring Report Table (from JAN. 2027 to Date)")
-    flt1, flt2, flt3 = st.columns([1.2, 1.2, 1.6])
-    with flt1:
-        view_month = st.selectbox(
-            "📅 Pumili ng Buwan na Titingnan:",
-            ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"],
-            key="mon_view_month"
-        )
-    with flt2:
-        view_week = st.selectbox(
-            "🗓️ Pumili ng Linggo (Week):",
-            ["1st Week", "2nd Week", "3rd Week", "4th Week", "5th Week"],
-            key="mon_view_week"
-        )
-    with flt3:
-        if is_master:
-            view_parish_scope = st.selectbox(
-                "🏛️ Master Admin Filter (Lahat o Per Parish):",
-                ["Lahat ng Parokya (Master Admin Full View)"] + PARISH_ORDER,
-                key="mon_view_parish"
-            )
-            effective_parish_filter = "Lahat ng Parokya" if "Lahat ng Parokya" in view_parish_scope else view_parish_scope
-        else:
-            st.info(f"📍 Parish Monitoring View: **{my_parish}**")
-            effective_parish_filter = my_parish
+    st.markdown(f"### 📋 3. Parish Monitoring Report — Attendance & Total Percentage ({view_week} of {view_month.upper()} 2027)")
+    st.caption("Bawat Parokya ay may `A-0 | Y-0` count at `Total:` row sa ibaba para sa porsyento (`%`) ng lahat ng ministeryo.")
+    att_monitoring_df = build_parish_monitoring_attendance_df(view_month, view_week, effective_parish_filter)
+    st.dataframe(att_monitoring_df, use_container_width=True, hide_index=True)
 
-    monitoring_df = build_parish_monitoring_dataframe(view_month, view_week, effective_parish_filter)
-    st.dataframe(monitoring_df, use_container_width=True, hide_index=True)
+    st.divider()
+
+    # =====================================================================
+    # 📊 TABLE 2: SUMMARY FOR POSTING PER PARISH (TOTAL MEMBERS, TOTAL OF ATTENDEES, TOTAL AVERAGE %)
+    # =====================================================================
+    st.markdown(f"### 📈 4. Summary for Posting — Per Parish Breakdown ({view_week} of {view_month.upper()} 2027)")
+    st.caption("Eksaktong gaya ng nasa larawan (TOTAL MEMBERS, TOTAL OF ATTENDEES, at TOTAL AVERAGE %) para sa Mass, Pampamilya, Online Ministry, Youth Fellowship, Kids Fellowship, at Adal ti Evangelio.")
+
+    parishes_to_show = PARISH_ORDER if effective_parish_filter == "Lahat ng Parokya" else [p for p in PARISH_ORDER if normalize_parish_match(p, effective_parish_filter)]
+    for p_item in parishes_to_show:
+        df_post_p = build_summary_for_posting_per_parish_df(p_item, view_month, view_week)
+        st.dataframe(df_post_p, use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    # =====================================================================
+    # 📊 TABLE 3: SEPARATE TABLE SA BABA PARA SA HOUSE VISITATION, MISSIONARY WORK, INDOCTRINATION & REMARKS (MAY TOTAL DIN)
+    # =====================================================================
+    st.markdown(f"### 🏠 5. House Visitation, Missionary Work, Indoctrination & Remarks ({view_week} of {view_month.upper()} 2027)")
+    st.caption("Nakahiwalay na monitoring table kada Parokya para sa House Visitation (Requirements: 10 Families), Missionary Work, Indoctrination, at Remarks na may Total sa ibaba.")
+    vis_df = build_visitation_missionary_indoctrination_df(view_month, view_week, effective_parish_filter)
+    st.dataframe(vis_df, use_container_width=True, hide_index=True)
 
     if os.path.exists(LOCAL_PWR_MASTER_FILE):
         with open(LOCAL_PWR_MASTER_FILE, "rb") as f:
