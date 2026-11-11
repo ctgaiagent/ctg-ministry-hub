@@ -89,6 +89,12 @@ LOCAL_CONFIG_FILE = "ctg_app_cloud_config.json"
 LOCAL_CHAT_FILE = "ctg_ministry_internal_chat.json"
 DRIVE_CHAT_FILENAME = "ctg_ministry_internal_chat_cloud.json"
 
+MONTHS_2027 = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"
+]
+WEEKS_2027 = ["1st Week", "2nd Week", "3rd Week", "4th Week", "5th Week"]
+
 # Default Baseline Member Counts per Parish (mula sa Summary For Posting)
 DEFAULT_PARISH_MEMBER_BASELINES = {
     "LIPAY NORTE PARISH": {"say": 90, "youth": 29, "kids": 26},
@@ -410,7 +416,7 @@ def extract_id_from_url(url: str) -> str:
     return str(url).strip()
 
 # ==========================================
-# ☁️ GOOGLE DRIVE SERVICE & AUTOMATIC ROUTING
+# ☁️ GOOGLE DRIVE SERVICE & AUTOMATIC 2027 ROUTING
 # ==========================================
 def get_google_drive_service():
     g_id = get_secret("GMAIL_CLIENT_ID")
@@ -434,14 +440,30 @@ def get_or_create_parish_subfolder(service, parent_folder_id: str, parish_name: 
     if not service or not parent_folder_id:
         return parent_folder_id
     try:
-        clean_parish = parish_name.replace("PARISH", "").strip()
+        current_parent_id = parent_folder_id
         res = service.files().list(
-            q=f"'{parent_folder_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false",
+            q=f"'{current_parent_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false",
             spaces="drive",
             fields="files(id, name)",
             pageSize=50
         ).execute()
         folders = res.get("files", [])
+
+        # Kung ang root folder ay may mga buwan ng 2027 (hal. 01. January 2027 PWR), pasukin muna ang buwan
+        if month_name:
+            for folder in folders:
+                if month_name.lower() in folder["name"].lower():
+                    current_parent_id = folder["id"]
+                    res_sub = service.files().list(
+                        q=f"'{current_parent_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false",
+                        spaces="drive",
+                        fields="files(id, name)",
+                        pageSize=50
+                    ).execute()
+                    folders = res_sub.get("files", [])
+                    break
+
+        clean_parish = parish_name.replace("PARISH", "").strip()
         target_parish_folder_id = None
         for folder in folders:
             if clean_parish.lower() in folder["name"].lower():
@@ -451,12 +473,12 @@ def get_or_create_parish_subfolder(service, parent_folder_id: str, parish_name: 
             folder_meta = {
                 "name": parish_name,
                 "mimeType": "application/vnd.google-apps.folder",
-                "parents": [parent_folder_id]
+                "parents": [current_parent_id]
             }
             created = service.files().create(body=folder_meta, fields="id").execute()
-            target_parish_folder_id = created.get("id", parent_folder_id)
+            target_parish_folder_id = created.get("id", current_parent_id)
 
-        if month_name:
+        if month_name and current_parent_id == parent_folder_id:
             res_m = service.files().list(
                 q=f"'{target_parish_folder_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false",
                 spaces="drive",
@@ -1407,7 +1429,7 @@ visible_chats_for_me = [
 ]
 
 # =====================================================================
-# 📊 WEEKLY REPORT AI VISION, GOOGLE DRIVE AUTO-SYNC & 3 TABLES BUILDER
+# 📊 WEEKLY REPORT AI VISION, GOOGLE DRIVE 2027 AUTO-SYNC & 3 TABLES BUILDER
 # =====================================================================
 def load_weekly_monitoring_records() -> dict:
     if os.path.exists(LOCAL_WEEKLY_REPORTS_DB):
@@ -1449,9 +1471,9 @@ def save_weekly_monitoring_record(parish: str, month: str, week_num: str, report
             json.dump(db, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
-    update_master_pwr_excel_file(parish, week_num, report_date, db[key])
+    update_master_pwr_excel_file(parish, month, week_num, report_date, db[key])
 
-def update_master_pwr_excel_file(parish: str, week_num: str, report_date: str, data_row: dict):
+def update_master_pwr_excel_file(parish: str, month: str, week_num: str, report_date: str, data_row: dict):
     if not os.path.exists(LOCAL_PWR_MASTER_FILE):
         return
     try:
@@ -1475,6 +1497,34 @@ def update_master_pwr_excel_file(parish: str, week_num: str, report_date: str, d
                     ws.cell(row=r_idx, column=12).value = data_row.get("remarks", "")
                     break
             wb.save(LOCAL_PWR_MASTER_FILE)
+
+        # Auto-sync the updated Master PWR file for the specific Month and Week of 2027 to Google Drive
+        service = get_google_drive_service()
+        folder_url = st.session_state.custom_secrets.get("WEEKLY_REPORT_FOLDER_URL", ACTIVE_WEEKLY_FOLDER_URL)
+        folder_id = extract_id_from_url(folder_url)
+        if service and folder_id:
+            target_master_name = f"PWR. {month} {week_num}.xlsx"
+            with open(LOCAL_PWR_MASTER_FILE, "rb") as f:
+                master_bytes = f.read()
+            media = MediaIoBaseUpload(
+                io.BytesIO(master_bytes),
+                mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                resumable=True
+            )
+            res = service.files().list(
+                q=f"name='{target_master_name}' and trashed=false",
+                spaces="drive",
+                fields="files(id)",
+                pageSize=5
+            ).execute()
+            files = res.get("files", [])
+            if files:
+                service.files().update(fileId=files[0]["id"], media_body=media).execute()
+            else:
+                service.files().create(
+                    body={"name": target_master_name, "parents": [folder_id]},
+                    media_body=media
+                ).execute()
     except Exception:
         pass
 
@@ -1608,7 +1658,7 @@ def sync_weekly_reports_from_google_drive_folder(folder_url: str, target_month: 
                         )
                         synced_count += 1
                         break
-        return synced_count, f"Matagumpay na na-sync ang {synced_count} parish files mula sa Google Drive!"
+        return synced_count, f"Matagumpay na na-sync ang {synced_count} parish files mula sa Google Drive para sa {target_month} 2027 ({target_week})!"
     except Exception as e:
         return synced_count, f"Drive Folder Sync Notice: {str(e)}"
 
@@ -1845,7 +1895,7 @@ def build_visitation_missionary_indoctrination_df(selected_month: str, selected_
         "HOUSE Visitation: REQUIREMENTS 10 FAMILIES MEMBER OR NON-MEMBER": f"Total: {total_hv} / {req_hv_total} ({calc_pct_str(total_hv, req_hv_total)})",
         "Missionary Work": f"Total: {total_mw}",
         "INDOCTRINATION: FAMILY NAME OF A FAMILY UNDER INDOCTRINATION": f"Total: {total_ind}",
-        "Remarks": " Kabuuang Bilang (All Selected Parishes)"
+        "Remarks": "Kabuuang Bilang (All Selected Parishes)"
     })
     return pd.DataFrame(rows)
 
@@ -1854,20 +1904,20 @@ def render_weekly_report_page():
     my_parish = st.session_state.get("assigned_parish", "Lahat ng Parokya")
 
     st.markdown("<div class='pmr-banner'>CHURCH OF THE TEMPLE OF GOD</div>", unsafe_allow_html=True)
-    st.markdown("<div class='pmr-subbanner'>Parish Monitoring Report — Weekly Report Upload, Summary for Posting & Google Drive Sync</div>", unsafe_allow_html=True)
+    st.markdown("<div class='pmr-subbanner'>Parish Monitoring Report — Full Year 2027 (January–December, Weeks 1–5) & Google Drive Auto-Sync</div>", unsafe_allow_html=True)
 
     # TOP FILTER & GOOGLE DRIVE AUTO-SYNC BAR
     top_f1, top_f2, top_f3, top_f4 = st.columns([1.1, 1.1, 1.4, 1.3])
     with top_f1:
         view_month = st.selectbox(
             "📅 Buwan (2027):",
-            ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"],
+            MONTHS_2027,
             key="mon_view_month"
         )
     with top_f2:
         view_week = st.selectbox(
             "🗓️ Linggo (Week):",
-            ["1st Week", "2nd Week", "3rd Week", "4th Week", "5th Week"],
+            WEEKS_2027,
             key="mon_view_week"
         )
     with top_f3:
@@ -1884,7 +1934,7 @@ def render_weekly_report_page():
     with top_f4:
         st.write("")
         if st.button("🔄 Auto-Sync Data Mula sa Google Drive", use_container_width=True, type="primary"):
-            with st.spinner("Binabasa ang mga Excel files mula sa Google Drive Folder..."):
+            with st.spinner(f"Binabasa ang mga Excel files mula sa Google Drive Folder para sa {view_month} 2027 ({view_week})..."):
                 folder_url = st.session_state.custom_secrets.get("WEEKLY_REPORT_FOLDER_URL", ACTIVE_WEEKLY_FOLDER_URL)
                 cnt, msg = sync_weekly_reports_from_google_drive_folder(folder_url, view_month, view_week)
                 st.cache_data.clear()
@@ -1904,15 +1954,15 @@ def render_weekly_report_page():
             c_m, c_w = st.columns(2)
             with c_m:
                 sel_month = st.selectbox(
-                    "Buwan ng Report:",
-                    ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"],
-                    index=["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"].index(view_month)
+                    "Buwan ng Report (2027):",
+                    MONTHS_2027,
+                    index=MONTHS_2027.index(view_month)
                 )
             with c_w:
                 sel_week = st.selectbox(
                     "Linggo ng Report:",
-                    ["1st Week", "2nd Week", "3rd Week", "4th Week", "5th Week"],
-                    index=["1st Week", "2nd Week", "3rd Week", "4th Week", "5th Week"].index(view_week)
+                    WEEKS_2027,
+                    index=WEEKS_2027.index(view_week)
                 )
 
             target_parish = st.selectbox(
@@ -1943,9 +1993,9 @@ def render_weekly_report_page():
                     file_bytes = uploaded_rep.read()
                     f_ext = uploaded_rep.name.split(".")[-1].lower()
                     clean_p_name = target_parish.replace("PARISH", "").strip()
-                    drive_filename = f"{clean_p_name} (PWR. {rep_date_input.replace('/', '-')} {sel_week}).{f_ext}"
+                    drive_filename = f"{clean_p_name} (PWR. {rep_date_input.replace('/', '-')} {sel_month} {sel_week}).{f_ext}"
 
-                    with st.spinner(f"Ina-upload sa Google Drive folder ng {target_parish} at binabasa ng AI ang Attendance..."):
+                    with st.spinner(f"Ina-upload sa Google Drive folder ng {target_parish} ({sel_month} 2027 - {sel_week}) at binabasa ng AI ang Attendance..."):
                         folder_url = st.session_state.custom_secrets.get("WEEKLY_REPORT_FOLDER_URL", ACTIVE_WEEKLY_FOLDER_URL)
                         drive_link, drive_msg = upload_file_to_google_drive(
                             file_bytes,
@@ -1988,7 +2038,7 @@ def render_weekly_report_page():
                             "drive_link": drive_link,
                             "drive_msg": drive_msg
                         }
-                        st.success(f"✅ Matagumpay na na-proseso ang Weekly Report ng **{target_parish}** para sa **{sel_month} ({sel_week})**!")
+                        st.success(f"✅ Matagumpay na na-proseso ang Weekly Report ng **{target_parish}** para sa **{sel_month} 2027 ({sel_week})**!")
                         if drive_link:
                             st.info(f"📂 Na-save sa Google Drive Folder ng {target_parish}: [Buksan ang File sa Google Drive]({drive_link})")
                         else:
@@ -2009,11 +2059,9 @@ def render_weekly_report_page():
             with v_c1:
                 v_parish = st.selectbox("Parokya:", PARISH_ORDER if is_master else [my_parish], index=PARISH_ORDER.index(def_p) if def_p in PARISH_ORDER and is_master else 0)
             with v_c2:
-                months_list = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
-                v_month = st.selectbox("Buwan:", months_list, index=months_list.index(view_month))
+                v_month = st.selectbox("Buwan (2027):", MONTHS_2027, index=MONTHS_2027.index(view_month))
             with v_c3:
-                weeks_list = ["1st Week", "2nd Week", "3rd Week", "4th Week", "5th Week"]
-                v_week = st.selectbox("Linggo:", weeks_list, index=weeks_list.index(view_week))
+                v_week = st.selectbox("Linggo:", WEEKS_2027, index=WEEKS_2027.index(view_week))
 
             a1, a2, a3, a4, a5 = st.columns(5)
             with a1:
@@ -2057,7 +2105,7 @@ def render_weekly_report_page():
                     "remarks": v_rem
                 }
                 save_weekly_monitoring_record(v_parish, v_month, v_week, v_date, updated_payload, drive_link=cur_rec.get("drive_link", ""))
-                st.success(f"✅ Na-update na ang lahat ng Monitoring Tables para sa **{v_parish}** ({v_month} - {v_week})!")
+                st.success(f"✅ Na-update na ang lahat ng Monitoring Tables para sa **{v_parish}** ({v_month} 2027 - {v_week})!")
                 st.rerun()
 
     st.divider()
@@ -2097,9 +2145,9 @@ def render_weekly_report_page():
         with open(LOCAL_PWR_MASTER_FILE, "rb") as f:
             pwr_bytes = f.read()
         st.download_button(
-            label=f"📥 I-download ang Na-update na Master Excel ({LOCAL_PWR_MASTER_FILE})",
+            label=f"📥 I-download ang Na-update na Master Excel (PWR. {view_month} {view_week}.xlsx)",
             data=pwr_bytes,
-            file_name=f"PWR_{view_month}_{view_week.replace(' ', '_')}_2027.xlsx",
+            file_name=f"PWR. {view_month} {view_week}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
