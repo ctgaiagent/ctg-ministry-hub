@@ -14,6 +14,8 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 from google.oauth2.credentials import Credentials
+from google.oauth2 import service_account
+from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
@@ -75,12 +77,14 @@ NOTION_COUNSELLING_DB_ID = get_secret("NOTION_COUNSELLING_DB_ID")
 GMAIL_CLIENT_ID = get_secret("GMAIL_CLIENT_ID")
 GMAIL_CLIENT_SECRET = get_secret("GMAIL_CLIENT_SECRET")
 GMAIL_REFRESH_TOKEN = get_secret("GMAIL_REFRESH_TOKEN")
+GOOGLE_SERVICE_ACCOUNT_JSON = get_secret("GOOGLE_SERVICE_ACCOUNT_JSON")
 APP_USER = get_secret("APP_USER", "ctg.ministry.master.admin")
 APP_PASSWORD = get_secret("APP_PASSWORD", "Church#Temple#God$2026!Admin")
 BACKUP_ADMIN_EMAIL = "clarojerald16@gmail.com"
 
 DEFAULT_CLOUD_SPREADSHEET_URL = get_secret("CLOUD_SPREADSHEET_URL", "")
 WEEKLY_REPORT_FOLDER_URL = get_secret("WEEKLY_REPORT_FOLDER_URL", "")
+PARISH_UPLOAD_FOLDER_URL = get_secret("PARISH_UPLOAD_FOLDER_URL", "")
 
 LOCAL_EXCEL_CACHE = "CTG_HEADS_TOTAL_UPDATED FIXED.xlsx"
 LOCAL_PWR_MASTER_FILE = "PWR. January 1st Week.xlsx"
@@ -95,7 +99,7 @@ MONTHS_2027 = [
 ]
 WEEKS_2027 = ["1st Week", "2nd Week", "3rd Week", "4th Week", "5th Week"]
 
-# Default Baseline Member Counts per Parish (mula sa Summary For Posting)
+# Default Baseline Member Counts per Parish (ginagamit kapag nag-save ng bagong report)
 DEFAULT_PARISH_MEMBER_BASELINES = {
     "LIPAY NORTE PARISH": {"say": 90, "youth": 29, "kids": 26},
     "MALANAS PARISH": {"say": 17, "youth": 10, "kids": 3},
@@ -109,42 +113,50 @@ DEFAULT_PARISH_MEMBER_BASELINES = {
     "HONGKONG PARISH": {"say": 11, "youth": 0, "kids": 0},
 }
 
-def load_saved_cloud_url() -> str:
-    if "custom_secrets" in st.session_state and st.session_state.custom_secrets.get("CLOUD_SPREADSHEET_URL"):
-        return st.session_state.custom_secrets["CLOUD_SPREADSHEET_URL"].strip()
+def load_saved_config() -> dict:
     if os.path.exists(LOCAL_CONFIG_FILE):
         try:
             with open(LOCAL_CONFIG_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if data.get("CLOUD_SPREADSHEET_URL"):
-                    return data["CLOUD_SPREADSHEET_URL"].strip()
+                return json.load(f)
         except Exception:
             pass
+    return {}
+
+def load_saved_cloud_url() -> str:
+    if "custom_secrets" in st.session_state and st.session_state.custom_secrets.get("CLOUD_SPREADSHEET_URL"):
+        return st.session_state.custom_secrets["CLOUD_SPREADSHEET_URL"].strip()
+    data = load_saved_config()
+    if data.get("CLOUD_SPREADSHEET_URL"):
+        return data["CLOUD_SPREADSHEET_URL"].strip()
     return get_secret("CLOUD_SPREADSHEET_URL", DEFAULT_CLOUD_SPREADSHEET_URL)
 
 def load_saved_weekly_folder_url() -> str:
     if "custom_secrets" in st.session_state and st.session_state.custom_secrets.get("WEEKLY_REPORT_FOLDER_URL"):
         return st.session_state.custom_secrets["WEEKLY_REPORT_FOLDER_URL"].strip()
-    if os.path.exists(LOCAL_CONFIG_FILE):
-        try:
-            with open(LOCAL_CONFIG_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if data.get("WEEKLY_REPORT_FOLDER_URL"):
-                    return data["WEEKLY_REPORT_FOLDER_URL"].strip()
-        except Exception:
-            pass
+    data = load_saved_config()
+    if data.get("WEEKLY_REPORT_FOLDER_URL"):
+        return data["WEEKLY_REPORT_FOLDER_URL"].strip()
     return get_secret("WEEKLY_REPORT_FOLDER_URL", WEEKLY_REPORT_FOLDER_URL)
 
-def save_cloud_url_config(new_url: str, weekly_folder_url: str = None):
+def load_saved_parish_upload_folder_url() -> str:
+    if "custom_secrets" in st.session_state and st.session_state.custom_secrets.get("PARISH_UPLOAD_FOLDER_URL"):
+        return st.session_state.custom_secrets["PARISH_UPLOAD_FOLDER_URL"].strip()
+    data = load_saved_config()
+    if data.get("PARISH_UPLOAD_FOLDER_URL"):
+        return data["PARISH_UPLOAD_FOLDER_URL"].strip()
+    return get_secret("PARISH_UPLOAD_FOLDER_URL", PARISH_UPLOAD_FOLDER_URL)
+
+def save_cloud_url_config(new_url: str = None, weekly_folder_url: str = None, parish_upload_url: str = None, refresh_tok: str = None):
     try:
-        existing = {}
-        if os.path.exists(LOCAL_CONFIG_FILE):
-            with open(LOCAL_CONFIG_FILE, "r", encoding="utf-8") as f:
-                existing = json.load(f)
+        existing = load_saved_config()
         if new_url is not None:
             existing["CLOUD_SPREADSHEET_URL"] = new_url.strip()
         if weekly_folder_url is not None:
             existing["WEEKLY_REPORT_FOLDER_URL"] = weekly_folder_url.strip()
+        if parish_upload_url is not None:
+            existing["PARISH_UPLOAD_FOLDER_URL"] = parish_upload_url.strip()
+        if refresh_tok is not None:
+            existing["GMAIL_REFRESH_TOKEN"] = refresh_tok.strip()
         with open(LOCAL_CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(existing, f, indent=2)
     except Exception:
@@ -419,9 +431,21 @@ def extract_id_from_url(url: str) -> str:
 # ☁️ GOOGLE DRIVE SERVICE & AUTOMATIC 2027 ROUTING
 # ==========================================
 def get_google_drive_service():
+    sa_json = st.session_state.get("custom_secrets", {}).get("GOOGLE_SERVICE_ACCOUNT_JSON", "") or get_secret("GOOGLE_SERVICE_ACCOUNT_JSON")
+    if sa_json:
+        try:
+            sa_info = json.loads(sa_json)
+            creds = service_account.Credentials.from_service_account_info(
+                sa_info, scopes=["https://www.googleapis.com/auth/drive"]
+            )
+            return build("drive", "v3", credentials=creds)
+        except Exception:
+            pass
+
+    cfg = load_saved_config()
     g_id = get_secret("GMAIL_CLIENT_ID")
     g_sec = get_secret("GMAIL_CLIENT_SECRET")
-    g_ref = get_secret("GMAIL_REFRESH_TOKEN")
+    g_ref = cfg.get("GMAIL_REFRESH_TOKEN") or get_secret("GMAIL_REFRESH_TOKEN")
     if not all([g_id, g_sec, g_ref]):
         return None
     try:
@@ -436,11 +460,40 @@ def get_google_drive_service():
     except Exception:
         return None
 
+def find_drive_folder_by_name(service, folder_name_query: str, parent_id: str = None) -> str:
+    if not service:
+        return ""
+    try:
+        q_parts = [
+            "mimeType='application/vnd.google-apps.folder'",
+            "trashed=false",
+            f"name contains '{folder_name_query}'"
+        ]
+        if parent_id:
+            q_parts.append(f"'{parent_id}' in parents")
+        res = service.files().list(
+            q=" and ".join(q_parts),
+            spaces="drive",
+            fields="files(id, name)",
+            pageSize=20
+        ).execute()
+        files = res.get("files", [])
+        return files[0]["id"] if files else ""
+    except Exception:
+        return ""
+
 def get_or_create_parish_subfolder(service, parent_folder_id: str, parish_name: str, month_name: str = "") -> str:
-    if not service or not parent_folder_id:
+    if not service:
         return parent_folder_id
     try:
         current_parent_id = parent_folder_id
+        if not current_parent_id:
+            current_parent_id = find_drive_folder_by_name(service, "Upload the Image/Excel File here")
+        if not current_parent_id:
+            current_parent_id = find_drive_folder_by_name(service, "CTG Ministry Hub")
+        if not current_parent_id:
+            return ""
+
         res = service.files().list(
             q=f"'{current_parent_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false",
             spaces="drive",
@@ -449,7 +502,6 @@ def get_or_create_parish_subfolder(service, parent_folder_id: str, parish_name: 
         ).execute()
         folders = res.get("files", [])
 
-        # Kung ang root folder ay may mga buwan ng 2027 (hal. 01. January 2027 PWR), pasukin muna ang buwan
         if month_name:
             for folder in folders:
                 if month_name.lower() in folder["name"].lower():
@@ -464,11 +516,14 @@ def get_or_create_parish_subfolder(service, parent_folder_id: str, parish_name: 
                     break
 
         clean_parish = parish_name.replace("PARISH", "").strip()
+        short_keyword = clean_parish.replace("NORTE", "").strip()
         target_parish_folder_id = None
         for folder in folders:
-            if clean_parish.lower() in folder["name"].lower():
+            f_up = folder["name"].upper()
+            if clean_parish.upper() in f_up or (short_keyword and short_keyword.upper() in f_up):
                 target_parish_folder_id = folder["id"]
                 break
+
         if not target_parish_folder_id:
             folder_meta = {
                 "name": parish_name,
@@ -477,24 +532,6 @@ def get_or_create_parish_subfolder(service, parent_folder_id: str, parish_name: 
             }
             created = service.files().create(body=folder_meta, fields="id").execute()
             target_parish_folder_id = created.get("id", current_parent_id)
-
-        if month_name and current_parent_id == parent_folder_id:
-            res_m = service.files().list(
-                q=f"'{target_parish_folder_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false",
-                spaces="drive",
-                fields="files(id, name)",
-                pageSize=50
-            ).execute()
-            for mf in res_m.get("files", []):
-                if month_name.lower() in mf["name"].lower():
-                    return mf["id"]
-            m_meta = {
-                "name": f"{month_name} 2027",
-                "mimeType": "application/vnd.google-apps.folder",
-                "parents": [target_parish_folder_id]
-            }
-            created_m = service.files().create(body=m_meta, fields="id").execute()
-            return created_m.get("id", target_parish_folder_id)
 
         return target_parish_folder_id
     except Exception:
@@ -507,15 +544,70 @@ def upload_file_to_google_drive(file_bytes, filename, mime_type="image/jpeg", pa
     try:
         file_metadata = {'name': filename}
         root_folder_id = extract_id_from_url(parent_folder_url)
-        if root_folder_id:
-            target_folder_id = get_or_create_parish_subfolder(service, root_folder_id, parish_name, month_name) if parish_name else root_folder_id
-            if target_folder_id:
-                file_metadata['parents'] = [target_folder_id]
+        target_folder_id = get_or_create_parish_subfolder(service, root_folder_id, parish_name, month_name) if parish_name else root_folder_id
+        if target_folder_id:
+            file_metadata['parents'] = [target_folder_id]
         media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype=mime_type, resumable=True)
         file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
-        return file.get('webViewLink'), "Matagumpay na na-upload sa Google Drive!"
+        return file.get('webViewLink'), f"Matagumpay na na-upload sa Google Drive folder ng {parish_name or 'CTG'}!"
     except Exception as e:
-        return None, f"Google Drive Upload Error: {str(e)}"
+        err_str = str(e)
+        if "403" in err_str or "insufficientPermissions" in err_str:
+            return None, (
+                "Google Drive Permission Error (403): Ang iyong kasalukuyang Refresh Token ay pang-Gmail lamang. "
+                "Pumunta sa '🛠️ App Settings -> 🔑 API & Google Drive / Gmail Credentials' at gamitin ang 'One-Click Google Drive + Gmail Token Generator' upang mabuksan ang Google Drive write access."
+            )
+        return None, f"Google Drive Upload Error: {err_str}"
+
+def find_2027_master_excel_on_drive(service, weekly_folder_url: str, month_name: str, week_name: str) -> tuple[str, str]:
+    if not service:
+        return "", ""
+    target_filename = f"PWR. {month_name} {week_name}.xlsx"
+    try:
+        res = service.files().list(
+            q=f"name = '{target_filename}' and trashed = false",
+            spaces="drive",
+            fields="files(id, name, parents)",
+            pageSize=10
+        ).execute()
+        files = res.get("files", [])
+        if files:
+            p_list = files[0].get("parents", [""])
+            return files[0]["id"], p_list[0] if p_list else ""
+
+        root_id = extract_id_from_url(weekly_folder_url)
+        if not root_id:
+            root_id = find_drive_folder_by_name(service, "CTG Ministry Hub (Weekly Report January-December 2027)")
+
+        month_idx = MONTHS_2027.index(month_name) + 1 if month_name in MONTHS_2027 else 1
+        month_folder_name = f"{month_idx:02d}. {month_name} 2027 PWR"
+        month_folder_id = find_drive_folder_by_name(service, f"{month_name} 2027 PWR", root_id if root_id else None)
+
+        if not month_folder_id and root_id:
+            meta = service.files().get(fileId=root_id, fields="id, name").execute()
+            if month_name.lower() in meta.get("name", "").lower():
+                month_folder_id = root_id
+            else:
+                created_m = service.files().create(
+                    body={"name": month_folder_name, "mimeType": "application/vnd.google-apps.folder", "parents": [root_id]},
+                    fields="id"
+                ).execute()
+                month_folder_id = created_m.get("id", root_id)
+
+        if month_folder_id:
+            res_f = service.files().list(
+                q=f"'{month_folder_id}' in parents and trashed=false",
+                spaces="drive",
+                fields="files(id, name)",
+                pageSize=25
+            ).execute()
+            for f_obj in res_f.get("files", []):
+                if week_name.lower() in f_obj["name"].lower() and f_obj["name"].lower().endswith(".xlsx"):
+                    return f_obj["id"], month_folder_id
+
+        return "", month_folder_id or root_id
+    except Exception:
+        return "", extract_id_from_url(weekly_folder_url)
 
 def sync_excel_bytes_to_drive(excel_bytes: bytes, spreadsheet_url: str, local_cache_path: str = LOCAL_EXCEL_CACHE) -> tuple[bool, str]:
     try:
@@ -770,6 +862,7 @@ def append_new_member_to_excel_and_sync(spreadsheet_url: str, member_data: dict)
 
 ACTIVE_SPREADSHEET_URL = load_saved_cloud_url()
 ACTIVE_WEEKLY_FOLDER_URL = load_saved_weekly_folder_url()
+ACTIVE_PARISH_UPLOAD_URL = load_saved_parish_upload_folder_url()
 master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
 
 def clean_notion_id(raw_id: str) -> str:
@@ -1269,9 +1362,11 @@ if "custom_secrets" not in st.session_state:
         "NOTION_PRAYER_DB_ID": NOTION_PRAYER_DB_ID, "NOTION_QUESTIONS_DB_ID": NOTION_QUESTIONS_DB_ID,
         "NOTION_COUNSELLING_DB_ID": NOTION_COUNSELLING_DB_ID,
         "GMAIL_CLIENT_ID": GMAIL_CLIENT_ID, "GMAIL_CLIENT_SECRET": GMAIL_CLIENT_SECRET,
-        "GMAIL_REFRESH_TOKEN": GMAIL_REFRESH_TOKEN,
+        "GMAIL_REFRESH_TOKEN": load_saved_config().get("GMAIL_REFRESH_TOKEN") or GMAIL_REFRESH_TOKEN,
+        "GOOGLE_SERVICE_ACCOUNT_JSON": GOOGLE_SERVICE_ACCOUNT_JSON,
         "CLOUD_SPREADSHEET_URL": ACTIVE_SPREADSHEET_URL,
         "WEEKLY_REPORT_FOLDER_URL": ACTIVE_WEEKLY_FOLDER_URL,
+        "PARISH_UPLOAD_FOLDER_URL": ACTIVE_PARISH_UPLOAD_URL,
     }
 
 def build_combined_records_df(df_p: pd.DataFrame, df_q: pd.DataFrame, df_co: pd.DataFrame) -> pd.DataFrame:
@@ -1440,14 +1535,34 @@ def load_weekly_monitoring_records() -> dict:
             pass
     return {}
 
-def save_weekly_monitoring_record(parish: str, month: str, week_num: str, report_date: str, extracted_data: dict, drive_link: str = ""):
+def parse_int_from_text(val_str: str) -> int:
+    nums = re.findall(r"\d+", str(val_str or ""))
+    return int(nums[0]) if nums else 0
+
+def calc_pct_str(attendees: int, total_members: int) -> str:
+    if total_members <= 0 or attendees <= 0:
+        return "0%"
+    pct = round((attendees / total_members) * 100)
+    return f"{pct}%"
+
+def save_weekly_monitoring_record(parish: str, month: str, week_num: str, report_date: str, extracted_data: dict, drive_link: str = "") -> tuple[bool, str]:
     db = load_weekly_monitoring_records()
     key = f"{parish.upper()}__{month.upper()}__{week_num}"
+    denoms = get_parish_member_denominators(parish)
+
+    tot_say = int(extracted_data.get("total_members_say", 0)) or denoms["say"]
+    tot_y = int(extracted_data.get("total_members_y", 0)) or denoms["youth"]
+    tot_k = int(extracted_data.get("total_members_k", 0)) or denoms["kids"]
+
     db[key] = {
+        "has_data": True,
         "parish": parish,
         "month": month,
         "week": week_num,
         "report_date": report_date,
+        "total_members_say": tot_say,
+        "total_members_y": tot_y,
+        "total_members_k": tot_k,
         "mass_a": int(extracted_data.get("mass_a", 0)),
         "mass_y": int(extracted_data.get("mass_y", 0)),
         "pampamilya_a": int(extracted_data.get("pampamilya_a", 0)),
@@ -1471,19 +1586,57 @@ def save_weekly_monitoring_record(parish: str, month: str, week_num: str, report
             json.dump(db, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
-    update_master_pwr_excel_file(parish, month, week_num, report_date, db[key])
+    return update_master_pwr_excel_file(parish, month, week_num, report_date, db[key])
 
-def update_master_pwr_excel_file(parish: str, month: str, week_num: str, report_date: str, data_row: dict):
-    if not os.path.exists(LOCAL_PWR_MASTER_FILE):
-        return
+def update_master_pwr_excel_file(parish: str, month: str, week_num: str, report_date: str, data_row: dict) -> tuple[bool, str]:
+    service = get_google_drive_service()
+    folder_url = st.session_state.custom_secrets.get("WEEKLY_REPORT_FOLDER_URL", ACTIVE_WEEKLY_FOLDER_URL)
+    drive_file_id, target_month_folder_id = find_2027_master_excel_on_drive(service, folder_url, month, week_num)
+
+    excel_bytes = None
+    if service and drive_file_id:
+        try:
+            excel_bytes = service.files().get_media(fileId=drive_file_id).execute()
+            with open(LOCAL_PWR_MASTER_FILE, "wb") as f:
+                f.write(excel_bytes)
+        except Exception:
+            pass
+
+    if not excel_bytes and os.path.exists(LOCAL_PWR_MASTER_FILE):
+        try:
+            with open(LOCAL_PWR_MASTER_FILE, "rb") as f:
+                excel_bytes = f.read()
+        except Exception:
+            pass
+
     try:
-        wb = openpyxl.load_workbook(LOCAL_PWR_MASTER_FILE)
+        if excel_bytes:
+            wb = openpyxl.load_workbook(io.BytesIO(excel_bytes))
+        else:
+            wb = openpyxl.Workbook()
+            ws_init = wb.active
+            ws_init.title = "PARISH MONITORING REPORT"
+
+        clean_p = parish.upper().replace("PARISH", "").strip()
+        m_att = int(data_row["mass_a"]) + int(data_row["mass_y"])
+        p_att = int(data_row["pampamilya_a"]) + int(data_row["pampamilya_y"])
+        o_att = int(data_row["online_a"]) + int(data_row["online_y"])
+        y_att = int(data_row["youth_y"])
+        k_att = int(data_row["kids_k"])
+        ad_att = int(data_row["adal_a"]) + int(data_row["adal_y"])
+
+        tot_say = int(data_row.get("total_members_say", 0))
+        tot_y = int(data_row.get("total_members_y", 0))
+        tot_k = int(data_row.get("total_members_k", 0))
+
+        # 1. Update PARISH MONITORING REPORT sheet
         if "PARISH MONITORING REPORT" in wb.sheetnames:
             ws = wb["PARISH MONITORING REPORT"]
-            clean_p = parish.upper().replace("PARISH", "").strip()
-            for r_idx in range(7, ws.max_row + 1):
+            found_p = False
+            for r_idx in range(5, ws.max_row + 1):
                 cell_val = str(ws.cell(row=r_idx, column=1).value or "").upper()
                 if clean_p and clean_p in cell_val:
+                    ws.cell(row=r_idx, column=1).value = f"{clean_p} ({report_date})"
                     ws.cell(row=r_idx, column=2).value = int(re.sub(r"\D", "", str(week_num)) or 1)
                     ws.cell(row=r_idx, column=3).value = f"A-{data_row['mass_a']}\nY-{data_row['mass_y']}"
                     ws.cell(row=r_idx, column=4).value = f"A-{data_row['pampamilya_a']}\nY-{data_row['pampamilya_y']}"
@@ -1491,54 +1644,227 @@ def update_master_pwr_excel_file(parish: str, month: str, week_num: str, report_
                     ws.cell(row=r_idx, column=6).value = f"Y-{data_row['youth_y']}"
                     ws.cell(row=r_idx, column=7).value = f"K-{data_row['kids_k']}"
                     ws.cell(row=r_idx, column=8).value = f"A-{data_row['adal_a']}\nY-{data_row['adal_y']}"
-                    ws.cell(row=r_idx, column=9).value = data_row.get("house_visitation", "")
-                    ws.cell(row=r_idx, column=10).value = data_row.get("missionary_work", "")
-                    ws.cell(row=r_idx, column=11).value = data_row.get("indoctrination", "")
+                    ws.cell(row=r_idx, column=9).value = data_row.get("house_visitation", "0")
+                    ws.cell(row=r_idx, column=10).value = data_row.get("missionary_work", "0")
+                    ws.cell(row=r_idx, column=11).value = data_row.get("indoctrination", "0")
                     ws.cell(row=r_idx, column=12).value = data_row.get("remarks", "")
+                    found_p = True
                     break
-            wb.save(LOCAL_PWR_MASTER_FILE)
+            if not found_p:
+                ws.append([
+                    f"{clean_p} ({report_date})", int(re.sub(r"\D", "", str(week_num)) or 1),
+                    f"A-{data_row['mass_a']}\nY-{data_row['mass_y']}",
+                    f"A-{data_row['pampamilya_a']}\nY-{data_row['pampamilya_y']}",
+                    f"A-{data_row['online_a']}\nY-{data_row['online_y']}",
+                    f"Y-{data_row['youth_y']}", f"K-{data_row['kids_k']}",
+                    f"A-{data_row['adal_a']}\nY-{data_row['adal_y']}",
+                    data_row.get("house_visitation", "0"), data_row.get("missionary_work", "0"),
+                    data_row.get("indoctrination", "0"), data_row.get("remarks", "")
+                ])
 
-        # Auto-sync the updated Master PWR file for the specific Month and Week of 2027 to Google Drive
-        service = get_google_drive_service()
-        folder_url = st.session_state.custom_secrets.get("WEEKLY_REPORT_FOLDER_URL", ACTIVE_WEEKLY_FOLDER_URL)
-        folder_id = extract_id_from_url(folder_url)
-        if service and folder_id:
+        # 2. Update SUMMARY FOR POSTING sheet
+        if "SUMMARY FOR POSTING" in wb.sheetnames:
+            ws_s = wb["SUMMARY FOR POSTING"]
+            for r_idx in range(1, ws_s.max_row + 1):
+                c1_val = str(ws_s.cell(row=r_idx, column=1).value or "").upper().strip()
+                if clean_p and (clean_p == c1_val or clean_p in c1_val or ("HONG" in clean_p and "HONG" in c1_val)):
+                    for sub_r in range(r_idx + 1, min(r_idx + 6, ws_s.max_row + 1)):
+                        lbl = str(ws_s.cell(row=sub_r, column=1).value or "").upper().strip()
+                        if "TOTAL MEMBERS" in lbl:
+                            ws_s.cell(row=sub_r, column=2).value = tot_say
+                            if "HONG" not in clean_p:
+                                ws_s.cell(row=sub_r, column=3).value = tot_say
+                                ws_s.cell(row=sub_r, column=4).value = tot_say
+                                ws_s.cell(row=sub_r, column=5).value = tot_y
+                                ws_s.cell(row=sub_r, column=6).value = tot_k
+                                ws_s.cell(row=sub_r, column=7).value = tot_say
+                            else:
+                                ws_s.cell(row=sub_r, column=3).value = tot_say
+                        elif "TOTAL OF ATTENDEES" in lbl:
+                            ws_s.cell(row=sub_r, column=2).value = m_att
+                            if "HONG" not in clean_p:
+                                ws_s.cell(row=sub_r, column=3).value = p_att
+                                ws_s.cell(row=sub_r, column=4).value = o_att
+                                ws_s.cell(row=sub_r, column=5).value = y_att
+                                ws_s.cell(row=sub_r, column=6).value = k_att
+                                ws_s.cell(row=sub_r, column=7).value = ad_att
+                                ws_s.cell(row=sub_r, column=8).value = parse_int_from_text(data_row.get("house_visitation", "0"))
+                                ws_s.cell(row=sub_r, column=9).value = parse_int_from_text(data_row.get("missionary_work", "0")) + parse_int_from_text(data_row.get("indoctrination", "0"))
+                            else:
+                                ws_s.cell(row=sub_r, column=3).value = o_att
+                    break
+
+        out_buf = io.BytesIO()
+        wb.save(out_buf)
+        updated_bytes = out_buf.getvalue()
+        with open(LOCAL_PWR_MASTER_FILE, "wb") as f:
+            f.write(updated_bytes)
+
+        if service:
             target_master_name = f"PWR. {month} {week_num}.xlsx"
-            with open(LOCAL_PWR_MASTER_FILE, "rb") as f:
-                master_bytes = f.read()
             media = MediaIoBaseUpload(
-                io.BytesIO(master_bytes),
+                io.BytesIO(updated_bytes),
                 mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 resumable=True
             )
-            res = service.files().list(
-                q=f"name='{target_master_name}' and trashed=false",
-                spaces="drive",
-                fields="files(id)",
-                pageSize=5
-            ).execute()
-            files = res.get("files", [])
-            if files:
-                service.files().update(fileId=files[0]["id"], media_body=media).execute()
-            else:
+            if drive_file_id:
+                service.files().update(fileId=drive_file_id, media_body=media).execute()
+                return True, f"Matagumpay na na-update ang '{target_master_name}' sa Google Drive!"
+            elif target_month_folder_id:
                 service.files().create(
-                    body={"name": target_master_name, "parents": [folder_id]},
+                    body={"name": target_master_name, "parents": [target_month_folder_id]},
                     media_body=media
                 ).execute()
+                return True, f"Nalikha at na-update ang '{target_master_name}' sa Google Drive!"
+        return True, "Na-save sa lokal na Master Excel!"
+    except Exception as e:
+        return False, f"Master Excel Sync Warning: {str(e)}"
+
+def parse_master_pwr_excel_into_db(excel_bytes: bytes, target_month: str, target_week: str) -> int:
+    db = load_weekly_monitoring_records()
+    updated_parishes = 0
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(excel_bytes), data_only=True)
+
+        if "SUMMARY FOR POSTING" in wb.sheetnames:
+            ws_s = wb["SUMMARY FOR POSTING"]
+            for r_idx in range(1, ws_s.max_row + 1):
+                c1_val = str(ws_s.cell(row=r_idx, column=1).value or "").upper().strip()
+                matched_p = None
+                for p in PARISH_ORDER:
+                    clean_p = p.replace("PARISH", "").strip()
+                    if clean_p == c1_val or (clean_p in c1_val and len(c1_val) < 25) or ("HONG" in clean_p and "HONG KONG" in c1_val):
+                        matched_p = p
+                        break
+                if matched_p:
+                    tot_say, tot_y, tot_k = 0, 0, 0
+                    m_att, p_att, o_att, y_att, k_att, ad_att, hv_val, mw_val = 0, 0, 0, 0, 0, 0, 0, 0
+                    for sub_r in range(r_idx + 1, min(r_idx + 5, ws_s.max_row + 1)):
+                        lbl = str(ws_s.cell(row=sub_r, column=1).value or "").upper().strip()
+                        if "TOTAL MEMBERS" in lbl:
+                            tot_say = parse_int_from_text(ws_s.cell(row=sub_r, column=2).value)
+                            if "HONGKONG" not in matched_p:
+                                tot_y = parse_int_from_text(ws_s.cell(row=sub_r, column=5).value)
+                                tot_k = parse_int_from_text(ws_s.cell(row=sub_r, column=6).value)
+                        elif "TOTAL OF ATTENDEES" in lbl:
+                            m_att = parse_int_from_text(ws_s.cell(row=sub_r, column=2).value)
+                            if "HONGKONG" not in matched_p:
+                                p_att = parse_int_from_text(ws_s.cell(row=sub_r, column=3).value)
+                                o_att = parse_int_from_text(ws_s.cell(row=sub_r, column=4).value)
+                                y_att = parse_int_from_text(ws_s.cell(row=sub_r, column=5).value)
+                                k_att = parse_int_from_text(ws_s.cell(row=sub_r, column=6).value)
+                                ad_att = parse_int_from_text(ws_s.cell(row=sub_r, column=7).value)
+                                hv_val = parse_int_from_text(ws_s.cell(row=sub_r, column=8).value)
+                                mw_val = parse_int_from_text(ws_s.cell(row=sub_r, column=9).value)
+                            else:
+                                o_att = parse_int_from_text(ws_s.cell(row=sub_r, column=3).value)
+
+                    key = f"{matched_p.upper()}__{target_month.upper()}__{target_week}"
+                    existing = db.get(key, {})
+                    if (m_att + p_att + o_att + y_att + k_att + ad_att + hv_val + mw_val) > 0 or existing.get("has_data"):
+                        denoms = get_parish_member_denominators(matched_p)
+                        db[key] = {
+                            "has_data": True,
+                            "parish": matched_p,
+                            "month": target_month,
+                            "week": target_week,
+                            "report_date": existing.get("report_date", "01/02/27"),
+                            "total_members_say": tot_say or denoms["say"],
+                            "total_members_y": tot_y or denoms["youth"],
+                            "total_members_k": tot_k or denoms["kids"],
+                            "mass_a": existing.get("mass_a", m_att),
+                            "mass_y": existing.get("mass_y", 0),
+                            "pampamilya_a": existing.get("pampamilya_a", p_att),
+                            "pampamilya_y": existing.get("pampamilya_y", 0),
+                            "online_a": existing.get("online_a", o_att),
+                            "online_y": existing.get("online_y", 0),
+                            "youth_y": existing.get("youth_y", y_att),
+                            "kids_k": existing.get("kids_k", k_att),
+                            "adal_a": existing.get("adal_a", ad_att),
+                            "adal_y": existing.get("adal_y", 0),
+                            "house_visitation": str(existing.get("house_visitation") or hv_val),
+                            "missionary_work": str(existing.get("missionary_work") or mw_val),
+                            "indoctrination": str(existing.get("indoctrination", "0")),
+                            "remarks": str(existing.get("remarks", "")),
+                            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        }
+                        updated_parishes += 1
+
+        if "PARISH MONITORING REPORT" in wb.sheetnames:
+            ws_m = wb["PARISH MONITORING REPORT"]
+            for r_idx in range(5, ws_m.max_row + 1):
+                c1_val = str(ws_m.cell(row=r_idx, column=1).value or "").upper().strip()
+                matched_p = None
+                for p in PARISH_ORDER:
+                    clean_p = p.replace("PARISH", "").strip()
+                    if clean_p in c1_val:
+                        matched_p = p
+                        break
+                if matched_p:
+                    def parse_ay(cell_v):
+                        s = str(cell_v or "")
+                        ma = re.search(r"A-(\d+)", s, re.I)
+                        my = re.search(r"Y-(\d+)", s, re.I)
+                        mk = re.search(r"K-(\d+)", s, re.I)
+                        return (int(ma.group(1)) if ma else 0), (int(my.group(1)) if my else (int(mk.group(1)) if mk else 0))
+
+                    m_a, m_y = parse_ay(ws_m.cell(row=r_idx, column=3).value)
+                    p_a, p_y = parse_ay(ws_m.cell(row=r_idx, column=4).value)
+                    o_a, o_y = parse_ay(ws_m.cell(row=r_idx, column=5).value)
+                    _, y_y = parse_ay(ws_m.cell(row=r_idx, column=6).value)
+                    _, k_k = parse_ay(ws_m.cell(row=r_idx, column=7).value)
+                    ad_a, ad_y = parse_ay(ws_m.cell(row=r_idx, column=8).value)
+                    hv_s = str(ws_m.cell(row=r_idx, column=9).value or "0").strip()
+                    mw_s = str(ws_m.cell(row=r_idx, column=10).value or "0").strip()
+                    ind_s = str(ws_m.cell(row=r_idx, column=11).value or "0").strip()
+                    rem_s = str(ws_m.cell(row=r_idx, column=12).value or "").strip()
+
+                    total_activity = m_a + m_y + p_a + p_y + o_a + o_y + y_y + k_k + ad_a + ad_y + parse_int_from_text(hv_s) + parse_int_from_text(mw_s) + parse_int_from_text(ind_s)
+                    if total_activity > 0 or rem_s:
+                        key = f"{matched_p.upper()}__{target_month.upper()}__{target_week}"
+                        denoms = get_parish_member_denominators(matched_p)
+                        existing = db.get(key, {})
+                        db[key] = {
+                            "has_data": True,
+                            "parish": matched_p,
+                            "month": target_month,
+                            "week": target_week,
+                            "report_date": existing.get("report_date", "01/02/27"),
+                            "total_members_say": existing.get("total_members_say") or denoms["say"],
+                            "total_members_y": existing.get("total_members_y") or denoms["youth"],
+                            "total_members_k": existing.get("total_members_k") or denoms["kids"],
+                            "mass_a": m_a, "mass_y": m_y,
+                            "pampamilya_a": p_a, "pampamilya_y": p_y,
+                            "online_a": o_a, "online_y": o_y,
+                            "youth_y": y_y, "kids_k": k_k,
+                            "adal_a": ad_a, "adal_y": ad_y,
+                            "house_visitation": hv_s if hv_s != "None" else "0",
+                            "missionary_work": mw_s if mw_s != "None" else "0",
+                            "indoctrination": ind_s if ind_s != "None" else "0",
+                            "remarks": rem_s if rem_s != "None" else "",
+                            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        }
+                        updated_parishes += 1
+
+        with open(LOCAL_WEEKLY_REPORTS_DB, "w", encoding="utf-8") as f:
+            json.dump(db, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
+    return updated_parishes
 
 def extract_weekly_report_from_excel_bytes(file_bytes: bytes) -> dict:
     result = {
         "mass_a": 0, "mass_y": 0, "pampamilya_a": 0, "pampamilya_y": 0,
         "online_a": 0, "online_y": 0, "youth_y": 0, "kids_k": 0,
-        "adal_a": 0, "adal_y": 0, "house_visitation": "0", "missionary_work": "0",
+        "adal_a": 0, "adal_y": 0, "total_members_say": 0, "total_members_y": 0, "total_members_k": 0,
+        "house_visitation": "0", "missionary_work": "0",
         "indoctrination": "0", "priest": "", "report_date": "01/02/27", "remarks": ""
     }
     try:
         wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
         ws = wb["PARISH WEEKLY REPORT"] if "PARISH WEEKLY REPORT" in wb.sheetnames else wb.active
         section = None
+        adults_cnt, youths_cnt, kids_cnt = 0, 0, 0
         for r_idx in range(1, ws.max_row + 1):
             col_a = str(ws.cell(row=r_idx, column=1).value or "").strip()
             col_b = str(ws.cell(row=r_idx, column=2).value or "").strip()
@@ -1580,18 +1906,26 @@ def extract_weekly_report_from_excel_bytes(file_bytes: bytes) -> dict:
                 a_v = is_present(9)
 
                 if section == "ADULTS":
+                    adults_cnt += 1
                     result["mass_a"] += m_v
                     result["pampamilya_a"] += p_v
                     result["online_a"] += o_v
                     result["adal_a"] += a_v
                 elif section == "YOUTHS":
+                    youths_cnt += 1
                     result["mass_y"] += m_v
                     result["pampamilya_y"] += p_v
                     result["online_y"] += o_v
                     result["youth_y"] += y_v
                     result["adal_y"] += a_v
                 elif section == "KIDS":
+                    kids_cnt += 1
                     result["kids_k"] += k_v
+
+        if (adults_cnt + youths_cnt) > 0:
+            result["total_members_say"] = adults_cnt + youths_cnt
+            result["total_members_y"] = youths_cnt
+            result["total_members_k"] = kids_cnt
     except Exception:
         pass
     return result
@@ -1600,65 +1934,74 @@ def sync_weekly_reports_from_google_drive_folder(folder_url: str, target_month: 
     service = get_google_drive_service()
     if service is None:
         return 0, "Walang Google Drive API connection."
-    folder_id = extract_id_from_url(folder_url)
-    if not folder_id:
-        return 0, "Walang nakitang Folder Link sa Settings."
 
     synced_count = 0
     try:
-        res = service.files().list(
-            q=f"'{folder_id}' in parents and trashed=false",
-            spaces="drive",
-            fields="files(id, name, mimeType)",
-            pageSize=50
-        ).execute()
-        items = res.get("files", [])
+        # 1. Read Master PWR Excel file for target_month and target_week on Google Drive
+        master_file_id, _ = find_2027_master_excel_on_drive(service, folder_url, target_month, target_week)
+        if master_file_id:
+            m_bytes = service.files().get_media(fileId=master_file_id).execute()
+            with open(LOCAL_PWR_MASTER_FILE, "wb") as f:
+                f.write(m_bytes)
+            synced_count += parse_master_pwr_excel_into_db(m_bytes, target_month, target_week)
 
-        for item in items:
-            i_name = item.get("name", "")
-            i_id = item.get("id", "")
-            i_mime = item.get("mimeType", "")
+        # 2. Check Parish Upload Folder ("Upload the Image/Excel File here!") for uploaded Excel reports
+        up_url = st.session_state.custom_secrets.get("PARISH_UPLOAD_FOLDER_URL", ACTIVE_PARISH_UPLOAD_URL) or folder_url
+        folder_id = extract_id_from_url(up_url) or find_drive_folder_by_name(service, "Upload the Image/Excel File here")
+        if folder_id:
+            res = service.files().list(
+                q=f"'{folder_id}' in parents and trashed=false",
+                spaces="drive",
+                fields="files(id, name, mimeType)",
+                pageSize=50
+            ).execute()
+            items = res.get("files", [])
 
-            if i_mime == "application/vnd.google-apps.folder":
-                matched_p = None
-                for p in PARISH_ORDER:
-                    clean_p = p.replace("PARISH", "").strip()
-                    if clean_p.lower() in i_name.lower():
-                        matched_p = p
-                        break
-                if matched_p:
-                    sub_res = service.files().list(
-                        q=f"'{i_id}' in parents and trashed=false",
-                        spaces="drive",
-                        fields="files(id, name, mimeType, webViewLink)",
-                        pageSize=30
-                    ).execute()
-                    for sub_f in sub_res.get("files", []):
-                        sf_name = sub_f.get("name", "")
-                        if sf_name.lower().endswith(".xlsx"):
-                            content = service.files().get_media(fileId=sub_f["id"]).execute()
+            for item in items:
+                i_name = item.get("name", "")
+                i_id = item.get("id", "")
+                i_mime = item.get("mimeType", "")
+
+                if i_mime == "application/vnd.google-apps.folder":
+                    matched_p = None
+                    for p in PARISH_ORDER:
+                        clean_p = p.replace("PARISH", "").replace("NORTE", "").strip()
+                        if p.replace("PARISH", "").strip().lower() in i_name.lower() or clean_p.lower() in i_name.lower():
+                            matched_p = p
+                            break
+                    if matched_p:
+                        sub_res = service.files().list(
+                            q=f"'{i_id}' in parents and trashed=false",
+                            spaces="drive",
+                            fields="files(id, name, mimeType, webViewLink)",
+                            pageSize=30
+                        ).execute()
+                        for sub_f in sub_res.get("files", []):
+                            sf_name = sub_f.get("name", "")
+                            if sf_name.lower().endswith(".xlsx"):
+                                content = service.files().get_media(fileId=sub_f["id"]).execute()
+                                ext_data = extract_weekly_report_from_excel_bytes(content)
+                                save_weekly_monitoring_record(
+                                    matched_p, target_month, target_week,
+                                    ext_data.get("report_date", "01/02/27"),
+                                    ext_data,
+                                    drive_link=sub_f.get("webViewLink", "")
+                                )
+                                synced_count += 1
+                elif i_name.lower().endswith(".xlsx"):
+                    for p in PARISH_ORDER:
+                        clean_p = p.replace("PARISH", "").strip()
+                        if clean_p.lower() in i_name.lower():
+                            content = service.files().get_media(fileId=i_id).execute()
                             ext_data = extract_weekly_report_from_excel_bytes(content)
                             save_weekly_monitoring_record(
-                                matched_p, target_month, target_week,
+                                p, target_month, target_week,
                                 ext_data.get("report_date", "01/02/27"),
-                                ext_data,
-                                drive_link=sub_f.get("webViewLink", "")
+                                ext_data
                             )
                             synced_count += 1
-            elif i_name.lower().endswith(".xlsx"):
-                for p in PARISH_ORDER:
-                    clean_p = p.replace("PARISH", "").strip()
-                    if clean_p.lower() in i_name.lower():
-                        content = service.files().get_media(fileId=i_id).execute()
-                        ext_data = extract_weekly_report_from_excel_bytes(content)
-                        save_weekly_monitoring_record(
-                            p, target_month, target_week,
-                            ext_data.get("report_date", "01/02/27"),
-                            ext_data
-                        )
-                        synced_count += 1
-                        break
-        return synced_count, f"Matagumpay na na-sync ang {synced_count} parish files mula sa Google Drive para sa {target_month} 2027 ({target_week})!"
+                            break
+        return synced_count, f"Matagumpay na na-sync ang Google Drive Excel data para sa {target_month} 2027 ({target_week})!"
     except Exception as e:
         return synced_count, f"Drive Folder Sync Notice: {str(e)}"
 
@@ -1667,20 +2010,22 @@ def extract_weekly_report_via_ai_vision(file_bytes: bytes, mime_type: str, model
     default_res = {
         "mass_a": 0, "mass_y": 0, "pampamilya_a": 0, "pampamilya_y": 0,
         "online_a": 0, "online_y": 0, "youth_y": 0, "kids_k": 0,
-        "adal_a": 0, "adal_y": 0, "house_visitation": "0", "missionary_work": "0",
+        "adal_a": 0, "adal_y": 0, "total_members_say": 0, "total_members_y": 0, "total_members_k": 0,
+        "house_visitation": "0", "missionary_work": "0",
         "indoctrination": "0", "priest": "", "report_date": "01/02/27", "remarks": ""
     }
     if not valid_keys:
         return default_res
     prompt = (
         "Suriin ang larawang ito ng Church of the Temple of God (CTG) Parish Weekly Report. "
-        "Bilangin nang eksakto kung ilang ADULTS (A) at ilang YOUTHS (Y) ang may marka o bilang na '1' sa bawat column: "
+        "1. Bilangin kung ilang pangalan lahat ang nakalista sa ADULTS, ilang pangalan sa YOUTHS, at ilang pangalan sa KIDS. "
+        "2. Bilangin nang eksakto kung ilang ADULTS (A) at ilang YOUTHS (Y) ang may marka o bilang na '1' sa bawat column: "
         "Mass, Pampamilya, Online Ministry, Youth Fellowship (Y lang), Kids Fellowship (K lang sa KIDS section), at Adal ti Evangelio. "
         "Ibalik LAMANG ang valid JSON object na may keys: "
         "{\"mass_a\": int, \"mass_y\": int, \"pampamilya_a\": int, \"pampamilya_y\": int, "
         "\"online_a\": int, \"online_y\": int, \"youth_y\": int, \"kids_k\": int, "
-        "\"adal_a\": int, \"adal_y\": int, \"house_visitation\": str, \"missionary_work\": str, "
-        "\"indoctrination\": str, \"priest\": str, \"report_date\": str, \"remarks\": str}"
+        "\"adal_a\": int, \"adal_y\": int, \"total_members_say\": int, \"total_members_y\": int, \"total_members_k\": int, "
+        "\"house_visitation\": str, \"missionary_work\": str, \"indoctrination\": str, \"priest\": str, \"report_date\": str, \"remarks\": str}"
     )
     for api_key in valid_keys:
         try:
@@ -1701,17 +2046,7 @@ def extract_weekly_report_via_ai_vision(file_bytes: bytes, mime_type: str, model
             continue
     return default_res
 
-def parse_int_from_text(val_str: str) -> int:
-    nums = re.findall(r"\d+", str(val_str or ""))
-    return int(nums[0]) if nums else 0
-
-def calc_pct_str(attendees: int, total_members: int) -> str:
-    if total_members <= 0:
-        return "0%"
-    pct = round((attendees / total_members) * 100)
-    return f"{pct}%"
-
-# 1️⃣ TABLE 1: PARISH MONITORING REPORT (ATTENDANCE ONLY + TOTAL PERCENTAGE ROWS)
+# 1️⃣ TABLE 1: PARISH MONITORING REPORT (DEFAULT 0 HANGGA'T WALANG DATA MULA SA GOOGLE DRIVE EXCEL)
 def build_parish_monitoring_attendance_df(selected_month: str, selected_week: str, filter_parish: str = "Lahat ng Parokya") -> pd.DataFrame:
     db = load_weekly_monitoring_records()
     rows = []
@@ -1726,18 +2061,23 @@ def build_parish_monitoring_attendance_df(selected_month: str, selected_week: st
             continue
         key = f"{p_name.upper()}__{selected_month.upper()}__{selected_week}"
         rec = db.get(key, {})
-        r_date = rec.get("report_date", "01/02/27")
-        m_a, m_y = int(rec.get("mass_a", 0)), int(rec.get("mass_y", 0))
-        p_a, p_y = int(rec.get("pampamilya_a", 0)), int(rec.get("pampamilya_y", 0))
-        o_a, o_y = int(rec.get("online_a", 0)), int(rec.get("online_y", 0))
-        y_y = int(rec.get("youth_y", 0))
-        k_k = int(rec.get("kids_k", 0))
-        ad_a, ad_y = int(rec.get("adal_a", 0)), int(rec.get("adal_y", 0))
+        has_data = bool(rec.get("has_data", False))
 
-        denoms = get_parish_member_denominators(p_name)
-        tot_say = denoms["say"]
-        tot_y = denoms["youth"]
-        tot_k = denoms["kids"]
+        r_date = rec.get("report_date", "01/02/27") if has_data else "01/02/27"
+        m_a = int(rec.get("mass_a", 0)) if has_data else 0
+        m_y = int(rec.get("mass_y", 0)) if has_data else 0
+        p_a = int(rec.get("pampamilya_a", 0)) if has_data else 0
+        p_y = int(rec.get("pampamilya_y", 0)) if has_data else 0
+        o_a = int(rec.get("online_a", 0)) if has_data else 0
+        o_y = int(rec.get("online_y", 0)) if has_data else 0
+        y_y = int(rec.get("youth_y", 0)) if has_data else 0
+        k_k = int(rec.get("kids_k", 0)) if has_data else 0
+        ad_a = int(rec.get("adal_a", 0)) if has_data else 0
+        ad_y = int(rec.get("adal_y", 0)) if has_data else 0
+
+        tot_say = int(rec.get("total_members_say", 0)) if has_data else 0
+        tot_y = int(rec.get("total_members_y", 0)) if has_data else 0
+        tot_k = int(rec.get("total_members_k", 0)) if has_data else 0
 
         sum_m_att += (m_a + m_y)
         sum_p_att += (p_a + p_y)
@@ -1789,23 +2129,23 @@ def build_parish_monitoring_attendance_df(selected_month: str, selected_week: st
 
     return pd.DataFrame(rows)
 
-# 2️⃣ TABLE 2: SUMMARY FOR POSTING (TOTAL MEMBERS / TOTAL OF ATTENDEES / TOTAL AVERAGE % PER PARISH - WALANG HOUSE VISIT & INDOCTRINATION)
+# 2️⃣ TABLE 2: SUMMARY FOR POSTING PER PARISH (DEFAULT 0 HANGGA'T WALANG DATA MULA SA GOOGLE DRIVE EXCEL)
 def build_summary_for_posting_per_parish_df(parish_name: str, selected_month: str, selected_week: str) -> pd.DataFrame:
     db = load_weekly_monitoring_records()
     key = f"{parish_name.upper()}__{selected_month.upper()}__{selected_week}"
     rec = db.get(key, {})
+    has_data = bool(rec.get("has_data", False))
 
-    denoms = get_parish_member_denominators(parish_name)
-    tot_say = denoms["say"]
-    tot_y = denoms["youth"]
-    tot_k = denoms["kids"]
+    tot_say = int(rec.get("total_members_say", 0)) if has_data else 0
+    tot_y = int(rec.get("total_members_y", 0)) if has_data else 0
+    tot_k = int(rec.get("total_members_k", 0)) if has_data else 0
 
-    m_att = int(rec.get("mass_a", 0)) + int(rec.get("mass_y", 0))
-    p_att = int(rec.get("pampamilya_a", 0)) + int(rec.get("pampamilya_y", 0))
-    o_att = int(rec.get("online_a", 0)) + int(rec.get("online_y", 0))
-    y_att = int(rec.get("youth_y", 0))
-    k_att = int(rec.get("kids_k", 0))
-    ad_att = int(rec.get("adal_a", 0)) + int(rec.get("adal_y", 0))
+    m_att = (int(rec.get("mass_a", 0)) + int(rec.get("mass_y", 0))) if has_data else 0
+    p_att = (int(rec.get("pampamilya_a", 0)) + int(rec.get("pampamilya_y", 0))) if has_data else 0
+    o_att = (int(rec.get("online_a", 0)) + int(rec.get("online_y", 0))) if has_data else 0
+    y_att = int(rec.get("youth_y", 0)) if has_data else 0
+    k_att = int(rec.get("kids_k", 0)) if has_data else 0
+    ad_att = (int(rec.get("adal_a", 0)) + int(rec.get("adal_y", 0))) if has_data else 0
 
     short_p = parish_name.replace("PARISH", "").strip()
     if "HONGKONG" in short_p:
@@ -1842,7 +2182,7 @@ def build_summary_for_posting_per_parish_df(parish_name: str, selected_month: st
     ]
     return pd.DataFrame(rows)
 
-# 3️⃣ TABLE 3: SEPARATE TABLE SA BABA PARA SA HOUSE VISITATION, MISSIONARY WORK, INDOCTRINATION & REMARKS (MAY TOTAL DIN SA BABA)
+# 3️⃣ TABLE 3: SEPARATE TABLE SA BABA PARA SA HOUSE VISITATION, MISSIONARY WORK, INDOCTRINATION & REMARKS (DEFAULT 0)
 def build_visitation_missionary_indoctrination_df(selected_month: str, selected_week: str, filter_parish: str = "Lahat ng Parokya") -> pd.DataFrame:
     db = load_weekly_monitoring_records()
     rows = []
@@ -1851,20 +2191,22 @@ def build_visitation_missionary_indoctrination_df(selected_month: str, selected_
     total_hv = 0
     total_mw = 0
     total_ind = 0
-    parish_count = 0
+    active_parish_count = 0
 
     for p_name in PARISH_ORDER:
         if filter_parish != "Lahat ng Parokya" and not normalize_parish_match(p_name, filter_parish):
             continue
-        parish_count += 1
         key = f"{p_name.upper()}__{selected_month.upper()}__{selected_week}"
         rec = db.get(key, {})
-        r_date = rec.get("report_date", "01/02/27")
+        has_data = bool(rec.get("has_data", False))
+        if has_data:
+            active_parish_count += 1
 
-        hv_raw = str(rec.get("house_visitation", "0")).strip() or "0"
-        mw_raw = str(rec.get("missionary_work", "0")).strip() or "0"
-        ind_raw = str(rec.get("indoctrination", "0")).strip() or "0"
-        rem_raw = str(rec.get("remarks", "")).strip()
+        r_date = rec.get("report_date", "01/02/27") if has_data else "01/02/27"
+        hv_raw = str(rec.get("house_visitation", "0")).strip() if has_data else "0"
+        mw_raw = str(rec.get("missionary_work", "0")).strip() if has_data else "0"
+        ind_raw = str(rec.get("indoctrination", "0")).strip() if has_data else "0"
+        rem_raw = str(rec.get("remarks", "")).strip() if has_data else ""
 
         hv_num = parse_int_from_text(hv_raw)
         mw_num = parse_int_from_text(mw_raw)
@@ -1878,7 +2220,7 @@ def build_visitation_missionary_indoctrination_df(selected_month: str, selected_
         if "HONGKONG" in short_parish:
             short_parish = "HONGKONG CHAPTER"
 
-        hv_pct = calc_pct_str(hv_num, 10)
+        hv_pct = calc_pct_str(hv_num, 10) if has_data and hv_num > 0 else "0%"
         rows.append({
             "Parish & Date": f"{short_parish} ({r_date})",
             "Week": week_num_only,
@@ -1888,7 +2230,7 @@ def build_visitation_missionary_indoctrination_df(selected_month: str, selected_
             "Remarks": rem_raw
         })
 
-    req_hv_total = max(parish_count * 10, 10)
+    req_hv_total = active_parish_count * 10 if active_parish_count > 0 else 0
     rows.append({
         "Parish & Date": "TOTAL & PERCENTAGE:",
         "Week": "",
@@ -1907,7 +2249,7 @@ def render_weekly_report_page():
     st.markdown("<div class='pmr-subbanner'>Parish Monitoring Report — Full Year 2027 (January–December, Weeks 1–5) & Google Drive Auto-Sync</div>", unsafe_allow_html=True)
 
     # TOP FILTER & GOOGLE DRIVE AUTO-SYNC BAR
-    top_f1, top_f2, top_f3, top_f4 = st.columns([1.1, 1.1, 1.4, 1.3])
+    top_f1, top_f2, top_f3, top_f4, top_f5 = st.columns([1.05, 1.05, 1.35, 1.25, 0.9])
     with top_f1:
         view_month = st.selectbox(
             "📅 Buwan (2027):",
@@ -1941,6 +2283,18 @@ def render_weekly_report_page():
                 st.success(msg)
                 time.sleep(0.6)
                 st.rerun()
+    with top_f5:
+        st.write("")
+        if st.button("🧹 I-reset sa 0", use_container_width=True):
+            db = load_weekly_monitoring_records()
+            keys_to_del = [k for k in db.keys() if f"__{view_month.upper()}__{view_week}" in k]
+            for k in keys_to_del:
+                db.pop(k, None)
+            with open(LOCAL_WEEKLY_REPORTS_DB, "w", encoding="utf-8") as f:
+                json.dump(db, f, ensure_ascii=False, indent=2)
+            st.success(f"Na-reset sa 0 ang {view_month} ({view_week})!")
+            time.sleep(0.4)
+            st.rerun()
 
     st.divider()
 
@@ -1948,7 +2302,7 @@ def render_weekly_report_page():
 
     with col_up_left:
         st.markdown("### 📤 1. Upload the Image / Excel File Here!")
-        st.caption("I-upload ang larawan (screenshot/picture) o Excel file ng inyong Weekly Report. Awtomatikong babasahin ito ng AI, ilalagay sa Google Drive folder ng Parokya, at ia-update ang mga tables sa ibaba.")
+        st.caption("I-upload ang larawan (screenshot/picture) o Excel file ng inyong Weekly Report. Awtomatikong babasahin ito ng AI, ilalagay sa Google Drive folder ng Parokya, at ia-update ang Master Excel at mga tables sa ibaba.")
 
         with st.form("weekly_report_upload_form"):
             c_m, c_w = st.columns(2)
@@ -1996,12 +2350,12 @@ def render_weekly_report_page():
                     drive_filename = f"{clean_p_name} (PWR. {rep_date_input.replace('/', '-')} {sel_month} {sel_week}).{f_ext}"
 
                     with st.spinner(f"Ina-upload sa Google Drive folder ng {target_parish} ({sel_month} 2027 - {sel_week}) at binabasa ng AI ang Attendance..."):
-                        folder_url = st.session_state.custom_secrets.get("WEEKLY_REPORT_FOLDER_URL", ACTIVE_WEEKLY_FOLDER_URL)
+                        up_folder_url = st.session_state.custom_secrets.get("PARISH_UPLOAD_FOLDER_URL", ACTIVE_PARISH_UPLOAD_URL) or st.session_state.custom_secrets.get("WEEKLY_REPORT_FOLDER_URL", ACTIVE_WEEKLY_FOLDER_URL)
                         drive_link, drive_msg = upload_file_to_google_drive(
                             file_bytes,
                             drive_filename,
                             mime_type=uploaded_rep.type,
-                            parent_folder_url=folder_url,
+                            parent_folder_url=up_folder_url,
                             parish_name=target_parish,
                             month_name=sel_month
                         )
@@ -2010,6 +2364,12 @@ def render_weekly_report_page():
                             extracted = extract_weekly_report_from_excel_bytes(file_bytes)
                         else:
                             extracted = extract_weekly_report_via_ai_vision(file_bytes, uploaded_rep.type, selected_model)
+
+                        denoms = get_parish_member_denominators(target_parish)
+                        if int(extracted.get("total_members_say", 0)) <= 0:
+                            extracted["total_members_say"] = denoms["say"]
+                            extracted["total_members_y"] = denoms["youth"]
+                            extracted["total_members_k"] = denoms["kids"]
 
                         if rep_date_input.strip():
                             extracted["report_date"] = rep_date_input.strip()
@@ -2022,7 +2382,7 @@ def render_weekly_report_page():
                         if extra_remarks:
                             extracted["remarks"] = extra_remarks
 
-                        save_weekly_monitoring_record(
+                        ok_m, m_sync_msg = save_weekly_monitoring_record(
                             target_parish, sel_month, sel_week,
                             extracted.get("report_date", rep_date_input),
                             extracted,
@@ -2038,21 +2398,21 @@ def render_weekly_report_page():
                             "drive_link": drive_link,
                             "drive_msg": drive_msg
                         }
-                        st.success(f"✅ Matagumpay na na-proseso ang Weekly Report ng **{target_parish}** para sa **{sel_month} 2027 ({sel_week})**!")
+                        st.success(f"✅ Matagumpay na na-proseso ang Weekly Report ng **{target_parish}** para sa **{sel_month} 2027 ({sel_week})**! ({m_sync_msg})")
                         if drive_link:
                             st.info(f"📂 Na-save sa Google Drive Folder ng {target_parish}: [Buksan ang File sa Google Drive]({drive_link})")
                         else:
-                            st.caption(f"ℹ️ Local Database Sync: {drive_msg}")
+                            st.warning(f"⚠️ {drive_msg}")
 
     with col_up_right:
         st.markdown("### ✏️ 2. AI Extracted Data & Manual Verification Editor")
-        st.caption("I-verify o i-edit ang Attendance, House Visitation, Missionary Work, Indoctrination, at Remarks para sa napiling Parokya.")
+        st.caption("I-verify o i-edit ang Total Members, Attendance, House Visitation, Missionary Work, Indoctrination, at Remarks para sa napiling Parokya. Nagsisimula sa 0 kapag wala pang ulat.")
 
         last_info = st.session_state.get("last_extracted_pwr", {})
         def_p = last_info.get("parish", my_parish if not is_master else PARISH_ORDER[0])
 
         db_all = load_weekly_monitoring_records()
-        cur_rec = db_all.get(f"{def_p.upper()}__{view_month.upper()}__{view_week}", last_info.get("data", {}))
+        cur_rec = db_all.get(f"{def_p.upper()}__{view_month.upper()}__{view_week}", {})
 
         with st.form("verify_weekly_counts_form"):
             v_c1, v_c2, v_c3 = st.columns(3)
@@ -2062,6 +2422,14 @@ def render_weekly_report_page():
                 v_month = st.selectbox("Buwan (2027):", MONTHS_2027, index=MONTHS_2027.index(view_month))
             with v_c3:
                 v_week = st.selectbox("Linggo:", WEEKS_2027, index=WEEKS_2027.index(view_week))
+
+            tm1, tm2, tm3 = st.columns(3)
+            with tm1:
+                v_tot_say = st.number_input("Total Members (Mass/Pampamilya/Online/Adal):", min_value=0, value=int(cur_rec.get("total_members_say", 0)))
+            with tm2:
+                v_tot_y = st.number_input("Total Youth Members:", min_value=0, value=int(cur_rec.get("total_members_y", 0)))
+            with tm3:
+                v_tot_k = st.number_input("Total Kids Members:", min_value=0, value=int(cur_rec.get("total_members_k", 0)))
 
             a1, a2, a3, a4, a5 = st.columns(5)
             with a1:
@@ -2093,7 +2461,11 @@ def render_weekly_report_page():
             v_rem = st.text_input("Remarks para sa Parokya:", value=str(cur_rec.get("remarks", "")))
 
             if st.form_submit_button("💾 I-save at I-update sa Lahat ng Monitoring Tables", use_container_width=True):
+                denoms = get_parish_member_denominators(v_parish)
                 updated_payload = {
+                    "total_members_say": v_tot_say if v_tot_say > 0 else denoms["say"],
+                    "total_members_y": v_tot_y if v_tot_y > 0 else denoms["youth"],
+                    "total_members_k": v_tot_k if v_tot_k > 0 else denoms["kids"],
                     "mass_a": m_a, "mass_y": m_y,
                     "pampamilya_a": p_a, "pampamilya_y": p_y,
                     "online_a": o_a, "online_y": o_y,
@@ -2104,8 +2476,9 @@ def render_weekly_report_page():
                     "indoctrination": v_ind,
                     "remarks": v_rem
                 }
-                save_weekly_monitoring_record(v_parish, v_month, v_week, v_date, updated_payload, drive_link=cur_rec.get("drive_link", ""))
-                st.success(f"✅ Na-update na ang lahat ng Monitoring Tables para sa **{v_parish}** ({v_month} 2027 - {v_week})!")
+                _, sync_msg = save_weekly_monitoring_record(v_parish, v_month, v_week, v_date, updated_payload, drive_link=cur_rec.get("drive_link", ""))
+                st.success(f"✅ Na-update na ang lahat ng Monitoring Tables para sa **{v_parish}** ({v_month} 2027 - {v_week})! ({sync_msg})")
+                time.sleep(0.5)
                 st.rerun()
 
     st.divider()
@@ -2114,7 +2487,7 @@ def render_weekly_report_page():
     # 📊 TABLE 1: PARISH MONITORING REPORT (ATTENDANCE + TOTAL PERCENTAGE SA BABA)
     # =====================================================================
     st.markdown(f"### 📋 3. Parish Monitoring Report — Attendance & Total Percentage ({view_week} of {view_month.upper()} 2027)")
-    st.caption("Bawat Parokya ay may `A-0 | Y-0` count at `Total:` row sa ibaba para sa porsyento (`%`) ng lahat ng ministeryo.")
+    st.caption("Bawat Parokya ay nagsisimula sa `A-0 | Y-0` at `0%` hangga't walang nakukuhang datos mula sa Google Drive Excel.")
     att_monitoring_df = build_parish_monitoring_attendance_df(view_month, view_week, effective_parish_filter)
     st.dataframe(att_monitoring_df, use_container_width=True, hide_index=True)
 
@@ -2124,7 +2497,7 @@ def render_weekly_report_page():
     # 📊 TABLE 2: SUMMARY FOR POSTING PER PARISH (TOTAL MEMBERS, TOTAL OF ATTENDEES, TOTAL AVERAGE %)
     # =====================================================================
     st.markdown(f"### 📈 4. Summary for Posting — Per Parish Breakdown ({view_week} of {view_month.upper()} 2027)")
-    st.caption("Eksaktong gaya ng nasa larawan (TOTAL MEMBERS, TOTAL OF ATTENDEES, at TOTAL AVERAGE %) para sa Mass, Pampamilya, Online Ministry, Youth Fellowship, Kids Fellowship, at Adal ti Evangelio.")
+    st.caption("Nagsisimula sa `0` at awtomatikong nalalagyan ng `TOTAL MEMBERS`, `TOTAL OF ATTENDEES`, at `TOTAL AVERAGE %` kapag nakuha ang data mula sa Google Drive Excel.")
 
     parishes_to_show = PARISH_ORDER if effective_parish_filter == "Lahat ng Parokya" else [p for p in PARISH_ORDER if normalize_parish_match(p, effective_parish_filter)]
     for p_item in parishes_to_show:
@@ -3476,7 +3849,7 @@ elif app_mode == "📢 Announcement Broadcaster":
     st.stop()
 
 # =====================================================================
-# 7. APP SETTINGS (THEME, EXCEL DRIVE MANAGER, AT API CREDENTIALS)
+# 7. APP SETTINGS (THEME, EXCEL DRIVE MANAGER, AT API CREDENTIALS + 403 FIX)
 # =====================================================================
 elif app_mode == "🛠️ App Settings":
     render_title_with_logo("🛠️ App Controller, Theme, Excel Sync & Configuration Settings", "I-customize ang hitsura ng app, i-manage ang Google Drive Excel File, at i-update ang API settings.")
@@ -3484,7 +3857,7 @@ elif app_mode == "🛠️ App Settings":
     tab_ui, tab_excel, tab_api = st.tabs([
         "🎨 Theme, Display & App Controller",
         "📊 Google Drive Excel File & Weekly Folder Manager",
-        "🔑 API & Google Drive / Gmail Credentials"
+        "🔑 API & Google Drive / Gmail Credentials (Fix 403 Scope)"
     ])
 
     with tab_ui:
@@ -3544,17 +3917,33 @@ elif app_mode == "🛠️ App Settings":
     with tab_excel:
         st.subheader("📊 Google Drive Excel Link & Weekly Report Folder Configuration")
         new_sheet_url = st.text_input(
-            "🔗 Google Drive Master Census Excel Link:",
+            "🔗 1. Google Drive Master Census Excel Link:",
             value=ACTIVE_SPREADSHEET_URL
         )
         new_weekly_folder_url = st.text_input(
-            "📂 Google Drive Weekly Report Master Folder Link (Kung saan ilalagay ang mga Image at Excel ng mga Leaders per Parish):",
+            "📂 2. CTG Ministry Hub (Weekly Report January-December 2027) Master Folder Link:",
             value=ACTIVE_WEEKLY_FOLDER_URL
+        )
+        new_parish_upload_url = st.text_input(
+            "📤 3. 'Upload the Image/Excel File here!' Folder Link (Kung saan papasok ang mga Image at Excel per Parish):",
+            value=st.session_state.custom_secrets.get("PARISH_UPLOAD_FOLDER_URL", "")
         )
         if st.button("💾 I-save ang Google Drive Links & I-sync Agad", type="primary"):
             st.session_state.custom_secrets["CLOUD_SPREADSHEET_URL"] = new_sheet_url.strip()
             st.session_state.custom_secrets["WEEKLY_REPORT_FOLDER_URL"] = new_weekly_folder_url.strip()
-            save_cloud_url_config(new_sheet_url.strip(), new_weekly_folder_url.strip())
+            st.session_state.custom_secrets["PARISH_UPLOAD_FOLDER_URL"] = new_parish_upload_url.strip()
+            try:
+                existing_cfg = {}
+                if os.path.exists(LOCAL_CONFIG_FILE):
+                    with open(LOCAL_CONFIG_FILE, "r", encoding="utf-8") as f:
+                        existing_cfg = json.load(f)
+                existing_cfg["CLOUD_SPREADSHEET_URL"] = new_sheet_url.strip()
+                existing_cfg["WEEKLY_REPORT_FOLDER_URL"] = new_weekly_folder_url.strip()
+                existing_cfg["PARISH_UPLOAD_FOLDER_URL"] = new_parish_upload_url.strip()
+                with open(LOCAL_CONFIG_FILE, "w", encoding="utf-8") as f:
+                    json.dump(existing_cfg, f, indent=2)
+            except Exception:
+                pass
             st.cache_data.clear()
             st.cache_resource.clear()
             st.success("✅ Na-update na ang Google Drive Links!")
@@ -3580,6 +3969,47 @@ elif app_mode == "🛠️ App Settings":
             st.info("🔒 Ang API & Google Drive Cloud Storage credentials ay maaari lamang baguhin ng Master Admin.")
         else:
             st.subheader("🔑 API Keys & Google Drive / Gmail Cloud Storage Integration")
+            g_cid = st.session_state.custom_secrets.get("GMAIL_CLIENT_ID", GMAIL_CLIENT_ID)
+            g_csec = st.session_state.custom_secrets.get("GMAIL_CLIENT_SECRET", GMAIL_CLIENT_SECRET)
+            if g_cid and g_csec:
+                with st.expander("🔓 One-Click Google Drive + Gmail Token Generator (Fix 403 Error)", expanded=True):
+                    st.caption("Kung nagkakaroon ng '403 Insufficient Authentication Scopes' sa Google Drive upload, gamitin ito upang makagawa ng Refresh Token na may buong Google Drive + Gmail permission:")
+                    try:
+                        from google_auth_oauthlib.flow import Flow
+                        oauth_scopes = ["https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/gmail.send"]
+                        client_cfg = {
+                            "installed": {
+                                "client_id": g_cid.strip(),
+                                "client_secret": g_csec.strip(),
+                                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                                "token_uri": "https://oauth2.googleapis.com/token",
+                                "redirect_uris": ["http://localhost"]
+                            }
+                        }
+                        flow = Flow.from_client_config(client_cfg, scopes=oauth_scopes, redirect_uri="http://localhost")
+                        auth_url, _ = flow.authorization_url(access_type="offline", prompt="consent")
+                        st.markdown(f"**Step 1:** [👉 Pindutin Ito upang Pahintulutan ang Google Drive at Gmail]({auth_url})")
+                        auth_code_in = st.text_input("Step 2: Pagkatapos mag-Allow, kopyahin ang buong `http://localhost/?code=...` URL mula sa address bar at i-paste dito:").strip()
+                        if st.button("🔑 Kunin at I-save ang Bagong Google Drive Refresh Token", type="primary"):
+                            clean_code = auth_code_in
+                            if "code=" in clean_code:
+                                clean_code = re.search(r"code=([^&]+)", clean_code).group(1)
+                            flow.fetch_token(code=clean_code)
+                            new_rt = flow.credentials.refresh_token
+                            if new_rt:
+                                st.session_state.custom_secrets["GMAIL_REFRESH_TOKEN"] = new_rt
+                                existing_cfg = {}
+                                if os.path.exists(LOCAL_CONFIG_FILE):
+                                    with open(LOCAL_CONFIG_FILE, "r", encoding="utf-8") as f:
+                                        existing_cfg = json.load(f)
+                                existing_cfg["GMAIL_REFRESH_TOKEN"] = new_rt
+                                with open(LOCAL_CONFIG_FILE, "w", encoding="utf-8") as f:
+                                    json.dump(existing_cfg, f, indent=2)
+                                st.success("✅ Matagumpay na nakuha at na-save ang bagong Google Drive + Gmail Refresh Token!")
+                                st.code(new_rt)
+                    except Exception as ex:
+                        st.caption(f"OAuth Helper Notice: {str(ex)}")
+
             with st.form("set_form"):
                 ng = st.text_input("GEMINI_API_KEY", value=st.session_state.custom_secrets.get("GEMINI_API_KEY", ""), type="password")
                 ng2 = st.text_input("GEMINI_API_KEY_2", value=st.session_state.custom_secrets.get("GEMINI_API_KEY_2", ""), type="password")
