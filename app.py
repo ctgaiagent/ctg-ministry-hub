@@ -1548,6 +1548,192 @@ def calc_pct_str(attendees: int, total_members: int) -> str:
     pct = round((attendees / total_members) * 100)
     return f"{pct}%"
 
+# 🛡️ SAFE EXCEL CELL WRITER (FIXES 'MergedCell' READ-ONLY ERROR & PRESERVES FORMULAS)
+def get_master_writable_cell(ws, row: int, col: int):
+    cell = ws.cell(row=row, column=col)
+    if type(cell).__name__ == "MergedCell":
+        for merged_range in ws.merged_cells.ranges:
+            if (merged_range.min_row <= row <= merged_range.max_row and
+                    merged_range.min_col <= col <= merged_range.max_col):
+                return ws.cell(row=merged_range.min_row, column=merged_range.min_col)
+    return cell
+
+def set_excel_cell_safely(ws, row: int, col: int, value, preserve_formula: bool = True) -> bool:
+    try:
+        target_cell = get_master_writable_cell(ws, row, col)
+        if preserve_formula:
+            existing_val = target_cell.value
+            if isinstance(existing_val, str) and existing_val.strip().startswith("="):
+                return False
+        target_cell.value = value
+        return True
+    except Exception:
+        return False
+
+def find_next_writable_col_on_row(ws, row: int, start_col: int) -> int:
+    col = start_col
+    for merged_range in ws.merged_cells.ranges:
+        if (merged_range.min_row <= row <= merged_range.max_row and
+                merged_range.min_col <= col <= merged_range.max_col):
+            col = merged_range.max_col + 1
+    return col
+
+def write_pwr_header_fields(ws, data_row: dict, report_date: str):
+    """Isinusulat sa PARISH WEEKLY REPORT ang PRIEST, SAKRISTAN, EPISTULA, EVANGELIO, CASASAAD, CANDLE HOLDER, USHER, MARSHAL, ADAL TI EVANGELIO, TEMA TI MISA, TEMA TI PAMPAMILYA, at Preachers."""
+    label_map = [
+        (["DATE:"], report_date),
+        (["PRIEST:"], data_row.get("priest", "")),
+        (["SAKRISTAN:"], data_row.get("sakristan", "")),
+        (["EPISTULA:"], data_row.get("epistula", "")),
+        (["EVANGELIO:"], data_row.get("evangelio", "")),
+        (["CASASAAD:"], data_row.get("casasaad", "")),
+        (["CANDLE HOLDER:"], data_row.get("candle_holder", "")),
+        (["USHER:"], data_row.get("usher", "")),
+        (["MARSHAL:"], data_row.get("marshal", "")),
+        (["ADAL TI EVANGELIO:"], data_row.get("adal_evangelio", "")),
+        (["TEMA TI MISA:"], data_row.get("tema_misa", "")),
+        (["TEMA TI PAMPAMILYA:"], data_row.get("tema_pampamilya", "")),
+    ]
+
+    max_r = min(ws.max_row, 45)
+    max_c = min(ws.max_column, 20)
+
+    for r_idx in range(1, max_r + 1):
+        row_topic_context = ""
+        for c_idx in range(1, max_c + 1):
+            raw_val = ws.cell(row=r_idx, column=c_idx).value
+            if not raw_val:
+                continue
+            cell_up = str(raw_val).strip().upper()
+
+            if "ADAL TI EVANGELIO" in cell_up:
+                row_topic_context = "ADAL"
+            elif "TEMA TI MISA" in cell_up:
+                row_topic_context = "MISA"
+            elif "TEMA TI PAMPAMILYA" in cell_up:
+                row_topic_context = "PAMPAMILYA"
+
+            # Check standard labels
+            for patterns, val_str in label_map:
+                if not str(val_str or "").strip():
+                    continue
+                for pat in patterns:
+                    if cell_up == pat or cell_up.startswith(pat):
+                        # Avoid overwriting "ADAL TI EVANGELIO" column header in attendance table
+                        if pat == "ADAL TI EVANGELIO:" and ":" not in str(raw_val):
+                            continue
+                        next_c = find_next_writable_col_on_row(ws, r_idx, c_idx + 1)
+                        if next_c <= max_c + 2:
+                            set_excel_cell_safely(ws, r_idx, next_c, str(val_str).strip(), preserve_formula=True)
+
+            # Check Preacher/s: or Preacher: labels
+            if "PREACHER" in cell_up:
+                p_val = ""
+                if row_topic_context == "ADAL" or "PREACHER/S" in cell_up:
+                    p_val = data_row.get("adal_preacher", "")
+                elif row_topic_context == "MISA":
+                    p_val = data_row.get("misa_preacher", "")
+                elif row_topic_context == "PAMPAMILYA":
+                    p_val = data_row.get("pampamilya_preacher", "")
+                if str(p_val or "").strip():
+                    next_c = find_next_writable_col_on_row(ws, r_idx, c_idx + 1)
+                    set_excel_cell_safely(ws, r_idx, next_c, str(p_val).strip(), preserve_formula=True)
+
+def write_pwr_attendance_and_remarks(ws, data_row: dict):
+    """Isinusulat sa PARISH WEEKLY REPORT ang attendance ng ADULTS, YOUTHS, at KIDS pati Remarks upang awtomatikong gumana ang Excel formulas."""
+    section = None
+    adult_rows, youth_rows, kids_rows = [], [], []
+
+    for r_idx in range(1, ws.max_row + 1):
+        col_a = str(ws.cell(row=r_idx, column=1).value or "").strip()
+        col_b = str(ws.cell(row=r_idx, column=2).value or "").strip()
+        col_c = str(ws.cell(row=r_idx, column=3).value or "").strip()
+        row_up = f"{col_a} {col_b} {col_c}".upper()
+
+        if col_b.upper() == "ADULTS" or col_c.upper() == "ADULTS":
+            section = "ADULTS"
+            continue
+        elif col_b.upper() in ["YOUTHS", "YOUTH"] or col_c.upper() in ["YOUTHS", "YOUTH"]:
+            section = "YOUTHS"
+            continue
+        elif col_b.upper() == "KIDS" or col_c.upper() == "KIDS":
+            section = "KIDS"
+            continue
+        elif "TOTAL" in col_a.upper() or "TOTAL" in col_b.upper() or "HOUSE VISITATION" in row_up:
+            if "HOUSE VISITATION" in row_up and str(data_row.get("house_visitation", "")).strip():
+                next_c = find_next_writable_col_on_row(ws, r_idx, 2)
+                set_excel_cell_safely(ws, r_idx, next_c, data_row.get("house_visitation", "0"), preserve_formula=True)
+            section = None
+            continue
+
+        name_col = 3 if col_b.isdigit() else 2
+        name_val = str(ws.cell(row=r_idx, column=name_col).value or "").strip()
+        if section == "ADULTS":
+            adult_rows.append((r_idx, name_col, name_val))
+        elif section == "YOUTHS":
+            youth_rows.append((r_idx, name_col, name_val))
+        elif section == "KIDS":
+            kids_rows.append((r_idx, name_col, name_val))
+
+    # Helper to fill attendance 1s by count in a section (so SUM/COUNT formulas in Excel work automatically)
+    def fill_section_counts(row_list, col_counts_map, member_list_from_ai=None):
+        if not row_list:
+            return
+        # If AI extracted individual member names + attendance, write them first
+        if isinstance(member_list_from_ai, list) and len(member_list_from_ai) > 0:
+            for idx, m_item in enumerate(member_list_from_ai):
+                if idx >= len(row_list):
+                    break
+                r_num, n_col, existing_name = row_list[idx]
+                if not existing_name and m_item.get("name"):
+                    set_excel_cell_safely(ws, r_num, n_col, m_item.get("name"), preserve_formula=True)
+                for c_idx, key_name in col_counts_map.items():
+                    val_mark = 1 if m_item.get(key_name) else None
+                    set_excel_cell_safely(ws, r_num, c_idx, val_mark, preserve_formula=True)
+                if m_item.get("remarks"):
+                    set_excel_cell_safely(ws, r_num, 10, m_item.get("remarks"), preserve_formula=True)
+            return
+
+        # Otherwise, distribute the exact extracted counts (1s) across the member rows so Excel formulas calculate the exact total
+        for c_idx, target_count in col_counts_map.items():
+            cnt = int(target_count or 0)
+            for idx, (r_num, _, _) in enumerate(row_list):
+                set_excel_cell_safely(ws, r_num, c_idx, 1 if idx < cnt else None, preserve_formula=True)
+
+    fill_section_counts(
+        adult_rows,
+        {
+            4: int(data_row.get("mass_a", 0)),
+            5: int(data_row.get("pampamilya_a", 0)),
+            6: int(data_row.get("online_a", 0)),
+            9: int(data_row.get("adal_a", 0)),
+        },
+        data_row.get("adults_records")
+    )
+    fill_section_counts(
+        youth_rows,
+        {
+            4: int(data_row.get("mass_y", 0)),
+            5: int(data_row.get("pampamilya_y", 0)),
+            6: int(data_row.get("online_y", 0)),
+            7: int(data_row.get("youth_y", 0)),
+            9: int(data_row.get("adal_y", 0)),
+        },
+        data_row.get("youths_records")
+    )
+    fill_section_counts(
+        kids_rows,
+        {
+            8: int(data_row.get("kids_k", 0)),
+        },
+        data_row.get("kids_records")
+    )
+
+    # Write general remarks in the first adult row's Remarks column if provided
+    rem_txt = str(data_row.get("remarks", "")).strip()
+    if rem_txt and adult_rows:
+        set_excel_cell_safely(ws, adult_rows[0][0], 10, rem_txt, preserve_formula=True)
+
 def save_weekly_monitoring_record(parish: str, month: str, week_num: str, report_date: str, extracted_data: dict, drive_link: str = "") -> tuple[bool, str]:
     db = load_weekly_monitoring_records()
     key = f"{parish.upper()}__{month.upper()}__{week_num}"
@@ -1581,6 +1767,22 @@ def save_weekly_monitoring_record(parish: str, month: str, week_num: str, report
         "indoctrination": str(extracted_data.get("indoctrination", "0")),
         "remarks": str(extracted_data.get("remarks", "")),
         "priest": str(extracted_data.get("priest", "")),
+        "sakristan": str(extracted_data.get("sakristan", "")),
+        "epistula": str(extracted_data.get("epistula", "")),
+        "evangelio": str(extracted_data.get("evangelio", "")),
+        "casasaad": str(extracted_data.get("casasaad", "")),
+        "candle_holder": str(extracted_data.get("candle_holder", "")),
+        "usher": str(extracted_data.get("usher", "")),
+        "marshal": str(extracted_data.get("marshal", "")),
+        "adal_evangelio": str(extracted_data.get("adal_evangelio", "")),
+        "adal_preacher": str(extracted_data.get("adal_preacher", "")),
+        "tema_misa": str(extracted_data.get("tema_misa", "")),
+        "misa_preacher": str(extracted_data.get("misa_preacher", "")),
+        "tema_pampamilya": str(extracted_data.get("tema_pampamilya", "")),
+        "pampamilya_preacher": str(extracted_data.get("pampamilya_preacher", "")),
+        "adults_records": extracted_data.get("adults_records", []),
+        "youths_records": extracted_data.get("youths_records", []),
+        "kids_records": extracted_data.get("kids_records", []),
         "drive_link": drive_link,
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
@@ -1618,7 +1820,7 @@ def update_master_pwr_excel_file(parish: str, month: str, week_num: str, report_
         else:
             wb = openpyxl.Workbook()
             ws_init = wb.active
-            ws_init.title = "PARISH MONITORING REPORT"
+            ws_init.title = "PARISH WEEKLY REPORT"
 
         clean_p = parish.upper().replace("PARISH", "").strip()
         m_att = int(data_row["mass_a"]) + int(data_row["mass_y"])
@@ -1632,25 +1834,39 @@ def update_master_pwr_excel_file(parish: str, month: str, week_num: str, report_
         tot_y = int(data_row.get("total_members_y", 0))
         tot_k = int(data_row.get("total_members_k", 0))
 
-        # 1. Update PARISH MONITORING REPORT sheet
+        # 0. PRIMARY INPUT: Write directly into PARISH WEEKLY REPORT (or parish-specific sheet)
+        target_pwr_sheets = []
+        for s_name in wb.sheetnames:
+            s_up = s_name.upper()
+            if "PARISH WEEKLY REPORT" in s_up or clean_p in s_up:
+                if s_up not in ["PARISH MONITORING REPORT", "SUMMARY FOR POSTING"]:
+                    target_pwr_sheets.append(wb[s_name])
+        if not target_pwr_sheets and "PARISH WEEKLY REPORT" in wb.sheetnames:
+            target_pwr_sheets.append(wb["PARISH WEEKLY REPORT"])
+
+        for ws_pwr in target_pwr_sheets:
+            write_pwr_header_fields(ws_pwr, data_row, report_date)
+            write_pwr_attendance_and_remarks(ws_pwr, data_row)
+
+        # 1. Update PARISH MONITORING REPORT sheet safely (preserving any Excel formulas!)
         if "PARISH MONITORING REPORT" in wb.sheetnames:
             ws = wb["PARISH MONITORING REPORT"]
             found_p = False
             for r_idx in range(5, ws.max_row + 1):
                 cell_val = str(ws.cell(row=r_idx, column=1).value or "").upper()
                 if clean_p and clean_p in cell_val:
-                    ws.cell(row=r_idx, column=1).value = f"{clean_p} ({report_date})"
-                    ws.cell(row=r_idx, column=2).value = int(re.sub(r"\D", "", str(week_num)) or 1)
-                    ws.cell(row=r_idx, column=3).value = f"A-{data_row['mass_a']}\nY-{data_row['mass_y']}"
-                    ws.cell(row=r_idx, column=4).value = f"A-{data_row['pampamilya_a']}\nY-{data_row['pampamilya_y']}"
-                    ws.cell(row=r_idx, column=5).value = f"A-{data_row['online_a']}\nY-{data_row['online_y']}"
-                    ws.cell(row=r_idx, column=6).value = f"Y-{data_row['youth_y']}"
-                    ws.cell(row=r_idx, column=7).value = f"K-{data_row['kids_k']}"
-                    ws.cell(row=r_idx, column=8).value = f"A-{data_row['adal_a']}\nY-{data_row['adal_y']}"
-                    ws.cell(row=r_idx, column=9).value = data_row.get("house_visitation", "0")
-                    ws.cell(row=r_idx, column=10).value = data_row.get("missionary_work", "0")
-                    ws.cell(row=r_idx, column=11).value = data_row.get("indoctrination", "0")
-                    ws.cell(row=r_idx, column=12).value = data_row.get("remarks", "")
+                    set_excel_cell_safely(ws, r_idx, 1, f"{clean_p} ({report_date})", preserve_formula=True)
+                    set_excel_cell_safely(ws, r_idx, 2, int(re.sub(r"\D", "", str(week_num)) or 1), preserve_formula=True)
+                    set_excel_cell_safely(ws, r_idx, 3, f"A-{data_row['mass_a']}\nY-{data_row['mass_y']}", preserve_formula=True)
+                    set_excel_cell_safely(ws, r_idx, 4, f"A-{data_row['pampamilya_a']}\nY-{data_row['pampamilya_y']}", preserve_formula=True)
+                    set_excel_cell_safely(ws, r_idx, 5, f"A-{data_row['online_a']}\nY-{data_row['online_y']}", preserve_formula=True)
+                    set_excel_cell_safely(ws, r_idx, 6, f"Y-{data_row['youth_y']}", preserve_formula=True)
+                    set_excel_cell_safely(ws, r_idx, 7, f"K-{data_row['kids_k']}", preserve_formula=True)
+                    set_excel_cell_safely(ws, r_idx, 8, f"A-{data_row['adal_a']}\nY-{data_row['adal_y']}", preserve_formula=True)
+                    set_excel_cell_safely(ws, r_idx, 9, data_row.get("house_visitation", "0"), preserve_formula=True)
+                    set_excel_cell_safely(ws, r_idx, 10, data_row.get("missionary_work", "0"), preserve_formula=True)
+                    set_excel_cell_safely(ws, r_idx, 11, data_row.get("indoctrination", "0"), preserve_formula=True)
+                    set_excel_cell_safely(ws, r_idx, 12, data_row.get("remarks", ""), preserve_formula=True)
                     found_p = True
                     break
             if not found_p:
@@ -1665,7 +1881,7 @@ def update_master_pwr_excel_file(parish: str, month: str, week_num: str, report_
                     data_row.get("indoctrination", "0"), data_row.get("remarks", "")
                 ])
 
-        # 2. Update SUMMARY FOR POSTING sheet
+        # 2. Update SUMMARY FOR POSTING sheet safely (preserving any Excel formulas & avoiding MergedCell errors!)
         if "SUMMARY FOR POSTING" in wb.sheetnames:
             ws_s = wb["SUMMARY FOR POSTING"]
             for r_idx in range(1, ws_s.max_row + 1):
@@ -1674,27 +1890,27 @@ def update_master_pwr_excel_file(parish: str, month: str, week_num: str, report_
                     for sub_r in range(r_idx + 1, min(r_idx + 6, ws_s.max_row + 1)):
                         lbl = str(ws_s.cell(row=sub_r, column=1).value or "").upper().strip()
                         if "TOTAL MEMBERS" in lbl:
-                            ws_s.cell(row=sub_r, column=2).value = tot_say
+                            set_excel_cell_safely(ws_s, sub_r, 2, tot_say, preserve_formula=True)
                             if "HONG" not in clean_p:
-                                ws_s.cell(row=sub_r, column=3).value = tot_say
-                                ws_s.cell(row=sub_r, column=4).value = tot_say
-                                ws_s.cell(row=sub_r, column=5).value = tot_y
-                                ws_s.cell(row=sub_r, column=6).value = tot_k
-                                ws_s.cell(row=sub_r, column=7).value = tot_say
+                                set_excel_cell_safely(ws_s, sub_r, 3, tot_say, preserve_formula=True)
+                                set_excel_cell_safely(ws_s, sub_r, 4, tot_say, preserve_formula=True)
+                                set_excel_cell_safely(ws_s, sub_r, 5, tot_y, preserve_formula=True)
+                                set_excel_cell_safely(ws_s, sub_r, 6, tot_k, preserve_formula=True)
+                                set_excel_cell_safely(ws_s, sub_r, 7, tot_say, preserve_formula=True)
                             else:
-                                ws_s.cell(row=sub_r, column=3).value = tot_say
+                                set_excel_cell_safely(ws_s, sub_r, 3, tot_say, preserve_formula=True)
                         elif "TOTAL OF ATTENDEES" in lbl:
-                            ws_s.cell(row=sub_r, column=2).value = m_att
+                            set_excel_cell_safely(ws_s, sub_r, 2, m_att, preserve_formula=True)
                             if "HONG" not in clean_p:
-                                ws_s.cell(row=sub_r, column=3).value = p_att
-                                ws_s.cell(row=sub_r, column=4).value = o_att
-                                ws_s.cell(row=sub_r, column=5).value = y_att
-                                ws_s.cell(row=sub_r, column=6).value = k_att
-                                ws_s.cell(row=sub_r, column=7).value = ad_att
-                                ws_s.cell(row=sub_r, column=8).value = parse_int_from_text(data_row.get("house_visitation", "0"))
-                                ws_s.cell(row=sub_r, column=9).value = parse_int_from_text(data_row.get("missionary_work", "0")) + parse_int_from_text(data_row.get("indoctrination", "0"))
+                                set_excel_cell_safely(ws_s, sub_r, 3, p_att, preserve_formula=True)
+                                set_excel_cell_safely(ws_s, sub_r, 4, o_att, preserve_formula=True)
+                                set_excel_cell_safely(ws_s, sub_r, 5, y_att, preserve_formula=True)
+                                set_excel_cell_safely(ws_s, sub_r, 6, k_att, preserve_formula=True)
+                                set_excel_cell_safely(ws_s, sub_r, 7, ad_att, preserve_formula=True)
+                                set_excel_cell_safely(ws_s, sub_r, 8, parse_int_from_text(data_row.get("house_visitation", "0")), preserve_formula=True)
+                                set_excel_cell_safely(ws_s, sub_r, 9, parse_int_from_text(data_row.get("missionary_work", "0")) + parse_int_from_text(data_row.get("indoctrination", "0")), preserve_formula=True)
                             else:
-                                ws_s.cell(row=sub_r, column=3).value = o_att
+                                set_excel_cell_safely(ws_s, sub_r, 3, o_att, preserve_formula=True)
                     break
 
         out_buf = io.BytesIO()
@@ -1712,7 +1928,7 @@ def update_master_pwr_excel_file(parish: str, month: str, week_num: str, report_
             )
             if drive_file_id:
                 service.files().update(fileId=drive_file_id, media_body=media).execute()
-                return True, f"Matagumpay na na-update ang '{target_master_name}' sa Google Drive!"
+                return True, f"Matagumpay na na-type sa PARISH WEEKLY REPORT at na-update ang '{target_master_name}' sa Google Drive!"
             elif target_month_folder_id:
                 service.files().create(
                     body={"name": target_master_name, "parents": [target_month_folder_id]},
@@ -1721,13 +1937,40 @@ def update_master_pwr_excel_file(parish: str, month: str, week_num: str, report_
                 return True, f"Nalikha at na-update ang '{target_master_name}' sa Google Drive!"
         return True, "Na-save sa lokal na Master Excel!"
     except Exception as e:
-        return False, f"Master Excel Sync Warning: {str(e)}"
+        return False, f"Master Excel Sync Notice: {str(e)}"
 
 def parse_master_pwr_excel_into_db(excel_bytes: bytes, target_month: str, target_week: str) -> int:
     db = load_weekly_monitoring_records()
     updated_parishes = 0
     try:
         wb = openpyxl.load_workbook(io.BytesIO(excel_bytes), data_only=True)
+
+        # 0. Check PARISH WEEKLY REPORT first if a parish report is encoded there
+        if "PARISH WEEKLY REPORT" in wb.sheetnames:
+            pwr_extracted = extract_weekly_report_from_excel_bytes(excel_bytes)
+            detected_parish = pwr_extracted.get("parish", "")
+            if detected_parish in PARISH_ORDER:
+                tot_act = (
+                    int(pwr_extracted.get("mass_a", 0)) + int(pwr_extracted.get("mass_y", 0)) +
+                    int(pwr_extracted.get("pampamilya_a", 0)) + int(pwr_extracted.get("pampamilya_y", 0)) +
+                    int(pwr_extracted.get("online_a", 0)) + int(pwr_extracted.get("online_y", 0)) +
+                    int(pwr_extracted.get("youth_y", 0)) + int(pwr_extracted.get("kids_k", 0)) +
+                    int(pwr_extracted.get("adal_a", 0)) + int(pwr_extracted.get("adal_y", 0))
+                )
+                if tot_act > 0 or pwr_extracted.get("priest"):
+                    key = f"{detected_parish.upper()}__{target_month.upper()}__{target_week}"
+                    denoms = get_parish_member_denominators(detected_parish)
+                    existing = db.get(key, {})
+                    existing.update(pwr_extracted)
+                    existing["has_data"] = True
+                    existing["parish"] = detected_parish
+                    existing["month"] = target_month
+                    existing["week"] = target_week
+                    existing["total_members_say"] = int(pwr_extracted.get("total_members_say", 0)) or denoms["say"]
+                    existing["total_members_y"] = int(pwr_extracted.get("total_members_y", 0)) or denoms["youth"]
+                    existing["total_members_k"] = int(pwr_extracted.get("total_members_k", 0)) or denoms["kids"]
+                    db[key] = existing
+                    updated_parishes += 1
 
         if "SUMMARY FOR POSTING" in wb.sheetnames:
             ws_s = wb["SUMMARY FOR POSTING"]
@@ -1767,14 +2010,15 @@ def parse_master_pwr_excel_into_db(excel_bytes: bytes, target_month: str, target
                     if (m_att + p_att + o_att + y_att + k_att + ad_att + hv_val + mw_val) > 0 or existing.get("has_data"):
                         denoms = get_parish_member_denominators(matched_p)
                         db[key] = {
+                            **existing,
                             "has_data": True,
                             "parish": matched_p,
                             "month": target_month,
                             "week": target_week,
                             "report_date": existing.get("report_date", "01/02/27"),
-                            "total_members_say": tot_say or denoms["say"],
-                            "total_members_y": tot_y or denoms["youth"],
-                            "total_members_k": tot_k or denoms["kids"],
+                            "total_members_say": tot_say or existing.get("total_members_say") or denoms["say"],
+                            "total_members_y": tot_y or existing.get("total_members_y") or denoms["youth"],
+                            "total_members_k": tot_k or existing.get("total_members_k") or denoms["kids"],
                             "mass_a": existing.get("mass_a", m_att),
                             "mass_y": existing.get("mass_y", 0),
                             "pampamilya_a": existing.get("pampamilya_a", p_att),
@@ -1809,13 +2053,20 @@ def parse_master_pwr_excel_into_db(excel_bytes: bytes, target_month: str, target
                         ma = re.search(r"A-(\d+)", s, re.I)
                         my = re.search(r"Y-(\d+)", s, re.I)
                         mk = re.search(r"K-(\d+)", s, re.I)
-                        return (int(ma.group(1)) if ma else 0), (int(my.group(1)) if my else (int(mk.group(1)) if mk else 0))
+                        if ma or my or mk:
+                            return (int(ma.group(1)) if ma else 0), (int(my.group(1)) if my else (int(mk.group(1)) if mk else 0))
+                        # If formula returns a single number
+                        if s.strip().isdigit():
+                            return int(s.strip()), 0
+                        return 0, 0
 
                     m_a, m_y = parse_ay(ws_m.cell(row=r_idx, column=3).value)
                     p_a, p_y = parse_ay(ws_m.cell(row=r_idx, column=4).value)
                     o_a, o_y = parse_ay(ws_m.cell(row=r_idx, column=5).value)
-                    _, y_y = parse_ay(ws_m.cell(row=r_idx, column=6).value)
-                    _, k_k = parse_ay(ws_m.cell(row=r_idx, column=7).value)
+                    y_1, y_2 = parse_ay(ws_m.cell(row=r_idx, column=6).value)
+                    y_y = y_2 if y_2 > 0 else y_1
+                    k_1, k_2 = parse_ay(ws_m.cell(row=r_idx, column=7).value)
+                    k_k = k_2 if k_2 > 0 else k_1
                     ad_a, ad_y = parse_ay(ws_m.cell(row=r_idx, column=8).value)
                     hv_s = str(ws_m.cell(row=r_idx, column=9).value or "0").strip()
                     mw_s = str(ws_m.cell(row=r_idx, column=10).value or "0").strip()
@@ -1828,6 +2079,7 @@ def parse_master_pwr_excel_into_db(excel_bytes: bytes, target_month: str, target
                         denoms = get_parish_member_denominators(matched_p)
                         existing = db.get(key, {})
                         db[key] = {
+                            **existing,
                             "has_data": True,
                             "parish": matched_p,
                             "month": target_month,
@@ -1857,27 +2109,75 @@ def parse_master_pwr_excel_into_db(excel_bytes: bytes, target_month: str, target
 
 def extract_weekly_report_from_excel_bytes(file_bytes: bytes) -> dict:
     result = {
+        "parish": "",
         "mass_a": 0, "mass_y": 0, "pampamilya_a": 0, "pampamilya_y": 0,
         "online_a": 0, "online_y": 0, "youth_y": 0, "kids_k": 0,
         "adal_a": 0, "adal_y": 0, "total_members_say": 0, "total_members_y": 0, "total_members_k": 0,
         "house_visitation": "0", "missionary_work": "0",
-        "indoctrination": "0", "priest": "", "report_date": "01/02/27", "remarks": ""
+        "indoctrination": "0", "priest": "", "sakristan": "", "epistula": "", "evangelio": "",
+        "casasaad": "", "candle_holder": "", "usher": "", "marshal": "",
+        "adal_evangelio": "", "adal_preacher": "", "tema_misa": "", "misa_preacher": "",
+        "tema_pampamilya": "", "pampamilya_preacher": "",
+        "report_date": "01/02/27", "remarks": ""
     }
     try:
         wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
         ws = wb["PARISH WEEKLY REPORT"] if "PARISH WEEKLY REPORT" in wb.sheetnames else wb.active
         section = None
         adults_cnt, youths_cnt, kids_cnt = 0, 0, 0
-        for r_idx in range(1, ws.max_row + 1):
-            col_a = str(ws.cell(row=r_idx, column=1).value or "").strip()
-            col_b = str(ws.cell(row=r_idx, column=2).value or "").strip()
-            col_c = str(ws.cell(row=r_idx, column=3).value or "").strip()
-            row_label = f"{col_a} {col_b}".upper()
+        remarks_collected = []
 
-            if "DATE:" in row_label:
-                result["report_date"] = col_a.replace("DATE:", "").strip() or col_b
-            if "PRIEST:" in col_a.upper():
-                result["priest"] = col_b or col_c
+        for r_idx in range(1, ws.max_row + 1):
+            row_vals = [str(ws.cell(row=r_idx, column=c).value or "").strip() for c in range(1, min(ws.max_column + 1, 15))]
+            col_a = row_vals[0] if len(row_vals) > 0 else ""
+            col_b = row_vals[1] if len(row_vals) > 1 else ""
+            col_c = row_vals[2] if len(row_vals) > 2 else ""
+            row_joined = " ".join([v for v in row_vals if v]).upper()
+
+            for p in PARISH_ORDER:
+                clean_p = p.replace("PARISH", "").strip()
+                if clean_p in row_joined and "PARISH" in row_joined:
+                    result["parish"] = p
+                    break
+
+            # Extract Liturgical Officers & Topics
+            for c_i, cell_txt in enumerate(row_vals):
+                c_up = cell_txt.upper()
+                next_val = ""
+                for nxt in row_vals[c_i + 1:]:
+                    if nxt and nxt.lower() != "nan":
+                        next_val = nxt
+                        break
+                if "DATE:" in c_up:
+                    result["report_date"] = cell_txt.split(":", 1)[-1].strip() or next_val or result["report_date"]
+                elif c_up.startswith("PRIEST:"):
+                    result["priest"] = cell_txt.split(":", 1)[-1].strip() or next_val
+                elif c_up.startswith("SAKRISTAN:"):
+                    result["sakristan"] = cell_txt.split(":", 1)[-1].strip() or next_val
+                elif c_up.startswith("EPISTULA:"):
+                    result["epistula"] = cell_txt.split(":", 1)[-1].strip() or next_val
+                elif c_up.startswith("EVANGELIO:"):
+                    result["evangelio"] = cell_txt.split(":", 1)[-1].strip() or next_val
+                elif c_up.startswith("CASASAAD:"):
+                    result["casasaad"] = cell_txt.split(":", 1)[-1].strip() or next_val
+                elif c_up.startswith("CANDLE HOLDER:"):
+                    result["candle_holder"] = cell_txt.split(":", 1)[-1].strip() or next_val
+                elif c_up.startswith("USHER:"):
+                    result["usher"] = cell_txt.split(":", 1)[-1].strip() or next_val
+                elif c_up.startswith("MARSHAL:"):
+                    result["marshal"] = cell_txt.split(":", 1)[-1].strip() or next_val
+                elif c_up.startswith("ADAL TI EVANGELIO:"):
+                    result["adal_evangelio"] = cell_txt.split(":", 1)[-1].strip() or next_val
+                elif c_up.startswith("TEMA TI MISA:"):
+                    result["tema_misa"] = cell_txt.split(":", 1)[-1].strip() or next_val
+                elif c_up.startswith("TEMA TI PAMPAMILYA:"):
+                    result["tema_pampamilya"] = cell_txt.split(":", 1)[-1].strip() or next_val
+                elif c_up.startswith("PREACHER/S:") or (c_up.startswith("PREACHER:") and "ADAL TI EVANGELIO" in row_joined):
+                    result["adal_preacher"] = cell_txt.split(":", 1)[-1].strip() or next_val
+                elif c_up.startswith("PREACHER:") and "TEMA TI MISA" in row_joined:
+                    result["misa_preacher"] = cell_txt.split(":", 1)[-1].strip() or next_val
+                elif c_up.startswith("PREACHER:") and "TEMA TI PAMPAMILYA" in row_joined:
+                    result["pampamilya_preacher"] = cell_txt.split(":", 1)[-1].strip() or next_val
 
             if col_b.upper() == "ADULTS" or col_c.upper() == "ADULTS":
                 section = "ADULTS"
@@ -1899,7 +2199,7 @@ def extract_weekly_report_from_excel_bytes(file_bytes: bytes) -> dict:
                     if v is None:
                         return 0
                     s = str(v).strip()
-                    return 1 if s in ["1", "1.0", "✓", "true", "True", "x", "X"] else 0
+                    return 1 if s in ["1", "1.0", "✓", "true", "True", "x", "X", "/"] else 0
 
                 m_v = is_present(4)
                 p_v = is_present(5)
@@ -1907,6 +2207,9 @@ def extract_weekly_report_from_excel_bytes(file_bytes: bytes) -> dict:
                 y_v = is_present(7)
                 k_v = is_present(8)
                 a_v = is_present(9)
+                rem_v = str(ws.cell(row=r_idx, column=10).value or "").strip()
+                if rem_v and rem_v.lower() != "nan":
+                    remarks_collected.append(rem_v)
 
                 if section == "ADULTS":
                     adults_cnt += 1
@@ -1929,6 +2232,8 @@ def extract_weekly_report_from_excel_bytes(file_bytes: bytes) -> dict:
             result["total_members_say"] = adults_cnt + youths_cnt
             result["total_members_y"] = youths_cnt
             result["total_members_k"] = kids_cnt
+        if remarks_collected and not result["remarks"]:
+            result["remarks"] = "; ".join(remarks_collected[:5])
     except Exception:
         pass
     return result
@@ -2015,20 +2320,31 @@ def extract_weekly_report_via_ai_vision(file_bytes: bytes, mime_type: str, model
         "online_a": 0, "online_y": 0, "youth_y": 0, "kids_k": 0,
         "adal_a": 0, "adal_y": 0, "total_members_say": 0, "total_members_y": 0, "total_members_k": 0,
         "house_visitation": "0", "missionary_work": "0",
-        "indoctrination": "0", "priest": "", "report_date": "01/02/27", "remarks": ""
+        "indoctrination": "0", "priest": "", "sakristan": "", "epistula": "", "evangelio": "",
+        "casasaad": "", "candle_holder": "", "usher": "", "marshal": "",
+        "adal_evangelio": "", "adal_preacher": "", "tema_misa": "", "misa_preacher": "",
+        "tema_pampamilya": "", "pampamilya_preacher": "",
+        "report_date": "01/02/27", "remarks": ""
     }
     if not valid_keys:
         return default_res
     prompt = (
         "Suriin ang larawang ito ng Church of the Temple of God (CTG) Parish Weekly Report. "
+        "Kunin ang lahat ng detalye sa itaas ng form: DATE, PRIEST, SAKRISTAN, EPISTULA, EVANGELIO, CASASAAD, CANDLE HOLDER, USHER, MARSHAL, "
+        "ADAL TI EVANGELIO (at Preacher/s), TEMA TI MISA (at Preacher), at TEMA TI PAMPAMILYA (at Preacher). "
         "1. Bilangin kung ilang pangalan lahat ang nakalista sa ADULTS, ilang pangalan sa YOUTHS, at ilang pangalan sa KIDS. "
         "2. Bilangin nang eksakto kung ilang ADULTS (A) at ilang YOUTHS (Y) ang may marka o bilang na '1' sa bawat column: "
-        "Mass, Pampamilya, Online Ministry, Youth Fellowship (Y lang), Kids Fellowship (K lang sa KIDS section), at Adal ti Evangelio. "
+        "Mass, Pampamilya, Online Ministry, Youth Fellowship (Y lang), Kids Fellowship (K lang sa KIDS section), at Adal ti Evangelio, pati Remarks. "
         "Ibalik LAMANG ang valid JSON object na may keys: "
         "{\"mass_a\": int, \"mass_y\": int, \"pampamilya_a\": int, \"pampamilya_y\": int, "
         "\"online_a\": int, \"online_y\": int, \"youth_y\": int, \"kids_k\": int, "
         "\"adal_a\": int, \"adal_y\": int, \"total_members_say\": int, \"total_members_y\": int, \"total_members_k\": int, "
-        "\"house_visitation\": str, \"missionary_work\": str, \"indoctrination\": str, \"priest\": str, \"report_date\": str, \"remarks\": str}"
+        "\"house_visitation\": str, \"missionary_work\": str, \"indoctrination\": str, "
+        "\"priest\": str, \"sakristan\": str, \"epistula\": str, \"evangelio\": str, \"casasaad\": str, "
+        "\"candle_holder\": str, \"usher\": str, \"marshal\": str, "
+        "\"adal_evangelio\": str, \"adal_preacher\": str, \"tema_misa\": str, \"misa_preacher\": str, "
+        "\"tema_pampamilya\": str, \"pampamilya_preacher\": str, "
+        "\"report_date\": str, \"remarks\": str}"
     )
     for api_key in valid_keys:
         try:
@@ -2301,11 +2617,11 @@ def render_weekly_report_page():
 
     st.divider()
 
-    col_up_left, col_up_right = st.columns([1.2, 1.5])
+    col_up_left, col_up_right = st.columns([1.15, 1.55])
 
     with col_up_left:
         st.markdown("### 📤 1. Upload the Image / Excel File Here!")
-        st.caption("I-upload ang larawan (screenshot/picture) o Excel file ng inyong Weekly Report. Awtomatikong babasahin ito ng AI, ilalagay sa Google Drive folder ng Parokya, at ia-update ang Master Excel at mga tables sa ibaba.")
+        st.caption("I-upload ang larawan (screenshot/picture) o Excel file ng inyong Weekly Report. Awtomatikong babasahin ng AI ang lahat ng data (Officers, Preachers, Topics, Adults/Youths/Kids Attendance, at Remarks) at ita-type sa `PARISH WEEKLY REPORT` sheet sa Google Drive.")
 
         with st.form("weekly_report_upload_form"):
             c_m, c_w = st.columns(2)
@@ -2341,7 +2657,7 @@ def render_weekly_report_page():
 
             extra_remarks = st.text_input("Remarks / Tala (Optional):").strip()
 
-            submit_up = st.form_submit_button("🚀 I-upload sa Google Drive & I-update ang Tables", type="primary", use_container_width=True)
+            submit_up = st.form_submit_button("🚀 I-upload sa Google Drive & I-type sa Parish Weekly Report", type="primary", use_container_width=True)
 
             if submit_up:
                 if uploaded_rep is None:
@@ -2352,7 +2668,7 @@ def render_weekly_report_page():
                     clean_p_name = target_parish.replace("PARISH", "").strip()
                     drive_filename = f"{clean_p_name} (PWR. {rep_date_input.replace('/', '-')} {sel_month} {sel_week}).{f_ext}"
 
-                    with st.spinner(f"Ina-upload sa Google Drive folder ng {target_parish} ({sel_month} 2027 - {sel_week}) at binabasa ng AI ang Attendance..."):
+                    with st.spinner(f"Ina-upload sa Google Drive folder ng {target_parish} at tinatype ang lahat ng datos sa PARISH WEEKLY REPORT..."):
                         up_folder_url = st.session_state.custom_secrets.get("PARISH_UPLOAD_FOLDER_URL", ACTIVE_PARISH_UPLOAD_URL) or st.session_state.custom_secrets.get("WEEKLY_REPORT_FOLDER_URL", ACTIVE_WEEKLY_FOLDER_URL)
                         drive_link, drive_msg = upload_file_to_google_drive(
                             file_bytes,
@@ -2408,8 +2724,8 @@ def render_weekly_report_page():
                             st.warning(f"⚠️ {drive_msg}")
 
     with col_up_right:
-        st.markdown("### ✏️ 2. AI Extracted Data & Manual Verification Editor")
-        st.caption("I-verify o i-edit ang Total Members, Attendance, House Visitation, Missionary Work, Indoctrination, at Remarks para sa napiling Parokya. Nagsisimula sa 0 kapag wala pang ulat.")
+        st.markdown("### ✏️ 2. Parish Weekly Report Data & Manual Verification Editor")
+        st.caption("Lahat ng datos dito ay direktang tinatype sa `PARISH WEEKLY REPORT` sheet (Liturgical Officers, Topics/Preachers, Adults/Youths/Kids Attendance, at Remarks) upang gumana ang Excel formulas papunta sa Monitoring at Summary.")
 
         last_info = st.session_state.get("last_extracted_pwr", {})
         def_p = last_info.get("parish", my_parish if not is_master else PARISH_ORDER[0])
@@ -2426,9 +2742,34 @@ def render_weekly_report_page():
             with v_c3:
                 v_week = st.selectbox("Linggo:", WEEKS_2027, index=WEEKS_2027.index(view_week))
 
+            with st.expander("⛪ Liturgical Officers & Preachers (Para sa PARISH WEEKLY REPORT Sheet)", expanded=True):
+                o1, o2, o3, o4 = st.columns(4)
+                with o1:
+                    v_priest = st.text_input("PRIEST:", value=str(cur_rec.get("priest", "")))
+                    v_casasaad = st.text_input("CASASAAD:", value=str(cur_rec.get("casasaad", "")))
+                with o2:
+                    v_sakristan = st.text_input("SAKRISTAN:", value=str(cur_rec.get("sakristan", "")))
+                    v_candle = st.text_input("CANDLE HOLDER:", value=str(cur_rec.get("candle_holder", "")))
+                with o3:
+                    v_epistula = st.text_input("EPISTULA:", value=str(cur_rec.get("epistula", "")))
+                    v_usher = st.text_input("USHER:", value=str(cur_rec.get("usher", "")))
+                with o4:
+                    v_evangelio = st.text_input("EVANGELIO:", value=str(cur_rec.get("evangelio", "")))
+                    v_marshal = st.text_input("MARSHAL:", value=str(cur_rec.get("marshal", "")))
+
+                t1, t2 = st.columns(2)
+                with t1:
+                    v_adal_topic = st.text_input("ADAL TI EVANGELIO (Topic):", value=str(cur_rec.get("adal_evangelio", "")))
+                    v_misa_topic = st.text_input("TEMA TI MISA:", value=str(cur_rec.get("tema_misa", "")))
+                    v_pam_topic = st.text_input("TEMA TI PAMPAMILYA:", value=str(cur_rec.get("tema_pampamilya", "")))
+                with t2:
+                    v_adal_pr = st.text_input("Adal Preacher/s:", value=str(cur_rec.get("adal_preacher", "")))
+                    v_misa_pr = st.text_input("Misa Preacher:", value=str(cur_rec.get("misa_preacher", "")))
+                    v_pam_pr = st.text_input("Pampamilya Preacher:", value=str(cur_rec.get("pampamilya_preacher", "")))
+
             tm1, tm2, tm3 = st.columns(3)
             with tm1:
-                v_tot_say = st.number_input("Total Members (Mass/Pampamilya/Online/Adal):", min_value=0, value=int(cur_rec.get("total_members_say", 0)))
+                v_tot_say = st.number_input("Total Members (Adults+Youths):", min_value=0, value=int(cur_rec.get("total_members_say", 0)))
             with tm2:
                 v_tot_y = st.number_input("Total Youth Members:", min_value=0, value=int(cur_rec.get("total_members_y", 0)))
             with tm3:
@@ -2463,7 +2804,7 @@ def render_weekly_report_page():
 
             v_rem = st.text_input("Remarks para sa Parokya:", value=str(cur_rec.get("remarks", "")))
 
-            if st.form_submit_button("💾 I-save at I-update sa Lahat ng Monitoring Tables", use_container_width=True):
+            if st.form_submit_button("💾 I-type sa Parish Weekly Report Excel & I-update ang Tables", use_container_width=True):
                 denoms = get_parish_member_denominators(v_parish)
                 updated_payload = {
                     "total_members_say": v_tot_say if v_tot_say > 0 else denoms["say"],
@@ -2477,10 +2818,24 @@ def render_weekly_report_page():
                     "house_visitation": v_hv,
                     "missionary_work": v_mw,
                     "indoctrination": v_ind,
-                    "remarks": v_rem
+                    "remarks": v_rem,
+                    "priest": v_priest,
+                    "sakristan": v_sakristan,
+                    "epistula": v_epistula,
+                    "evangelio": v_evangelio,
+                    "casasaad": v_casasaad,
+                    "candle_holder": v_candle,
+                    "usher": v_usher,
+                    "marshal": v_marshal,
+                    "adal_evangelio": v_adal_topic,
+                    "adal_preacher": v_adal_pr,
+                    "tema_misa": v_misa_topic,
+                    "misa_preacher": v_misa_pr,
+                    "tema_pampamilya": v_pam_topic,
+                    "pampamilya_preacher": v_pam_pr,
                 }
                 _, sync_msg = save_weekly_monitoring_record(v_parish, v_month, v_week, v_date, updated_payload, drive_link=cur_rec.get("drive_link", ""))
-                st.success(f"✅ Na-update na ang lahat ng Monitoring Tables para sa **{v_parish}** ({v_month} 2027 - {v_week})! ({sync_msg})")
+                st.success(f"✅ Na-update na sa PARISH WEEKLY REPORT at Monitoring Tables para sa **{v_parish}** ({v_month} 2027 - {v_week})! ({sync_msg})")
                 time.sleep(0.5)
                 st.rerun()
 
