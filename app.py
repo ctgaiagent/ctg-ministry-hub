@@ -13,9 +13,12 @@ import pandas as pd
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+import urllib.parse
 from google.oauth2.credentials import Credentials
-from google.oauth2 import service_account
-from google_auth_oauthlib.flow import Flow
+try:
+    from google.oauth2 import service_account
+except ImportError:
+    service_account = None
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
@@ -432,7 +435,7 @@ def extract_id_from_url(url: str) -> str:
 # ==========================================
 def get_google_drive_service():
     sa_json = st.session_state.get("custom_secrets", {}).get("GOOGLE_SERVICE_ACCOUNT_JSON", "") or get_secret("GOOGLE_SERVICE_ACCOUNT_JSON")
-    if sa_json:
+    if sa_json and service_account is not None:
         try:
             sa_info = json.loads(sa_json)
             creds = service_account.Credentials.from_service_account_info(
@@ -3975,27 +3978,35 @@ elif app_mode == "🛠️ App Settings":
                 with st.expander("🔓 One-Click Google Drive + Gmail Token Generator (Fix 403 Error)", expanded=True):
                     st.caption("Kung nagkakaroon ng '403 Insufficient Authentication Scopes' sa Google Drive upload, gamitin ito upang makagawa ng Refresh Token na may buong Google Drive + Gmail permission:")
                     try:
-                        from google_auth_oauthlib.flow import Flow
-                        oauth_scopes = ["https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/gmail.send"]
-                        client_cfg = {
-                            "installed": {
-                                "client_id": g_cid.strip(),
-                                "client_secret": g_csec.strip(),
-                                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                                "token_uri": "https://oauth2.googleapis.com/token",
-                                "redirect_uris": ["http://localhost"]
-                            }
+                        oauth_scopes = "https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/gmail.send"
+                        auth_params = {
+                            "client_id": g_cid.strip(),
+                            "redirect_uri": "http://localhost",
+                            "response_type": "code",
+                            "scope": oauth_scopes,
+                            "access_type": "offline",
+                            "prompt": "consent"
                         }
-                        flow = Flow.from_client_config(client_cfg, scopes=oauth_scopes, redirect_uri="http://localhost")
-                        auth_url, _ = flow.authorization_url(access_type="offline", prompt="consent")
+                        auth_url = "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(auth_params)
                         st.markdown(f"**Step 1:** [👉 Pindutin Ito upang Pahintulutan ang Google Drive at Gmail]({auth_url})")
                         auth_code_in = st.text_input("Step 2: Pagkatapos mag-Allow, kopyahin ang buong `http://localhost/?code=...` URL mula sa address bar at i-paste dito:").strip()
                         if st.button("🔑 Kunin at I-save ang Bagong Google Drive Refresh Token", type="primary"):
                             clean_code = auth_code_in
                             if "code=" in clean_code:
-                                clean_code = re.search(r"code=([^&]+)", clean_code).group(1)
-                            flow.fetch_token(code=clean_code)
-                            new_rt = flow.credentials.refresh_token
+                                clean_code = urllib.parse.unquote(re.search(r"code=([^&]+)", clean_code).group(1))
+                            token_res = requests.post(
+                                "https://oauth2.googleapis.com/token",
+                                data={
+                                    "code": clean_code,
+                                    "client_id": g_cid.strip(),
+                                    "client_secret": g_csec.strip(),
+                                    "redirect_uri": "http://localhost",
+                                    "grant_type": "authorization_code"
+                                },
+                                timeout=20
+                            )
+                            token_json = token_res.json()
+                            new_rt = token_json.get("refresh_token", "")
                             if new_rt:
                                 st.session_state.custom_secrets["GMAIL_REFRESH_TOKEN"] = new_rt
                                 existing_cfg = {}
@@ -4007,6 +4018,8 @@ elif app_mode == "🛠️ App Settings":
                                     json.dump(existing_cfg, f, indent=2)
                                 st.success("✅ Matagumpay na nakuha at na-save ang bagong Google Drive + Gmail Refresh Token!")
                                 st.code(new_rt)
+                            else:
+                                st.error(f"Hindi nakuha ang refresh_token: {token_json}")
                     except Exception as ex:
                         st.caption(f"OAuth Helper Notice: {str(ex)}")
 
