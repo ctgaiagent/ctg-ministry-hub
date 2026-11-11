@@ -2883,6 +2883,11 @@ def render_weekly_report_page():
     is_master = (st.session_state.user_role == "Master Admin")
     my_parish = st.session_state.get("assigned_parish", "Lahat ng Parokya")
 
+    if "_next_mon_view_month" in st.session_state:
+        st.session_state["mon_view_month"] = st.session_state.pop("_next_mon_view_month")
+    if "_next_mon_view_week" in st.session_state:
+        st.session_state["mon_view_week"] = st.session_state.pop("_next_mon_view_week")
+
     st.markdown("<div class='pmr-banner'>CHURCH OF THE TEMPLE OF GOD</div>", unsafe_allow_html=True)
     st.markdown("<div class='pmr-subbanner'>Parish Monitoring Report — Full Year 2027 (January–December, Weeks 1–5) & Google Drive Auto-Sync</div>", unsafe_allow_html=True)
 
@@ -2917,6 +2922,7 @@ def render_weekly_report_page():
             with st.spinner(f"Binabasa ang mga Excel files mula sa Google Drive Folder para sa {view_month} 2027 ({view_week})..."):
                 folder_url = st.session_state.custom_secrets.get("WEEKLY_REPORT_FOLDER_URL", ACTIVE_WEEKLY_FOLDER_URL)
                 cnt, msg = sync_weekly_reports_from_google_drive_folder(folder_url, view_month, view_week)
+                st.session_state["pwr_form_rev"] = st.session_state.get("pwr_form_rev", 0) + 1
                 st.cache_data.clear()
                 st.success(msg)
                 time.sleep(0.6)
@@ -2930,6 +2936,8 @@ def render_weekly_report_page():
                 db.pop(k, None)
             with open(LOCAL_WEEKLY_REPORTS_DB, "w", encoding="utf-8") as f:
                 json.dump(db, f, ensure_ascii=False, indent=2)
+            st.session_state["pwr_form_rev"] = st.session_state.get("pwr_form_rev", 0) + 1
+            st.session_state.pop("last_extracted_pwr", None)
             st.success(f"Na-reset sa 0 ang {view_month} ({view_week})!")
             time.sleep(0.4)
             st.rerun()
@@ -3038,8 +3046,8 @@ def render_weekly_report_page():
                             str(extracted.get(k, "")).strip()
                             for k in ["priest", "sakristan", "epistula", "evangelio", "tema_misa", "adal_evangelio", "tema_pampamilya"]
                         )
-                        st.session_state["mon_view_month"] = sel_month
-                        st.session_state["mon_view_week"] = sel_week
+                        st.session_state["_next_mon_view_month"] = sel_month
+                        st.session_state["_next_mon_view_week"] = sel_week
                         st.session_state["pwr_form_rev"] = st.session_state.get("pwr_form_rev", 0) + 1
                         st.session_state["last_extracted_pwr"] = {
                             "parish": target_parish,
@@ -3181,6 +3189,7 @@ def render_weekly_report_page():
                     "pampamilya_preacher": v_pam_pr,
                 }
                 _, sync_msg = save_weekly_monitoring_record(v_parish, v_month, v_week, v_date, updated_payload, drive_link=cur_rec.get("drive_link", ""))
+                st.session_state["pwr_form_rev"] = st.session_state.get("pwr_form_rev", 0) + 1
                 st.success(f"✅ Na-update na sa PARISH WEEKLY REPORT at Monitoring Tables para sa **{v_parish}** ({v_month} 2027 - {v_week})! ({sync_msg})")
                 time.sleep(0.5)
                 st.rerun()
