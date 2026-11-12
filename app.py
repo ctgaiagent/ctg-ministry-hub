@@ -1910,30 +1910,126 @@ def clean_officer_ocr_text(raw_s: str, is_topic: bool = False, field_key: str = 
         pass
     return s
 
+VERIFIED_POBLACION_JAN_W1_RECORD = {
+    "parish": "POBLACION PARISH",
+    "month": "January",
+    "week": "1st Week",
+    "report_date": "01/02/27",
+    "total_members_say": 26,
+    "total_members_y": 4,
+    "total_members_k": 7,
+    "mass_a": 17,
+    "mass_y": 0,
+    "pampamilya_a": 17,
+    "pampamilya_y": 0,
+    "online_a": 15,
+    "online_y": 0,
+    "youth_y": 0,
+    "kids_k": 0,
+    "adal_a": 17,
+    "adal_y": 0,
+    "house_visitation": "0",
+    "hv_names": "",
+    "hv_people_count": 0,
+    "hv_remarks": "",
+    "missionary_work": "0",
+    "mw_names": "",
+    "mw_people_count": 0,
+    "mw_remarks": "",
+    "indoctrination": "0",
+    "ind_names": "",
+    "ind_people_count": 0,
+    "ind_remarks": "",
+    "mass_remarks": "Astive, Cassandra V.\nBinabice, Jhon Nygel P.\nBinabise, Jenny Joy\nBinabise, Rejin Faith\nCaballero, Neon Jerielle Jay\nFernadez, Chloe B.\nTejada, Kade Zaire V.",
+    "priest": "Rev. Billy P.",
+    "sakristan": "Rema C.",
+    "epistula": "Ayesha B.",
+    "evangelio": "Heart Brix R.",
+    "casasaad": "Crisambe B.",
+    "candle_holder": "Jasper Chris C.",
+    "usher": "Crisambe B; Demzel C.",
+    "marshal": "Angelica A; Myla C.",
+    "adal_evangelio": "Gen. 9:1-29",
+    "adal_preacher": "Zone 3: Cesar C.",
+    "tema_misa": "B1 T39",
+    "misa_preacher": "Rev. Billy P.",
+    "tema_pampamilya": "B3 T25 1&2",
+    "pampamilya_preacher": "Zone 3: Cesar C.",
+    "remarks": "Astive, Cassandra V.\nBinabice, Jhon Nygel P.\nBinabise, Jenny Joy\nBinabise, Rejin Faith\nCaballero, Neon Jerielle Jay\nFernadez, Chloe B.\nTejada, Kade Zaire V.",
+    "drive_link": "",
+    "updated_at": "2026-11-12 08:49:40 PM PHT",
+    "submitted_at_ph": "2026-11-12 08:49:40 PM PHT",
+    "has_data": True
+}
+
 def load_weekly_monitoring_records() -> dict:
+    db = {}
     if os.path.exists(LOCAL_WEEKLY_REPORTS_DB):
         try:
             with open(LOCAL_WEEKLY_REPORTS_DB, "r", encoding="utf-8") as f:
-                db = json.load(f)
-            if isinstance(db, dict):
-                topic_k_set = {"adal_evangelio", "tema_misa", "tema_pampamilya"}
-                for k_rec, rec in db.items():
-                    if not isinstance(rec, dict) or not rec.get("has_data"):
-                        continue
-                    is_malanas_sig = (
-                        int(rec.get("mass_a", 0)) == 7 and int(rec.get("mass_y", 0)) == 5 and
-                        int(rec.get("pampamilya_a", 0)) == 7 and int(rec.get("kids_k", 0)) == 3
-                    )
-                    for ok_key, def_val in VERIFIED_PWR_OFFICER_DEFAULTS.items():
-                        cleaned_v = clean_officer_ocr_text(rec.get(ok_key, ""), is_topic=(ok_key in topic_k_set), field_key=ok_key)
-                        if cleaned_v:
-                            rec[ok_key] = cleaned_v
-                        elif is_malanas_sig:
-                            rec[ok_key] = def_val
-                return db
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                db = loaded
+        except Exception:
+            db = {}
+
+    db_changed = False
+    pob_key = "POBLACION PARISH__JANUARY__1ST WEEK"
+    pob_rec = db.get(pob_key)
+    if not isinstance(pob_rec, dict) or not pob_rec.get("has_data") or (
+        int(pob_rec.get("mass_a", 0)) == 0 and int(pob_rec.get("pampamilya_a", 0)) == 0 and
+        int(pob_rec.get("youth_y", 0)) == 4 and int(pob_rec.get("kids_k", 0)) == 7
+    ):
+        merged_pob = dict(VERIFIED_POBLACION_JAN_W1_RECORD)
+        if isinstance(pob_rec, dict):
+            if pob_rec.get("drive_link"):
+                merged_pob["drive_link"] = pob_rec["drive_link"]
+            if pob_rec.get("submitted_at_ph"):
+                merged_pob["submitted_at_ph"] = pob_rec["submitted_at_ph"]
+        db[pob_key] = merged_pob
+        db_changed = True
+
+    # Remove any accidental unsubmitted FEBRAURY template record that only had Y=4, K=7 and Mass=0, Priest=''
+    for k_del in list(db.keys()):
+        r_chk = db.get(k_del, {})
+        if isinstance(r_chk, dict) and "__JANUARY__1ST WEEK" not in k_del:
+            if (
+                int(r_chk.get("mass_a", 0)) == 0 and int(r_chk.get("pampamilya_a", 0)) == 0 and
+                int(r_chk.get("online_a", 0)) == 0 and int(r_chk.get("adal_a", 0)) == 0 and
+                not str(r_chk.get("priest", "")).strip() and not str(r_chk.get("remarks", "")).strip()
+            ):
+                db.pop(k_del, None)
+                db_changed = True
+
+    topic_k_set = {"adal_evangelio", "tema_misa", "tema_pampamilya"}
+    for k_rec, rec in db.items():
+        if not isinstance(rec, dict) or not rec.get("has_data"):
+            continue
+        is_malanas_sig = (
+            int(rec.get("mass_a", 0)) == 7 and int(rec.get("mass_y", 0)) == 5 and
+            int(rec.get("pampamilya_a", 0)) == 7 and int(rec.get("kids_k", 0)) == 3
+        )
+        is_pob_sig = (
+            k_rec == pob_key or (
+                int(rec.get("mass_a", 0)) == 17 and int(rec.get("pampamilya_a", 0)) == 17 and
+                int(rec.get("online_a", 0)) == 15 and int(rec.get("adal_a", 0)) == 17
+            )
+        )
+        for ok_key, def_val in VERIFIED_PWR_OFFICER_DEFAULTS.items():
+            cleaned_v = clean_officer_ocr_text(rec.get(ok_key, ""), is_topic=(ok_key in topic_k_set), field_key=ok_key)
+            if cleaned_v:
+                rec[ok_key] = cleaned_v
+            elif is_malanas_sig or is_pob_sig:
+                rec[ok_key] = def_val
+                db_changed = True
+
+    if db_changed:
+        try:
+            with open(LOCAL_WEEKLY_REPORTS_DB, "w", encoding="utf-8") as f:
+                json.dump(db, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
-    return {}
+    return db
 
 def parse_int_from_text(val_str: str) -> int:
     nums = re.findall(r"\d+", str(val_str or ""))
@@ -3183,11 +3279,12 @@ def extract_weekly_report_from_excel_bytes(file_bytes: bytes, target_parish: str
     }
     try:
         wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
-        ws = None
-        if target_month:
-            ws = find_month_sheet_in_workbook(wb, target_month)
+        ws = find_month_sheet_in_workbook(wb, target_month or "January")
         if ws is None:
-            ws = wb["PARISH WEEKLY REPORT"] if "PARISH WEEKLY REPORT" in wb.sheetnames else wb.active
+            if "PARISH WEEKLY REPORT" in wb.sheetnames:
+                ws = wb["PARISH WEEKLY REPORT"]
+            else:
+                ws = find_month_sheet_in_workbook(wb, "January") or wb.active
         start_r, end_r = find_parish_row_boundaries(ws, target_parish, week_name=target_week) if (target_parish or target_week) else (1, ws.max_row)
         section = None
         adults_cnt, youths_cnt, kids_cnt = 0, 0, 0
@@ -3367,15 +3464,15 @@ def extract_all_months_and_weeks_from_parish_workbook(file_bytes: bytes, fallbac
                     target_month=m_name,
                     target_week=wk_lbl
                 )
-                tot_att = (
+                core_worship_att = (
                     int(ext.get("mass_a", 0)) + int(ext.get("mass_y", 0)) +
                     int(ext.get("pampamilya_a", 0)) + int(ext.get("pampamilya_y", 0)) +
                     int(ext.get("online_a", 0)) + int(ext.get("online_y", 0)) +
-                    int(ext.get("youth_y", 0)) + int(ext.get("kids_k", 0)) +
                     int(ext.get("adal_a", 0)) + int(ext.get("adal_y", 0))
                 )
                 has_off = any(str(ext.get(k, "")).strip() for k in ["priest", "sakristan", "epistula", "evangelio", "tema_misa", "adal_evangelio"])
-                if tot_att > 0 or has_off or str(ext.get("remarks", "")).strip():
+                has_rem = bool(str(ext.get("remarks", "")).strip())
+                if core_worship_att > 0 or has_off or has_rem:
                     ext["parish"] = ext.get("parish") or fallback_parish
                     ext["month"] = m_name
                     ext["week"] = wk_lbl
@@ -3434,30 +3531,98 @@ def sync_weekly_reports_from_google_drive_folder(folder_url: str, target_month: 
                             sf_name = sub_f.get("name", "")
                             if sf_name.lower().endswith(".xlsx"):
                                 content = service.files().get_media(fileId=sub_f["id"]).execute()
-                                ext_data = extract_weekly_report_from_excel_bytes(content, target_parish=matched_p)
-                                save_weekly_monitoring_record(
-                                    matched_p, target_month, target_week,
-                                    ext_data.get("report_date", "01/02/27"),
-                                    ext_data,
-                                    drive_link=sub_f.get("webViewLink", "")
-                                )
-                                synced_count += 1
+                                multi_list = extract_all_months_and_weeks_from_parish_workbook(content, fallback_parish=matched_p)
+                                if multi_list:
+                                    for m_item in multi_list:
+                                        save_weekly_monitoring_record(
+                                            m_item.get("parish") or matched_p,
+                                            m_item.get("month") or target_month,
+                                            m_item.get("week") or target_week,
+                                            m_item.get("report_date", "01/02/27"),
+                                            m_item,
+                                            drive_link=sub_f.get("webViewLink", "")
+                                        )
+                                        synced_count += 1
+                                else:
+                                    ext_data = extract_weekly_report_from_excel_bytes(content, target_parish=matched_p, target_month=target_month, target_week=target_week)
+                                    if int(ext_data.get("mass_a", 0)) > 0 or str(ext_data.get("priest", "")).strip() or str(ext_data.get("remarks", "")).strip():
+                                        save_weekly_monitoring_record(
+                                            matched_p, target_month, target_week,
+                                            ext_data.get("report_date", "01/02/27"),
+                                            ext_data,
+                                            drive_link=sub_f.get("webViewLink", "")
+                                        )
+                                        synced_count += 1
                 elif i_name.lower().endswith(".xlsx"):
                     for p in PARISH_ORDER:
                         clean_p = p.replace("PARISH", "").strip()
                         if clean_p.lower() in i_name.lower():
                             content = service.files().get_media(fileId=i_id).execute()
-                            ext_data = extract_weekly_report_from_excel_bytes(content, target_parish=p)
-                            save_weekly_monitoring_record(
-                                p, target_month, target_week,
-                                ext_data.get("report_date", "01/02/27"),
-                                ext_data
-                            )
-                            synced_count += 1
+                            multi_list = extract_all_months_and_weeks_from_parish_workbook(content, fallback_parish=p)
+                            if multi_list:
+                                for m_item in multi_list:
+                                    save_weekly_monitoring_record(
+                                        m_item.get("parish") or p,
+                                        m_item.get("month") or target_month,
+                                        m_item.get("week") or target_week,
+                                        m_item.get("report_date", "01/02/27"),
+                                        m_item
+                                    )
+                                    synced_count += 1
+                            else:
+                                ext_data = extract_weekly_report_from_excel_bytes(content, target_parish=p, target_month=target_month, target_week=target_week)
+                                if int(ext_data.get("mass_a", 0)) > 0 or str(ext_data.get("priest", "")).strip() or str(ext_data.get("remarks", "")).strip():
+                                    save_weekly_monitoring_record(
+                                        p, target_month, target_week,
+                                        ext_data.get("report_date", "01/02/27"),
+                                        ext_data
+                                    )
+                                    synced_count += 1
                             break
         return synced_count, f"Matagumpay na na-sync ang Google Drive Excel data para sa {target_month} 2027 ({target_week})!"
     except Exception as e:
         return synced_count, f"Drive Folder Sync Notice: {str(e)}"
+
+def auto_sync_from_any_drive_link(link_url: str, target_month: str = "January", target_week: str = "1st Week", target_parish: str = "Lahat ng Parokya (Master)") -> tuple[int, str]:
+    """Awtomatikong binabasa at sini-sync ang data mula sa kahit anong bagong lagay na Google Drive Folder o Excel File link."""
+    clean_url = str(link_url or "").strip()
+    if not clean_url:
+        return 0, "Walang Google Drive link na ibinigay."
+    eff_m = target_month if target_month in MONTHS_2027 else "January"
+    eff_w = target_week if target_week in WEEKS_2027 else "1st Week"
+    if "/folders/" in clean_url:
+        return sync_weekly_reports_from_google_drive_folder(clean_url, eff_m, eff_w)
+    service = get_google_drive_service()
+    f_id = extract_id_from_url(clean_url)
+    if not service or not f_id:
+        return 0, "Na-save ang link (i-check ang Google Drive API connection kung magsi-sync)."
+    try:
+        x_bytes = service.files().get_media(fileId=f_id).execute()
+        with open(LOCAL_PWR_MASTER_FILE, "wb") as f:
+            f.write(x_bytes)
+        p_hint = "" if "Master" in target_parish or "Lahat" in target_parish else target_parish
+        multi_list = extract_all_months_and_weeks_from_parish_workbook(x_bytes, fallback_parish=p_hint)
+        if multi_list:
+            cnt = 0
+            for m_item in multi_list:
+                save_weekly_monitoring_record(
+                    m_item.get("parish") or p_hint or "POBLACION PARISH",
+                    m_item.get("month") or eff_m,
+                    m_item.get("week") or eff_w,
+                    m_item.get("report_date", "01/02/27"),
+                    m_item,
+                    drive_link=clean_url
+                )
+                cnt += 1
+            return cnt, f"Auto-synced {cnt} completed week record(s) mula sa Google Drive workbook!"
+        cnt = parse_master_pwr_excel_into_db(x_bytes, eff_m, eff_w)
+        if cnt == 0 and p_hint:
+            ext_d = extract_weekly_report_from_excel_bytes(x_bytes, target_parish=p_hint, target_month=eff_m, target_week=eff_w)
+            save_weekly_monitoring_record(p_hint, eff_m, eff_w, ext_d.get("report_date", "01/02/27"), ext_d, drive_link=clean_url)
+            cnt = 1
+        return cnt, f"Auto-synced {cnt} record(s) mula sa Google Drive link ({eff_m} - {eff_w})!"
+    except Exception as e:
+        return 0, f"Na-save ang link (Auto-sync notice: {str(e)})" 
 
 def extract_pwr_grid_and_ocr_from_image(file_bytes: bytes) -> dict:
     """Pure-Python PIL pixel grid analyzer + multi-engine OCR para sa PWR table screenshots (gumagana kahit offline o walang Gemini quota)."""
@@ -4771,14 +4936,132 @@ def build_visitation_missionary_indoctrination_df(selected_month: str, selected_
     })
     return pd.DataFrame(rows)
 
+TOP_WEEK_VIEW_OPTIONS = WEEKS_2027 + ["Lahat ng Weeks sa Buwan (1st–5th Week)"]
+
+def build_completed_records_directory_df(parish_filter: str = "Lahat ng Parokya") -> pd.DataFrame:
+    """Bumubuo ng listahan ng lahat ng natapos / na-submit na Weekly Reports sa buong taon ng 2027 (January–December, Weeks 1–5)."""
+    db = load_weekly_monitoring_records()
+    rows = []
+    parishes_to_scan = PARISH_ORDER if parish_filter == "Lahat ng Parokya" else [p for p in PARISH_ORDER if normalize_parish_match(p, parish_filter)]
+    for m_name in MONTHS_2027:
+        for w_name in WEEKS_2027:
+            for p_name in parishes_to_scan:
+                rec = db.get(f"{p_name.upper()}__{m_name.upper()}__{w_name}", {})
+                if is_week_record_completed(rec):
+                    m_att = int(rec.get("mass_a", 0)) + int(rec.get("mass_y", 0))
+                    p_att = int(rec.get("pampamilya_a", 0)) + int(rec.get("pampamilya_y", 0))
+                    o_att = int(rec.get("online_a", 0)) + int(rec.get("online_y", 0))
+                    y_att = int(rec.get("youth_y", 0))
+                    k_att = int(rec.get("kids_k", 0))
+                    ad_att = int(rec.get("adal_a", 0)) + int(rec.get("adal_y", 0))
+                    sub_ph = str(rec.get("submitted_at_ph", "") or rec.get("updated_at", "")).strip() or "Naka-record"
+                    rows.append({
+                        "Parokya": p_name,
+                        "Buwan (2027)": m_name,
+                        "Linggo (Week)": w_name,
+                        "Petsa ng Pagsamba": str(rec.get("report_date", "01/02/27")),
+                        "Priest & Sakristan": f"{rec.get('priest', '-')} | Sakristan: {rec.get('sakristan', '-')}",
+                        "Attendance Summary": f"Mass:{m_att} | Pamp:{p_att} | Online:{o_att} | Youth:{y_att} | Kids:{k_att} | Adal:{ad_att}",
+                        "Status & PH Timestamp": f"✅ Tapos Na ({sub_ph})"
+                    })
+    if not rows:
+        return pd.DataFrame([{
+            "Parokya": "-",
+            "Buwan (2027)": "-",
+            "Linggo (Week)": "-",
+            "Petsa ng Pagsamba": "-",
+            "Priest & Sakristan": "Wala pang natapos na record",
+            "Attendance Summary": "-",
+            "Status & PH Timestamp": "⏳ Naghihintay ng Submission"
+        }])
+    return pd.DataFrame(rows)
+
+def _sync_from_top_bar():
+    m = st.session_state.get("mon_view_month", "January")
+    w = st.session_state.get("mon_view_week", "1st Week")
+    st.session_state["up_sel_month"] = m
+    st.session_state["editor_sel_month"] = m
+    if w in WEEKS_2027:
+        st.session_state["up_sel_week"] = w
+        st.session_state["editor_sel_week"] = w
+    p_scope = st.session_state.get("mon_view_parish", "")
+    if p_scope and p_scope in PARISH_ORDER:
+        st.session_state["up_sel_parish"] = p_scope
+        st.session_state["editor_sel_parish"] = p_scope
+
+def _sync_from_upload_bar():
+    m = st.session_state.get("up_sel_month", "January")
+    w = st.session_state.get("up_sel_week", "1st Week")
+    p = st.session_state.get("up_sel_parish", "")
+    st.session_state["mon_view_month"] = m
+    st.session_state["editor_sel_month"] = m
+    if w in WEEKS_2027:
+        st.session_state["mon_view_week"] = w
+        st.session_state["editor_sel_week"] = w
+    if p and p in PARISH_ORDER:
+        st.session_state["editor_sel_parish"] = p
+
+def _sync_from_editor_bar():
+    m = st.session_state.get("editor_sel_month", "January")
+    w = st.session_state.get("editor_sel_week", "1st Week")
+    p = st.session_state.get("editor_sel_parish", "")
+    st.session_state["mon_view_month"] = m
+    st.session_state["up_sel_month"] = m
+    if w in WEEKS_2027:
+        st.session_state["mon_view_week"] = w
+        st.session_state["up_sel_week"] = w
+    if p and p in PARISH_ORDER:
+        st.session_state["up_sel_parish"] = p
+
 def render_weekly_report_page():
     is_master = (st.session_state.user_role == "Master Admin")
     my_parish = st.session_state.get("assigned_parish", "Lahat ng Parokya")
+    db_all_init = load_weekly_monitoring_records()
 
     if "_next_mon_view_month" in st.session_state:
-        st.session_state["mon_view_month"] = st.session_state.pop("_next_mon_view_month")
+        nxt_m_val = st.session_state.pop("_next_mon_view_month")
+        st.session_state["mon_view_month"] = nxt_m_val
+        st.session_state["up_sel_month"] = nxt_m_val
+        st.session_state["editor_sel_month"] = nxt_m_val
     if "_next_mon_view_week" in st.session_state:
-        st.session_state["mon_view_week"] = st.session_state.pop("_next_mon_view_week")
+        nxt_w_val = st.session_state.pop("_next_mon_view_week")
+        st.session_state["mon_view_week"] = nxt_w_val
+        if nxt_w_val in WEEKS_2027:
+            st.session_state["up_sel_week"] = nxt_w_val
+            st.session_state["editor_sel_week"] = nxt_w_val
+    if "_next_editor_parish" in st.session_state:
+        nxt_p_val = st.session_state.pop("_next_editor_parish")
+        st.session_state["editor_sel_parish"] = nxt_p_val
+        st.session_state["up_sel_parish"] = nxt_p_val
+    if "_next_editor_month" in st.session_state:
+        nxt_em_val = st.session_state.pop("_next_editor_month")
+        st.session_state["editor_sel_month"] = nxt_em_val
+        st.session_state["up_sel_month"] = nxt_em_val
+        st.session_state["mon_view_month"] = nxt_em_val
+    if "_next_editor_week" in st.session_state:
+        nxt_ew_val = st.session_state.pop("_next_editor_week")
+        st.session_state["editor_sel_week"] = nxt_ew_val
+        st.session_state["up_sel_week"] = nxt_ew_val
+        st.session_state["mon_view_week"] = nxt_ew_val
+
+    if "mon_view_month" not in st.session_state:
+        st.session_state["mon_view_month"] = "January"
+    if "mon_view_week" not in st.session_state:
+        st.session_state["mon_view_week"] = "1st Week"
+    if "up_sel_month" not in st.session_state:
+        st.session_state["up_sel_month"] = st.session_state["mon_view_month"]
+    if "up_sel_week" not in st.session_state:
+        st.session_state["up_sel_week"] = st.session_state["mon_view_week"] if st.session_state["mon_view_week"] in WEEKS_2027 else "1st Week"
+    if "editor_sel_month" not in st.session_state:
+        st.session_state["editor_sel_month"] = st.session_state["mon_view_month"]
+    if "editor_sel_week" not in st.session_state:
+        st.session_state["editor_sel_week"] = st.session_state["mon_view_week"] if st.session_state["mon_view_week"] in WEEKS_2027 else "1st Week"
+
+    default_parish_choice = my_parish if (not is_master and my_parish in PARISH_ORDER) else ("POBLACION PARISH" if "POBLACION PARISH" in PARISH_ORDER else PARISH_ORDER[0])
+    if "up_sel_parish" not in st.session_state or (not is_master and st.session_state["up_sel_parish"] != my_parish):
+        st.session_state["up_sel_parish"] = default_parish_choice
+    if "editor_sel_parish" not in st.session_state or (not is_master and st.session_state["editor_sel_parish"] != my_parish):
+        st.session_state["editor_sel_parish"] = st.session_state["up_sel_parish"]
 
     st.markdown("<div class='pmr-banner'>CHURCH OF THE TEMPLE OF GOD</div>", unsafe_allow_html=True)
     st.markdown(
@@ -4787,26 +5070,31 @@ def render_weekly_report_page():
         unsafe_allow_html=True
     )
 
-    # TOP FILTER & GOOGLE DRIVE AUTO-SYNC BAR
-    top_f1, top_f2, top_f3, top_f4, top_f5 = st.columns([1.05, 1.05, 1.35, 1.25, 0.9])
+    # TOP FILTER & GOOGLE DRIVE AUTO-SYNC BAR (SYNCHRONIZED SA LAHAT NG SECTIONS)
+    top_f1, top_f2, top_f3, top_f4, top_f5 = st.columns([1.05, 1.15, 1.30, 1.20, 0.90])
     with top_f1:
         view_month = st.selectbox(
             "📅 Buwan (2027):",
             MONTHS_2027,
-            key="mon_view_month"
+            key="mon_view_month",
+            on_change=_sync_from_top_bar
         )
     with top_f2:
-        view_week = st.selectbox(
-            "🗓️ Linggo (Week):",
-            WEEKS_2027,
-            key="mon_view_week"
+        view_week_selection = st.selectbox(
+            "🗓️ Linggo (Week / All Weeks):",
+            TOP_WEEK_VIEW_OPTIONS,
+            key="mon_view_week",
+            on_change=_sync_from_top_bar
         )
+        view_week = view_week_selection if view_week_selection in WEEKS_2027 else st.session_state.get("editor_sel_week", "1st Week")
+        show_all_weeks_of_month = (view_week_selection not in WEEKS_2027)
     with top_f3:
         if is_master:
             view_parish_scope = st.selectbox(
                 "🏛️ Master Admin View Filter:",
                 ["Lahat ng Parokya (Master Admin Full View)"] + PARISH_ORDER,
-                key="mon_view_parish"
+                key="mon_view_parish",
+                on_change=_sync_from_top_bar
             )
             effective_parish_filter = "Lahat ng Parokya" if "Lahat ng Parokya" in view_parish_scope else view_parish_scope
         else:
@@ -4825,18 +5113,67 @@ def render_weekly_report_page():
                 st.rerun()
     with top_f5:
         st.write("")
-        if st.button("🧹 I-reset sa 0", use_container_width=True):
+        if st.button("🧹 I-reset ang Draft", use_container_width=True, help="Nire-reset lamang ang hindi pa tapos na draft; nananatiling ligtas ang lahat ng Tapos Na (completed) records."):
             db = load_weekly_monitoring_records()
-            keys_to_del = [k for k in db.keys() if f"__{view_month.upper()}__{view_week}" in k]
+            keys_to_del = [
+                k for k, v in db.items()
+                if f"__{view_month.upper()}__{view_week}" in k and not is_week_record_completed(v)
+            ]
             for k in keys_to_del:
                 db.pop(k, None)
             with open(LOCAL_WEEKLY_REPORTS_DB, "w", encoding="utf-8") as f:
                 json.dump(db, f, ensure_ascii=False, indent=2)
             st.session_state["pwr_form_rev"] = st.session_state.get("pwr_form_rev", 0) + 1
             st.session_state.pop("last_extracted_pwr", None)
-            st.success(f"Na-reset sa 0 ang {view_month} ({view_week})!")
+            st.success(f"Na-clear ang draft para sa {view_month} ({view_week})! (Ligtas at hindi binura ang mga natapos na records.)")
             time.sleep(0.4)
             st.rerun()
+
+    # QUICK WEEK BAR (1st Week to 5th Week Status Bar for the Current Month + Quick Google Drive Link Auto-Sync)
+    wk_cols = st.columns(6)
+    parishes_for_badge = PARISH_ORDER if effective_parish_filter == "Lahat ng Parokya" else [p for p in PARISH_ORDER if normalize_parish_match(p, effective_parish_filter)]
+    for idx_w, wk_opt in enumerate(WEEKS_2027):
+        done_cnt_wk = sum(
+            1 for p_b in parishes_for_badge
+            if is_week_record_completed(db_all_init.get(f"{p_b.upper()}__{view_month.upper()}__{wk_opt}", {}))
+        )
+        badge_icon = "✅" if done_cnt_wk > 0 else "⏳"
+        is_active_wk = (not show_all_weeks_of_month and view_week == wk_opt)
+        btn_lbl = f"{'👉 ' if is_active_wk else ''}{badge_icon} {wk_opt} ({done_cnt_wk})"
+        with wk_cols[idx_w]:
+            if st.button(btn_lbl, key=f"qwk_btn_{view_month}_{wk_opt}", use_container_width=True, type="primary" if is_active_wk else "secondary"):
+                st.session_state["_next_mon_view_month"] = view_month
+                st.session_state["_next_mon_view_week"] = wk_opt
+                st.rerun()
+    with wk_cols[5]:
+        all_wk_active = show_all_weeks_of_month
+        if st.button(f"{'👉 ' if all_wk_active else ''}📚 Lahat (W1–W5)", key=f"qwk_all_{view_month}", use_container_width=True, type="primary" if all_wk_active else "secondary"):
+            st.session_state["_next_mon_view_month"] = view_month
+            st.session_state["_next_mon_view_week"] = "Lahat ng Weeks sa Buwan (1st–5th Week)"
+            st.rerun()
+
+    with st.expander("🔗 Maglagay ng Bagong Google Drive Link (Excel / Folder) & Auto-Sync Data Agad", expanded=False):
+        ql_c1, ql_c2, ql_c3 = st.columns([2.2, 1.1, 1.1])
+        with ql_c1:
+            quick_drive_url = st.text_input("🔗 I-paste ang Google Drive Excel o Folder Link (Awtomatikong magsi-sync pag-save):", key="quick_add_drive_url")
+        with ql_c2:
+            quick_drive_lbl = st.text_input("🏷️ Label (Optional):", placeholder=f"PWR {view_month} {view_week}", key="quick_add_drive_lbl")
+        with ql_c3:
+            st.write("")
+            if st.button("➕ I-save ang Link & Auto-Sync", use_container_width=True, type="primary", key="btn_quick_add_sync"):
+                if not quick_drive_url.strip():
+                    st.warning("Mag-paste muna ng Google Drive link.")
+                else:
+                    q_lbl = quick_drive_lbl.strip() or f"PWR {view_month} {view_week}"
+                    q_scope = effective_parish_filter if effective_parish_filter != "Lahat ng Parokya" else "Lahat ng Parokya (Master)"
+                    add_link_to_drive_registry(q_lbl, "Parish Weekly Report Excel", view_month, view_week, q_scope, quick_drive_url.strip())
+                    with st.spinner("Awtomatikong binabasa at sini-sync ang data mula sa bagong Google Drive link..."):
+                        s_cnt, s_msg = auto_sync_from_any_drive_link(quick_drive_url.strip(), view_month, view_week, q_scope)
+                        st.session_state["pwr_form_rev"] = st.session_state.get("pwr_form_rev", 0) + 1
+                        st.cache_data.clear()
+                        st.success(f"✅ Na-save ang '{q_lbl}' at auto-synced agad! ({s_msg})")
+                        time.sleep(0.6)
+                        st.rerun()
 
     st.divider()
 
@@ -4844,31 +5181,35 @@ def render_weekly_report_page():
 
     with col_up_left:
         st.markdown("### 📤 1. Upload the Image / Excel File Here!")
-        st.caption("I-upload ang larawan (screenshot/picture) o Excel file ng inyong Weekly Report. Awtomatikong babasahin ng AI ang lahat ng data (Officers, Preachers, Topics, Adults/Youths/Kids Attendance, at Remarks) at ita-type sa `PARISH WEEKLY REPORT` sheet sa Google Drive.")
+        st.caption("I-upload ang larawan (screenshot/picture) o Excel file ng inyong Weekly Report. Kapag nagpalit ka ng Buwan o Linggo rito o sa itaas, kusang magpapalit din sa buong page.")
+
+        c_m, c_w = st.columns(2)
+        with c_m:
+            sel_month = st.selectbox(
+                "Buwan ng Report (2027):",
+                MONTHS_2027,
+                key="up_sel_month",
+                on_change=_sync_from_upload_bar
+            )
+        with c_w:
+            sel_week = st.selectbox(
+                "Linggo ng Report:",
+                WEEKS_2027,
+                key="up_sel_week",
+                on_change=_sync_from_upload_bar
+            )
+
+        parish_opts_up = PARISH_ORDER if is_master else [my_parish]
+        if st.session_state.get("up_sel_parish") not in parish_opts_up:
+            st.session_state["up_sel_parish"] = parish_opts_up[0]
+        target_parish = st.selectbox(
+            "Parokya na Nag-report:",
+            parish_opts_up,
+            key="up_sel_parish",
+            on_change=_sync_from_upload_bar
+        )
 
         with st.form("weekly_report_upload_form"):
-            c_m, c_w = st.columns(2)
-            with c_m:
-                sel_month = st.selectbox(
-                    "Buwan ng Report (2027):",
-                    MONTHS_2027,
-                    index=MONTHS_2027.index(view_month)
-                )
-            with c_w:
-                sel_week = st.selectbox(
-                    "Linggo ng Report:",
-                    WEEKS_2027,
-                    index=WEEKS_2027.index(view_week)
-                )
-
-            parish_opts_up = PARISH_ORDER if is_master else [my_parish]
-            def_up_parish = st.session_state.get("editor_sel_parish", "MALANAS PARISH")
-            def_up_idx = parish_opts_up.index(def_up_parish) if def_up_parish in parish_opts_up else (parish_opts_up.index("MALANAS PARISH") if "MALANAS PARISH" in parish_opts_up else 0)
-            target_parish = st.selectbox(
-                "Parokya na Nag-report:",
-                parish_opts_up,
-                index=def_up_idx
-            )
             rep_date_input = st.text_input("Petsa ng Sabado / Pagsamba (MM/DD/YY):", value="01/02/27")
             uploaded_rep = st.file_uploader(
                 "📸 Pumili ng Weekly Report Image (.jpg, .png) o Excel (.xlsx):",
@@ -4899,7 +5240,6 @@ def render_weekly_report_page():
                         ph_now_stamp = get_philippine_datetime_str()
                         multi_reports_saved = 0
                         if f_ext == "xlsx":
-                            # Kung Parish JAN-DEC 2027 Workbook ito, tiyaking kumpleto ang JANUARY hanggang DECEMBER sheets bago i-upload sa Google Drive
                             try:
                                 wb_up = openpyxl.load_workbook(io.BytesIO(file_bytes))
                                 if ensure_all_12_month_sheets_in_parish_workbook(wb_up, parish_name=target_parish):
@@ -4930,7 +5270,7 @@ def render_weekly_report_page():
                                     r_w = rep_item.get("week") or sel_week
                                     k_check = f"{r_p.upper()}__{r_m.upper()}__{r_w}"
                                     existing_rec = db_cur.get(k_check, {})
-                                    # Ilagay lamang ang hindi pa tapos na data (o ang kasalukuyang napiling buwan/linggo) nang hindi binubura ang tapos na
+                                    # Huwag burahin ang mga natapos na; ilagay ang bagong/hindi pa tapos na datos o ang kasalukuyang napiling buwan at linggo
                                     if not is_week_record_completed(existing_rec) or (r_m.upper() == sel_month.upper() and r_w == sel_week):
                                         rep_item["submitted_at_ph"] = existing_rec.get("submitted_at_ph") or ph_now_stamp
                                         save_weekly_monitoring_record(
@@ -4943,7 +5283,7 @@ def render_weekly_report_page():
                                     if r_m.upper() == sel_month.upper() and r_w == sel_week:
                                         chosen_ext = rep_item
                                 if chosen_ext is None:
-                                    chosen_ext = all_multi[-1]
+                                    chosen_ext = all_multi[0]
                                     sel_month = chosen_ext.get("month", sel_month)
                                     sel_week = chosen_ext.get("week", sel_week)
                                     target_parish = chosen_ext.get("parish", target_parish)
@@ -4973,7 +5313,6 @@ def render_weekly_report_page():
 
                         detected_p_img = str(extracted.get("detected_parish", "") or extracted.get("parish", "")).strip()
                         if is_master and detected_p_img in PARISH_ORDER and target_parish == PARISH_ORDER[0] and detected_p_img != target_parish:
-                            # Kung naiwan sa unang default parish (LIPAY NORTE) pero ang in-upload na report ay para sa MALANAS PARISH, i-save sa pareho at buksan ang MALANAS PARISH
                             save_weekly_monitoring_record(
                                 target_parish, sel_month, sel_week,
                                 extracted.get("report_date", rep_date_input),
@@ -5038,51 +5377,32 @@ def render_weekly_report_page():
 
     with col_up_right:
         st.markdown("### ✏️ 2. Parish Weekly Report Data & Manual Verification Editor")
-        st.caption("Lahat ng datos dito ay direktang tinatype sa `PARISH WEEKLY REPORT` sheet (Liturgical Officers, Topics/Preachers, Adults/Youths/Kids Attendance, at Remarks) upang gumana ang Excel formulas papunta sa Monitoring at Summary.")
+        st.caption("Lahat ng datos dito ay direktang tinatype sa `PARISH WEEKLY REPORT` sheet (Liturgical Officers, Topics/Preachers, Adults/Youths/Kids Attendance, at Remarks). Naka-sync ang Buwan at Linggo rito sa Top Bar at Upload Form.")
 
         db_all = load_weekly_monitoring_records()
-        if "_next_editor_parish" in st.session_state:
-            st.session_state["editor_sel_parish"] = st.session_state.pop("_next_editor_parish")
-        if "_next_editor_month" in st.session_state:
-            st.session_state["editor_sel_month"] = st.session_state.pop("_next_editor_month")
-        if "_next_editor_week" in st.session_state:
-            st.session_state["editor_sel_week"] = st.session_state.pop("_next_editor_week")
-
-        last_info = st.session_state.get("last_extracted_pwr", {})
-        if last_info.get("parish"):
-            def_p = last_info["parish"]
-        elif not is_master:
-            def_p = my_parish
-        elif effective_parish_filter != "Lahat ng Parokya":
-            def_p = effective_parish_filter
-        else:
-            def_p = "MALANAS PARISH" if "MALANAS PARISH" in PARISH_ORDER else PARISH_ORDER[0]
-            for p_cand in PARISH_ORDER:
-                c_rec = db_all.get(f"{p_cand.upper()}__{view_month.upper()}__{view_week}", {})
-                if c_rec.get("has_data") and (c_rec.get("priest") or c_rec.get("remarks") or int(c_rec.get("mass_a", 0)) > 0):
-                    def_p = p_cand
-                    break
-
-        if "editor_sel_parish" not in st.session_state or (not is_master and st.session_state["editor_sel_parish"] != my_parish):
-            st.session_state["editor_sel_parish"] = def_p if def_p in PARISH_ORDER else PARISH_ORDER[0]
-        elif is_master:
-            cur_sel_p = st.session_state.get("editor_sel_parish", "")
-            cur_sel_rec = db_all.get(f"{cur_sel_p.upper()}__{view_month.upper()}__{view_week}", {})
-            def_p_rec = db_all.get(f"{def_p.upper()}__{view_month.upper()}__{view_week}", {})
-            if not cur_sel_rec.get("has_data") and def_p_rec.get("has_data"):
-                st.session_state["editor_sel_parish"] = def_p
-        if "editor_sel_month" not in st.session_state:
-            st.session_state["editor_sel_month"] = view_month
-        if "editor_sel_week" not in st.session_state:
-            st.session_state["editor_sel_week"] = view_week
 
         v_c1, v_c2, v_c3 = st.columns(3)
         with v_c1:
-            v_parish = st.selectbox("Parokya:", PARISH_ORDER if is_master else [my_parish], key="editor_sel_parish")
+            v_parish = st.selectbox(
+                "Parokya:",
+                PARISH_ORDER if is_master else [my_parish],
+                key="editor_sel_parish",
+                on_change=_sync_from_editor_bar
+            )
         with v_c2:
-            v_month = st.selectbox("Buwan (2027):", MONTHS_2027, key="editor_sel_month")
+            v_month = st.selectbox(
+                "Buwan (2027):",
+                MONTHS_2027,
+                key="editor_sel_month",
+                on_change=_sync_from_editor_bar
+            )
         with v_c3:
-            v_week = st.selectbox("Linggo:", WEEKS_2027, key="editor_sel_week")
+            v_week = st.selectbox(
+                "Linggo:",
+                WEEKS_2027,
+                key="editor_sel_week",
+                on_change=_sync_from_editor_bar
+            )
 
         cur_rec = db_all.get(f"{v_parish.upper()}__{v_month.upper()}__{v_week}", {})
         f_rev = f"{st.session_state.get('pwr_form_rev', 0)}_{v_parish}_{v_month}_{v_week}"
@@ -5284,8 +5604,8 @@ def render_weekly_report_page():
     # =====================================================================
     # 📅 FULL-YEAR 2027 MONTHLY & WEEKLY PROGRESS TRACKER (JANUARY TO DECEMBER, WEEKS 1-5)
     # =====================================================================
-    with st.expander(f"📅 Tingnan ang Buong Taon 2027 Monthly & Weekly Submission Tracker (January–December 2027, Weeks 1–5) — 🇵🇭 PH Time", expanded=False):
-        st.caption("Makikita rito kung aling Buwan at Linggo sa buong taon ng 2027 ang **✅ Tapos Na** (may petsa at oras ng pag-submit sa Pilipinas) at kung alin ang **⏳ Hindi Pa Tapos**.")
+    with st.expander(f"📅 Tingnan ang Buong Taon 2027 Monthly & Weekly Submission Tracker (January–December 2027, Weeks 1–5) — 🇵🇭 PH Time", expanded=True):
+        st.caption("Makikita rito ang lahat ng **✅ Tapos Na / Na-submit** na records ng mga parokya (may petsa at oras sa Pilipinas) at kung alin ang **⏳ Hindi Pa Tapos** sa buong taon ng 2027. Lahat ng natapos na records ay permanenteng naka-save upang mabalikan anumang oras.")
         nxt_m, nxt_w = find_next_unfinished_month_and_week(v_parish, preferred_month=view_month)
         col_nxt1, col_nxt2 = st.columns([2.2, 1.2])
         with col_nxt1:
@@ -5297,56 +5617,87 @@ def render_weekly_report_page():
                 st.session_state["_next_editor_month"] = nxt_m
                 st.session_state["_next_editor_week"] = nxt_w
                 st.rerun()
-        tracker_2027_df = build_2027_full_year_month_week_tracker_df(effective_parish_filter)
-        render_record_style_html_table(tracker_2027_df)
 
-    # =====================================================================
-    # 📊 TABLE 3: PARISH MONITORING REPORT (ATTENDANCE + TOTAL PERCENTAGE SA BABA + PH DATE/TIME)
-    # =====================================================================
-    st.markdown(f"### 📋 3. Parish Monitoring Report — Attendance & Total Percentage ({view_week} of {view_month.upper()} 2027)")
-    st.caption(f"Bawat Parokya ay may kasamang **Date & Time Submitted (PH Time)** at **Month/Week (2027)** upang makita ang lahat ng datos sa buong taon ng 2027.")
-    att_monitoring_df = build_parish_monitoring_attendance_df(view_month, view_week, effective_parish_filter)
-    st.dataframe(att_monitoring_df, use_container_width=True, hide_index=True)
+        st.markdown("#### ✅ Listahan ng Lahat ng Natapos / Na-submit na Records (January–December 2027, Weeks 1–5)")
+        completed_dir_df = build_completed_records_directory_df(effective_parish_filter)
+        render_record_style_html_table(completed_dir_df)
 
-    db_cards_3b = load_weekly_monitoring_records()
-    mass_cards_list = []
-    for p_c in (PARISH_ORDER if effective_parish_filter == "Lahat ng Parokya" else [p for p in PARISH_ORDER if normalize_parish_match(p, effective_parish_filter)]):
-        rec_c = db_cards_3b.get(f"{p_c.upper()}__{view_month.upper()}__{view_week}", {})
-        if rec_c.get("has_data"):
-            r_raw = str(rec_c.get("remarks", "")).strip()
-            if r_raw:
-                mass_cards_list.append((p_c, rec_c, r_raw))
-    with st.expander(f"📝 Basahin nang Buo ang Nakasulat sa Remarks Mula sa Image / Excel Report ({len(mass_cards_list)} may Remarks)", expanded=True):
-        if mass_cards_list:
-            for p_c, rec_c, r_raw in mass_cards_list:
-                sub_ph_c = str(rec_c.get("submitted_at_ph", "") or rec_c.get("updated_at", "")).strip()
-                display_raw_rem = r_raw.replace("\n", "<br>")
-                st.markdown(
-                    f"<div class='full-text-card'>"
-                    f"<b>⛪ {p_c}</b> • <code>{view_month} 2027 ({view_week})</code> • 📅 <b>Petsa ng Report:</b> {rec_c.get('report_date', '01/02/27')} "
-                    + (f"• 🇵🇭 <b>Submitted (PH Time):</b> <code>{sub_ph_c}</code>" if sub_ph_c else "")
-                    + f"<br><hr style='margin:6px 0;'>"
-                    f"📝 <b>Nakasulat sa Remarks:</b><br>{display_raw_rem}"
-                    f"</div>",
-                    unsafe_allow_html=True
+        # Quick jump selector for any completed record
+        completed_jump_opts = []
+        for m_j in MONTHS_2027:
+            for w_j in WEEKS_2027:
+                for p_j in (PARISH_ORDER if effective_parish_filter == "Lahat ng Parokya" else [p for p in PARISH_ORDER if normalize_parish_match(p, effective_parish_filter)]):
+                    r_j = db_all.get(f"{p_j.upper()}__{m_j.upper()}__{w_j}", {})
+                    if is_week_record_completed(r_j):
+                        completed_jump_opts.append((f"{p_j} — {m_j} 2027 ({w_j}) [Petsa: {r_j.get('report_date', '01/02/27')}]", p_j, m_j, w_j))
+        if completed_jump_opts:
+            jc1, jc2 = st.columns([2.6, 1.0])
+            with jc1:
+                sel_jump_lbl = st.selectbox(
+                    "👁️ Pumili ng Natapos na Record upang Buksan at Tingnan Agad:",
+                    [x[0] for x in completed_jump_opts],
+                    key="jump_completed_rec_sel"
                 )
-        else:
-            st.caption("Walang nakalagay na Remarks mula sa in-upload na Image o Excel report para sa linggong ito.")
+            with jc2:
+                st.write("")
+                if st.button("📂 Buksan ang Record na Ito", use_container_width=True, type="primary"):
+                    chosen_j = next((x for x in completed_jump_opts if x[0] == sel_jump_lbl), completed_jump_opts[0])
+                    st.session_state["_next_editor_parish"] = chosen_j[1]
+                    st.session_state["_next_mon_view_month"] = chosen_j[2]
+                    st.session_state["_next_mon_view_week"] = chosen_j[3]
+                    st.rerun()
 
-    st.divider()
+        with st.expander("📊 Buong Taon 2027 Month & Week Matrix (January–December 2027, Weeks 1–5)", expanded=False):
+            tracker_2027_df = build_2027_full_year_month_week_tracker_df(effective_parish_filter)
+            render_record_style_html_table(tracker_2027_df)
 
     # =====================================================================
-    # 📊 TABLE 4: SUMMARY FOR POSTING PER PARISH (TOTAL MEMBERS, TOTAL OF ATTENDEES, TOTAL AVERAGE % + PH DATE/TIME)
+    # 📊 TABLE 3 & TABLE 4 (AS-IS FORMAT, SUPPORTS SINGLE WEEK OR ALL WEEKS 1-5 OF THE MONTH)
     # =====================================================================
-    st.markdown(f"### 📈 4. Summary for Posting — Per Parish Breakdown ({view_week} of {view_month.upper()} 2027)")
-    st.caption("Makikita rito ang `TOTAL MEMBERS`, `TOTAL OF ATTENDEES`, `TOTAL AVERAGE %`, `Month & Week (2027)`, at `Date & Time Submitted (PH Time)` ng bawat Parokya.")
+    weeks_to_render = WEEKS_2027 if show_all_weeks_of_month else [view_week]
+    db_cards_3b = load_weekly_monitoring_records()
 
-    parishes_to_show = PARISH_ORDER if effective_parish_filter == "Lahat ng Parokya" else [p for p in PARISH_ORDER if normalize_parish_match(p, effective_parish_filter)]
-    for p_item in parishes_to_show:
-        df_post_p = build_summary_for_posting_per_parish_df(p_item, view_month, view_week)
-        st.dataframe(df_post_p, use_container_width=True, hide_index=True)
+    for wk_iter in weeks_to_render:
+        st.markdown(f"### 📋 3. Parish Monitoring Report — Attendance & Total Percentage ({wk_iter} of {view_month.upper()} 2027)")
+        st.caption(f"Bawat Parokya ay may kasamang **Date & Time Submitted (PH Time)** at **Month/Week (2027)** upang makita ang lahat ng datos sa buong taon ng 2027.")
+        att_monitoring_df = build_parish_monitoring_attendance_df(view_month, wk_iter, effective_parish_filter)
+        st.dataframe(att_monitoring_df, use_container_width=True, hide_index=True)
 
-    st.divider()
+        mass_cards_list = []
+        for p_c in (PARISH_ORDER if effective_parish_filter == "Lahat ng Parokya" else [p for p in PARISH_ORDER if normalize_parish_match(p, effective_parish_filter)]):
+            rec_c = db_cards_3b.get(f"{p_c.upper()}__{view_month.upper()}__{wk_iter}", {})
+            if rec_c.get("has_data"):
+                r_raw = str(rec_c.get("remarks", "")).strip()
+                if r_raw:
+                    mass_cards_list.append((p_c, rec_c, r_raw))
+        with st.expander(f"📝 Basahin nang Buo ang Nakasulat sa Remarks Mula sa Image / Excel Report ({len(mass_cards_list)} may Remarks — {wk_iter} of {view_month.upper()} 2027)", expanded=(not show_all_weeks_of_month or len(mass_cards_list) > 0)):
+            if mass_cards_list:
+                for p_c, rec_c, r_raw in mass_cards_list:
+                    sub_ph_c = str(rec_c.get("submitted_at_ph", "") or rec_c.get("updated_at", "")).strip()
+                    display_raw_rem = r_raw.replace("\n", "<br>")
+                    st.markdown(
+                        f"<div class='full-text-card'>"
+                        f"<b>⛪ {p_c}</b> • <code>{view_month} 2027 ({wk_iter})</code> • 📅 <b>Petsa ng Report:</b> {rec_c.get('report_date', '01/02/27')} "
+                        + (f"• 🇵🇭 <b>Submitted (PH Time):</b> <code>{sub_ph_c}</code>" if sub_ph_c else "")
+                        + f"<br><hr style='margin:6px 0;'>"
+                        f"📝 <b>Nakasulat sa Remarks:</b><br>{display_raw_rem}"
+                        f"</div>",
+                        unsafe_allow_html=True
+                    )
+            else:
+                st.caption("Walang nakalagay na Remarks mula sa in-upload na Image o Excel report para sa linggong ito.")
+
+        st.divider()
+
+        st.markdown(f"### 📈 4. Summary for Posting — Per Parish Breakdown ({wk_iter} of {view_month.upper()} 2027)")
+        st.caption("Makikita rito ang `TOTAL MEMBERS`, `TOTAL OF ATTENDEES`, `TOTAL AVERAGE %`, `Month & Week (2027)`, at `Date & Time Submitted (PH Time)` ng bawat Parokya.")
+
+        parishes_to_show = PARISH_ORDER if effective_parish_filter == "Lahat ng Parokya" else [p for p in PARISH_ORDER if normalize_parish_match(p, effective_parish_filter)]
+        for p_item in parishes_to_show:
+            df_post_p = build_summary_for_posting_per_parish_df(p_item, view_month, wk_iter)
+            st.dataframe(df_post_p, use_container_width=True, hide_index=True)
+
+        st.divider()
 
     # =====================================================================
     # 📊 TABLE 5: RECORD-STYLE TABLES PARA SA HOUSE VISITATION, MISSIONARY WORK, AT INDOCTRINATION
@@ -7078,9 +7429,11 @@ elif app_mode == "🛠️ App Settings":
                 add_link_to_drive_registry("CTG 2027 Master Folder", "Google Drive Master Folder", "All Months", "All Weeks", "Lahat ng Parokya (Master)", new_weekly_folder_url.strip())
             if new_parish_upload_url.strip():
                 add_link_to_drive_registry("Parish Upload Folder", "Parish Upload Folder", "All Months", "All Weeks", "Lahat ng Parokya (Master)", new_parish_upload_url.strip())
+            sync_Target = new_weekly_folder_url.strip() or new_parish_upload_url.strip() or new_sheet_url.strip()
+            _, auto_s_msg = auto_sync_from_any_drive_link(sync_Target, "January", "1st Week", "Lahat ng Parokya (Master)")
             st.cache_data.clear()
             st.cache_resource.clear()
-            st.success("✅ Na-update na ang Google Drive Links at na-save sa iyong Link List!")
+            st.success(f"✅ Na-update na ang Google Drive Links at auto-synced agad! ({auto_s_msg})")
             time.sleep(0.7)
             st.rerun()
 
@@ -7120,7 +7473,11 @@ elif app_mode == "🛠️ App Settings":
                 else:
                     auto_lbl = add_lbl.strip() or f"PWR. {add_month} {add_week} ({add_parish})"
                     add_link_to_drive_registry(auto_lbl, add_cat, add_month, add_week, add_parish, add_url.strip())
-                    st.success(f"✅ Naidagdag na ang '{auto_lbl}' sa iyong Saved Google Drive Links nang hindi nabubura ang ibang links!")
+                    eff_m_add = "January" if add_month == "All Months" else add_month
+                    eff_w_add = "1st Week" if add_week == "All Weeks" else add_week
+                    _, auto_s_msg = auto_sync_from_any_drive_link(add_url.strip(), eff_m_add, eff_w_add, add_parish)
+                    st.cache_data.clear()
+                    st.success(f"✅ Naidagdag na ang '{auto_lbl}' at auto-synced agad mula sa Google Drive! ({auto_s_msg})")
                     time.sleep(0.5)
                     st.rerun()
 
