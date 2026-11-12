@@ -577,12 +577,12 @@ def load_saved_drive_links_registry() -> list[dict]:
     """Binabasa ang listahan ng lahat ng naka-save na Google Drive links upang walang mawala kahit magdagdag ng bagong link."""
     default_links = [
         {
-            "label": "PWR. January 1st Week (Master Excel)",
+            "label": "PWR. January 1st Week.xlsx (Google Drive Master PWR)",
             "category": "Master Weekly Report Excel (PWR)",
             "month": "January",
             "week": "1st Week",
             "parish": "Lahat ng Parokya (Master)",
-            "url": st.session_state.custom_secrets.get("CLOUD_SPREADSHEET_URL", ACTIVE_SPREADSHEET_URL),
+            "url": "https://docs.google.com/spreadsheets/d/1v7BFj32ixL7xg5BaElAU1Ji-zsSKhdOF/edit?usp=sharing",
             "added_at": "2027-01-01"
         },
         {
@@ -591,7 +591,7 @@ def load_saved_drive_links_registry() -> list[dict]:
             "month": "All Months",
             "week": "All Weeks",
             "parish": "Lahat ng Parokya (Master)",
-            "url": st.session_state.custom_secrets.get("WEEKLY_REPORT_FOLDER_URL", ACTIVE_WEEKLY_FOLDER_URL),
+            "url": st.session_state.custom_secrets.get("WEEKLY_REPORT_FOLDER_URL", WEEKLY_REPORT_FOLDER_URL) or "https://drive.google.com/drive/folders/12snjykclzNzQW7L0WxQxh09_xSjswbz5?usp=sharing",
             "added_at": "2027-01-01"
         },
         {
@@ -600,7 +600,7 @@ def load_saved_drive_links_registry() -> list[dict]:
             "month": "All Months",
             "week": "All Weeks",
             "parish": "Lahat ng Parokya (Master)",
-            "url": st.session_state.custom_secrets.get("PARISH_UPLOAD_FOLDER_URL", ACTIVE_PARISH_UPLOAD_URL),
+            "url": st.session_state.custom_secrets.get("PARISH_UPLOAD_FOLDER_URL", PARISH_UPLOAD_FOLDER_URL) or "https://drive.google.com/drive/folders/1WHvH81kNL3jmXItNtPl39GnhmTzpmK1X?usp=sharing",
             "added_at": "2027-01-01"
         }
     ]
@@ -650,19 +650,6 @@ def add_link_to_drive_registry(label: str, category: str, month: str, week: str,
     return registry
 
 def find_2027_master_excel_on_drive(service, weekly_folder_url: str, month_name: str, week_name: str) -> tuple[str, str]:
-    # 0. Suriin muna kung may partikular na link na idinagdag sa Saved Links Registry para sa buwan at linggong ito
-    try:
-        for reg_item in load_saved_drive_links_registry():
-            r_m = str(reg_item.get("month", "")).strip()
-            r_w = str(reg_item.get("week", "")).strip()
-            r_u = str(reg_item.get("url", "")).strip()
-            if r_u and r_m.lower() == month_name.lower() and r_w.lower() == week_name.lower():
-                if "/spreadsheets/d/" in r_u or "/file/d/" in r_u or len(extract_id_from_url(r_u)) > 15:
-                    reg_fid = extract_id_from_url(r_u)
-                    if reg_fid and "/folders/" not in r_u:
-                        return reg_fid, ""
-    except Exception:
-        pass
     if not service:
         return "", ""
     target_filename = f"PWR. {month_name} {week_name}.xlsx"
@@ -724,6 +711,17 @@ def find_2027_master_excel_on_drive(service, weekly_folder_url: str, month_name:
         if files:
             p_list = files[0].get("parents", [""])
             return files[0]["id"], month_folder_id or (p_list[0] if p_list else "")
+
+        # 3. Fallback: Suriin kung may idinagdag na partikular na PWR link sa Saved Links Registry para sa buwan at linggong ito
+        for reg_item in load_saved_drive_links_registry():
+            if reg_item.get("category") == "Master Weekly Report Excel (PWR)":
+                r_m = str(reg_item.get("month", "")).strip()
+                r_w = str(reg_item.get("week", "")).strip()
+                r_u = str(reg_item.get("url", "")).strip()
+                if r_u and r_m.lower() == month_name.lower() and r_w.lower() == week_name.lower() and "/folders/" not in r_u:
+                    reg_fid = extract_id_from_url(r_u)
+                    if reg_fid:
+                        return reg_fid, month_folder_id or root_id
 
         return "", month_folder_id or root_id
     except Exception:
@@ -1688,27 +1686,40 @@ def set_excel_cell_safely(ws, row: int, col: int, value, preserve_formula: bool 
         return False
 
 def find_next_writable_col_on_row(ws, row: int, label_col: int) -> int:
-    """Ibinabalik ang tamang value column sa kanan ng label_col (sinusuportahan ang B..I merged o A:B label + C..I merged)."""
+    """Ibinabalik ang unang column sa kanan ng label_col (nilalaktawan lamang ang merged range kung saan kabilang mismo ang label_col)."""
     col = label_col
     for merged_range in ws.merged_cells.ranges:
         if (merged_range.min_row <= row <= merged_range.max_row and
                 merged_range.min_col <= label_col <= merged_range.max_col):
             col = merged_range.max_col
             break
-    candidate_col = col + 1
-    # Kung ang candidate_col ay Col 2 (B) na hindi merged, ngunit ang Col 3..9 (C..I) ay merged para sa value box, gamitin ang Col 3 (C)
-    if candidate_col == 2:
-        b_is_merged = any(
-            (mr.min_row <= row <= mr.max_row and mr.min_col <= 2 <= mr.max_col)
-            for mr in ws.merged_cells.ranges
-        )
-        c_is_wide_merged = any(
-            (mr.min_row <= row <= mr.max_row and mr.min_col == 3 and mr.max_col >= 6)
-            for mr in ws.merged_cells.ranges
-        )
-        if not b_is_merged and c_is_wide_merged:
-            return 3
-    return candidate_col
+    return col + 1
+
+def ensure_officer_value_row_merged(ws, row: int, start_col: int = 2, end_col: int = 9):
+    """Tinitiyak na ang B{row}:I{row} ay naka-merge bilang isang malinis na pahabang cell para hindi maputol ang pangalan ng Officer/Preacher sa Google Sheets."""
+    try:
+        already_exact = False
+        to_unmerge = []
+        for mr in list(ws.merged_cells.ranges):
+            if mr.min_row <= row <= mr.max_row and mr.max_col >= start_col and mr.min_col <= end_col:
+                if mr.min_row == row and mr.max_row == row and mr.min_col == start_col and mr.max_col == end_col:
+                    already_exact = True
+                elif mr.min_row == row and mr.max_row == row and mr.min_col >= start_col:
+                    to_unmerge.append(str(mr))
+        for rng_str in to_unmerge:
+            try:
+                ws.unmerge_cells(rng_str)
+            except Exception:
+                pass
+        if not already_exact:
+            has_overlap = any(
+                (mr.min_row <= row <= mr.max_row and mr.max_col >= start_col and mr.min_col <= end_col)
+                for mr in ws.merged_cells.ranges
+            )
+            if not has_overlap:
+                ws.merge_cells(start_row=row, start_column=start_col, end_row=row, end_column=end_col)
+    except Exception:
+        pass
 
 def match_parish_header_in_row(row_text_upper: str, parish_name: str) -> bool:
     """Sinusuri kung ang row_text_upper ay header row para sa partikular na parish_name."""
@@ -1832,15 +1843,10 @@ def write_pwr_header_fields(ws, data_row: dict, report_date: str, parish_name: s
                 if compact_lbl == pat_compact or compact_lbl.startswith(pat_compact):
                     if pat_compact == "EVANGELIO:" and "ADAL" in compact_lbl:
                         continue
+                    if c_idx == 1:
+                        ensure_officer_value_row_merged(ws, r_idx, 2, 9)
                     next_c = find_next_writable_col_on_row(ws, r_idx, c_idx)
                     if next_c <= 9:
-                        if next_c == 3 and c_idx == 1:
-                            try:
-                                b_cell = ws.cell(row=r_idx, column=2)
-                                if type(b_cell).__name__ != "MergedCell":
-                                    b_cell.value = None
-                            except Exception:
-                                pass
                         set_excel_cell_safely(ws, r_idx, next_c, str(val_str).strip(), preserve_formula=True)
                         try:
                             m_c = get_master_writable_cell(ws, r_idx, next_c)
@@ -1857,15 +1863,10 @@ def write_pwr_header_fields(ws, data_row: dict, report_date: str, parish_name: s
                 elif row_topic_context == "PAMPAMILYA":
                     p_val = data_row.get("pampamilya_preacher", "")
                 if str(p_val or "").strip():
+                    if c_idx == 1:
+                        ensure_officer_value_row_merged(ws, r_idx, 2, 9)
                     next_c = find_next_writable_col_on_row(ws, r_idx, c_idx)
                     if next_c <= 9:
-                        if next_c == 3 and c_idx == 1:
-                            try:
-                                b_cell = ws.cell(row=r_idx, column=2)
-                                if type(b_cell).__name__ != "MergedCell":
-                                    b_cell.value = None
-                            except Exception:
-                                pass
                         set_excel_cell_safely(ws, r_idx, next_c, str(p_val).strip(), preserve_formula=True)
                         try:
                             m_c = get_master_writable_cell(ws, r_idx, next_c)
