@@ -8,7 +8,15 @@ import importlib
 import requests
 import openpyxl
 from PIL import Image
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+
+PH_TIMEZONE = timezone(timedelta(hours=8))
+
+def get_philippine_now() -> datetime:
+    return datetime.now(PH_TIMEZONE)
+
+def get_philippine_datetime_str() -> str:
+    return get_philippine_now().strftime("%Y-%m-%d %I:%M:%S %p PHT")
 from email.message import EmailMessage
 import streamlit as st
 import pandas as pd
@@ -106,6 +114,10 @@ WEEKLY_REPORT_FOLDER_URL = get_secret(
 PARISH_UPLOAD_FOLDER_URL = get_secret(
     "PARISH_UPLOAD_FOLDER_URL",
     "https://drive.google.com/drive/folders/1WHvH81kNL3jmXItNtPl39GnhmTzpmK1X?usp=sharing"
+)
+ALL_PARISH_DB_FOLDER_URL = get_secret(
+    "ALL_PARISH_DB_FOLDER_URL",
+    "https://drive.google.com/drive/folders/1RXOTB6iA0jgcsOf1kE8wn3V8DHVduvH0?usp=sharing"
 )
 
 LOCAL_EXCEL_CACHE = "CTG_HEADS_TOTAL_UPDATED FIXED.xlsx"
@@ -398,6 +410,92 @@ def apply_dynamic_app_styles():
             display: flex !important; visibility: visible !important; opacity: 1 !important; z-index: 999999 !important;
             background-color: #1E3A8A !important; color: #FFFFFF !important; border-radius: 8px !important; padding: 4px !important; margin: 6px !important;
             box-shadow: 0 2px 6px rgba(0,0,0,0.45) !important;
+        }}
+        .record-table-wrap {{
+            width: 100%;
+            overflow-x: auto;
+            margin-bottom: 14px;
+            border-radius: 10px;
+            border: 1px solid {side_box_border};
+            background-color: {card_bg};
+        }}
+        .record-style-table {{
+            width: 100%;
+            border-collapse: collapse;
+            font-size: {font_scale};
+            color: {card_text} !important;
+        }}
+        .record-style-table th {{
+            background-color: #14532D;
+            color: #FFFFFF !important;
+            padding: 10px 12px;
+            text-align: left;
+            font-weight: 700;
+            border: 1px solid {side_box_border};
+        }}
+        .record-style-table td {{
+            padding: 10px 12px;
+            border: 1px solid {side_box_border};
+            vertical-align: top;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            line-height: 1.45;
+            color: {card_text} !important;
+        }}
+        .record-style-table tr:nth-child(even) {{
+            background-color: {side_box_bg};
+        }}
+        .ph-time-badge {{
+            background-color: #065F46;
+            color: #ECFDF5 !important;
+            border: 1px solid #34D399;
+            padding: 5px 12px;
+            border-radius: 999px;
+            font-size: 0.85rem;
+            font-weight: 700;
+            display: inline-block;
+            margin-bottom: 6px;
+        }}
+        /* 📱 RESPONSIVE TABLET & PHONE MEDIA QUERIES */
+        @media (max-width: 1024px) {{
+            .block-container {{
+                padding-left: 1rem !important;
+                padding-right: 1rem !important;
+                padding-top: 1.5rem !important;
+            }}
+            [data-testid="stHorizontalBlock"] {{
+                flex-wrap: wrap !important;
+                gap: 0.65rem !important;
+            }}
+            [data-testid="column"] {{
+                min-width: 47% !important;
+                flex: 1 1 47% !important;
+            }}
+            .pmr-banner {{ font-size: 1.15rem !important; padding: 10px !important; }}
+            .pmr-subbanner {{ font-size: 0.95rem !important; padding: 7px !important; }}
+        }}
+        @media (max-width: 640px) {{
+            html {{ font-size: 96% !important; }}
+            .block-container {{
+                padding-left: 0.6rem !important;
+                padding-right: 0.6rem !important;
+                padding-top: 1.2rem !important;
+            }}
+            [data-testid="column"] {{
+                min-width: 100% !important;
+                flex: 1 1 100% !important;
+            }}
+            .stButton > button, .stDownloadButton > button {{
+                min-height: 45px !important;
+                font-size: 0.95rem !important;
+                width: 100% !important;
+            }}
+            .chat-bubble-mine {{ margin-left: 4% !important; }}
+            .chat-bubble-other {{ margin-right: 4% !important; }}
+            .record-style-table th, .record-style-table td {{
+                padding: 8px 8px !important;
+                font-size: 0.86rem !important;
+            }}
         }}
         [data-testid="stAppDeployButton"] {{ display: none !important; }}
         #MainMenu {{ visibility: hidden !important; display: none !important; }}
@@ -1316,7 +1414,8 @@ def get_valid_gemini_keys():
 def safe_generate_content(client, model, contents, config=None):
     max_retries = 2
     valid_keys = get_valid_gemini_keys()
-    fallback_models = [model, "gemini-2.5-flash", "gemini-2.5-pro"]
+    first_m = "gemini-2.5-flash" if model == "gemini-3.8-flash" else model
+    fallback_models = [first_m, model, "gemini-2.5-flash", "gemini-2.5-pro"]
     seen_m = set()
     ordered_models = []
     for m in fallback_models:
@@ -1862,7 +1961,10 @@ def set_excel_cell_safely(ws, row: int, col: int, value, preserve_formula: bool 
         if preserve_formula:
             existing_val = target_cell.value
             if isinstance(existing_val, str) and existing_val.strip().startswith("="):
-                return False
+                up_f = existing_val.upper()
+                # Kung may sira ang formula (#REF!) o maling cross-sheet reference (hal. JANUARY! sa loob ng FEBRUARY sheet), ayusin ito
+                if "#REF!" not in up_f and "#NAME?" not in up_f and not ("JANUARY!" in up_f and ws.title.upper() != "JANUARY"):
+                    return False
         target_cell.value = value
         return True
     except Exception:
@@ -1929,8 +2031,75 @@ def is_any_parish_banner_row(ws, row: int) -> str:
                 return p_item
     return ""
 
-def find_parish_row_boundaries(ws, parish_name: str) -> tuple[int, int]:
-    """Hahanapin ang eksaktong start_row at end_row ng partikular na parokya sa loob ng PARISH WEEKLY REPORT sheet."""
+MONTH_ALIASES_MAP = {
+    "JANUARY": ["JANUARY", "JAN", "01. JANUARY"],
+    "FEBRUARY": ["FEBRUARY", "FEBRAURY", "FEB", "02. FEBRUARY"],
+    "MARCH": ["MARCH", "MAR", "03. MARCH"],
+    "APRIL": ["APRIL", "APR", "04. APRIL"],
+    "MAY": ["MAY", "05. MAY"],
+    "JUNE": ["JUNE", "JUN", "06. JUNE"],
+    "JULY": ["JULY", "JUL", "07. JULY"],
+    "AUGUST": ["AUGUST", "AUG", "08. AUGUST"],
+    "SEPTEMBER": ["SEPTEMBER", "SEP", "SEPT", "09. SEPTEMBER"],
+    "OCTOBER": ["OCTOBER", "OCT", "10. OCTOBER"],
+    "NOVEMBER": ["NOVEMBER", "NOV", "11. NOVEMBER"],
+    "DECEMBER": ["DECEMBER", "DEC", "12. DECEMBER"],
+}
+
+def find_month_sheet_in_workbook(wb, month_name: str):
+    """Hinahanap ang sheet para sa partikular na buwan (hal. JANUARY..DECEMBER, kasama ang typo na FEBRAURY)."""
+    if not month_name:
+        return None
+    m_up = month_name.strip().upper()
+    aliases = MONTH_ALIASES_MAP.get(m_up, [m_up])
+    for s_name in wb.sheetnames:
+        s_clean = s_name.strip().upper()
+        if s_clean in aliases or any(al == s_clean or (len(al) >= 4 and al in s_clean) for al in aliases):
+            return wb[s_name]
+    return None
+
+def is_week_banner_row(ws, row: int) -> str:
+    """Ibinabalik ang '1st Week'..'5th Week' kung ang row ay may '(Weekly Report-1st Week of ...)' banner."""
+    c1 = str(ws.cell(row=row, column=1).value or "").strip()
+    c2 = str(ws.cell(row=row, column=2).value or "").strip()
+    joined = f"{c1} {c2}".upper()
+    if "WEEKLY REPORT" in joined or "WEEK OF" in joined:
+        for wk in WEEKS_2027:
+            if wk.upper() in joined:
+                return wk
+    return ""
+
+def find_parish_row_boundaries(ws, parish_name: str = "", week_name: str = "") -> tuple[int, int]:
+    """Hinahanap ang eksaktong (start_row, end_row) sa loob ng:
+    (A) Multi-Week Month Sheet ng Parokya (kung saan naka-stack ang 1st Week hanggang 5th Week sa loob ng JANUARY..DECEMBER sheet), O
+    (B) Multi-Parish Master Sheet ('PARISH WEEKLY REPORT' kung saan naka-stack ang 10 Parokya).
+    """
+    # 1. Suriin muna kung ito ay Multi-Week Month Sheet (may 2 o higit pang 'Weekly Report-Xth Week' banners)
+    week_banners = []
+    for r in range(1, ws.max_row + 1):
+        wk_hit = is_week_banner_row(ws, r)
+        if wk_hit:
+            week_banners.append((r, wk_hit))
+
+    if len(week_banners) >= 2 or (len(week_banners) == 1 and ws.title.strip().upper() != "PARISH WEEKLY REPORT"):
+        target_wk = str(week_name or "1st Week").strip()
+        chosen_idx = None
+        for idx, (r_b, wk_lbl) in enumerate(week_banners):
+            if wk_lbl.upper() == target_wk.upper():
+                chosen_idx = idx
+                break
+        if chosen_idx is None:
+            chosen_idx = 0
+        banner_r = week_banners[chosen_idx][0]
+        start_r = max(1, banner_r - 1)
+        if chosen_idx + 1 < len(week_banners):
+            next_banner_r = week_banners[chosen_idx + 1][0]
+            end_r = max(start_r + 10, next_banner_r - 2)
+        else:
+            end_r = ws.max_row
+        return start_r, end_r
+
+    # 2. Multi-Parish Master Sheet ('PARISH WEEKLY REPORT')
     if not parish_name or not str(parish_name).strip():
         return 1, ws.max_row
 
@@ -1963,11 +2132,14 @@ def find_parish_row_boundaries(ws, parish_name: str) -> tuple[int, int]:
             end_row = r - 1
             break
 
+    # Isama ang 2 rows sa itaas ng PARISH: banner kung nandoon ang DATE: at REMARKS header (tulad ng Row 3-5 sa unang parokya)
+    if start_row <= 6:
+        start_row = max(1, start_row - 2)
     return start_row, end_row
 
-def write_pwr_header_fields(ws, data_row: dict, report_date: str, parish_name: str = ""):
-    """Isinusulat sa PARISH WEEKLY REPORT ang PRIEST, SAKRISTAN, EPISTULA, EVANGELIO, CASASAAD, CANDLE HOLDER, USHER, MARSHAL, ADAL TI EVANGELIO, TEMA TI MISA, TEMA TI PAMPAMILYA, at Preachers sa seksyon ng tamang Parokya."""
-    start_r, end_r = find_parish_row_boundaries(ws, parish_name)
+def write_pwr_header_fields(ws, data_row: dict, report_date: str, parish_name: str = "", week_name: str = ""):
+    """Isinusulat sa PARISH WEEKLY REPORT o Month Sheet ang PRIEST, SAKRISTAN, EPISTULA, EVANGELIO, CASASAAD, CANDLE HOLDER, USHER, MARSHAL, ADAL TI EVANGELIO, TEMA TI MISA, TEMA TI PAMPAMILYA, at Preachers sa seksyon ng tamang Parokya at Week."""
+    start_r, end_r = find_parish_row_boundaries(ws, parish_name, week_name=week_name)
     scan_start_r = max(1, start_r - 2)
     max_r = min(end_r, start_r + 30)
     max_c = min(ws.max_column, 12)
@@ -2063,9 +2235,9 @@ def is_numeric_slot_label(val_str: str) -> bool:
         return False
     return bool(re.match(r"^\d+(\.0)?$", s))
 
-def write_pwr_attendance_and_remarks(ws, data_row: dict, parish_name: str = ""):
-    """Isinusulat sa PARISH WEEKLY REPORT ang attendance ng ADULTS, YOUTHS, at KIDS pati Remarks sa eksaktong rows ng napiling Parokya."""
-    start_r, end_r = find_parish_row_boundaries(ws, parish_name)
+def write_pwr_attendance_and_remarks(ws, data_row: dict, parish_name: str = "", week_name: str = ""):
+    """Isinusulat sa PARISH WEEKLY REPORT o Month Sheet ang attendance ng ADULTS, YOUTHS, at KIDS pati Remarks sa eksaktong rows ng napiling Parokya at Week."""
+    start_r, end_r = find_parish_row_boundaries(ws, parish_name, week_name=week_name)
     section = None
     adult_named_rows, adult_blank_rows = [], []
     youth_named_rows, youth_blank_rows = [], []
@@ -2547,8 +2719,9 @@ def save_weekly_monitoring_record(parish: str, month: str, week_num: str, report
         "adults_records": extracted_data.get("adults_records", []),
         "youths_records": extracted_data.get("youths_records", []),
         "kids_records": extracted_data.get("kids_records", []),
-        "drive_link": drive_link,
-        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        "drive_link": drive_link or db.get(key, {}).get("drive_link", ""),
+        "submitted_at_ph": str(extracted_data.get("submitted_at_ph", "")).strip() or db.get(key, {}).get("submitted_at_ph", "") or get_philippine_datetime_str(),
+        "updated_at": get_philippine_datetime_str()
     }
     try:
         with open(LOCAL_WEEKLY_REPORTS_DB, "w", encoding="utf-8") as f:
@@ -2607,19 +2780,26 @@ def update_master_pwr_excel_file(parish: str, month: str, week_num: str, report_
         tot_y = int(data_row.get("total_members_y", 0))
         tot_k = int(data_row.get("total_members_k", 0))
 
-        # 0. PRIMARY INPUT: Write directly into PARISH WEEKLY REPORT (or parish-specific sheet)
+        # Kung ito ay Multi-Month Parish Workbook (hal. '3. POBLACION PARISH WEEKLY REPORTS (JAN. TO DEC. 2027).xlsx'),
+        # tiyaking kumpleto ang JANUARY hanggang DECEMBER sheets (1st Week..5th Week)
+        ensure_all_12_month_sheets_in_parish_workbook(wb, parish_name=parish)
+
+        # 0. PRIMARY INPUT: Write directly into PARISH WEEKLY REPORT o sa kaukulang Month Sheet (JANUARY..DECEMBER)
         target_pwr_sheets = []
+        matched_m_sheet = find_month_sheet_in_workbook(wb, month)
+        if matched_m_sheet is not None:
+            target_pwr_sheets.append(matched_m_sheet)
         for s_name in wb.sheetnames:
             s_up = s_name.upper()
             if "PARISH WEEKLY REPORT" in s_up or clean_p in s_up:
-                if s_up not in ["PARISH MONITORING REPORT", "SUMMARY FOR POSTING"]:
+                if s_up not in ["PARISH MONITORING REPORT", "SUMMARY FOR POSTING"] and wb[s_name] not in target_pwr_sheets:
                     target_pwr_sheets.append(wb[s_name])
         if not target_pwr_sheets and "PARISH WEEKLY REPORT" in wb.sheetnames:
             target_pwr_sheets.append(wb["PARISH WEEKLY REPORT"])
 
         for ws_pwr in target_pwr_sheets:
-            write_pwr_header_fields(ws_pwr, data_row, report_date, parish_name=parish)
-            write_pwr_attendance_and_remarks(ws_pwr, data_row, parish_name=parish)
+            write_pwr_header_fields(ws_pwr, data_row, report_date, parish_name=parish, week_name=week_num)
+            write_pwr_attendance_and_remarks(ws_pwr, data_row, parish_name=parish, week_name=week_num)
 
         # 1. Update PARISH MONITORING REPORT sheet safely (preserving any Excel formulas!)
         if "PARISH MONITORING REPORT" in wb.sheetnames:
@@ -2889,9 +3069,108 @@ def parse_master_pwr_excel_into_db(excel_bytes: bytes, target_month: str, target
         pass
     return updated_parishes
 
-def extract_weekly_report_from_excel_bytes(file_bytes: bytes, target_parish: str = "") -> dict:
+def is_week_record_completed(rec: dict) -> bool:
+    if not isinstance(rec, dict) or not rec.get("has_data"):
+        return False
+    tot_att = (
+        int(rec.get("mass_a", 0)) + int(rec.get("mass_y", 0)) +
+        int(rec.get("pampamilya_a", 0)) + int(rec.get("pampamilya_y", 0)) +
+        int(rec.get("online_a", 0)) + int(rec.get("online_y", 0)) +
+        int(rec.get("youth_y", 0)) + int(rec.get("kids_k", 0)) +
+        int(rec.get("adal_a", 0)) + int(rec.get("adal_y", 0))
+    )
+    has_off = any(str(rec.get(k, "")).strip() for k in ["priest", "sakristan", "epistula", "evangelio", "tema_misa", "adal_evangelio"])
+    return (tot_att > 0 or has_off or bool(str(rec.get("remarks", "")).strip()))
+
+def find_next_unfinished_month_and_week(parish_name: str, preferred_month: str = "January") -> tuple[str, str]:
+    """Hinahanap ang unang Hindi Pa Tapos (Unfinished) na Buwan at Linggo para sa napiling Parokya sa buong 2027."""
+    db = load_weekly_monitoring_records()
+    p_up = str(parish_name or "MALANAS PARISH").upper()
+    # Unahin ang preferred_month kung may hindi pa tapos na week doon
+    if preferred_month in MONTHS_2027:
+        for wk in WEEKS_2027:
+            rec = db.get(f"{p_up}__{preferred_month.upper()}__{wk}", {})
+            if not is_week_record_completed(rec):
+                return preferred_month, wk
+    for m_name in MONTHS_2027:
+        for wk in WEEKS_2027:
+            rec = db.get(f"{p_up}__{m_name.upper()}__{wk}", {})
+            if not is_week_record_completed(rec):
+                return m_name, wk
+    return preferred_month if preferred_month in MONTHS_2027 else "January", "1st Week"
+
+def clear_week_block_values_in_sheet(ws, start_r: int, end_r: int, month_upper: str, week_label: str):
+    """Nililinis ang isang week block sa bagong buwan na sheet upang magsimula sa blangko (0 attendance at walang officers/remarks)."""
+    section = None
+    for r_idx in range(start_r, end_r + 1):
+        c1 = str(ws.cell(row=r_idx, column=1).value or "").strip()
+        c2 = str(ws.cell(row=r_idx, column=2).value or "").strip()
+        c3 = str(ws.cell(row=r_idx, column=3).value or "").strip()
+        c1_up = c1.upper()
+        c2_up = c2.upper()
+        if "WEEKLY REPORT" in c1_up or "WEEK OF" in c1_up:
+            set_excel_cell_safely(ws, r_idx, 1, f"(Weekly Report-{week_label} of {month_upper} 2027)", preserve_formula=False)
+            continue
+        if c1_up.startswith("DATE:"):
+            set_excel_cell_safely(ws, r_idx, 1, "DATE:", preserve_formula=False)
+        if str(ws.cell(row=r_idx, column=10).value or "").strip().upper() != "REMARKS":
+            set_excel_cell_safely(ws, r_idx, 10, None, preserve_formula=False)
+        comp_a = re.sub(r"\s+", "", c1_up)
+        if any(comp_a.startswith(lbl) for lbl in ["PRIEST:", "SAKRISTAN:", "EPISTULA:", "EVANGELIO:", "CASASAAD:", "CANDLEHOLDER:", "USHER:", "MARSHAL:", "ADALTIEVANGELIO:", "TEMATIMISA:", "TEMATIPAMPAMILYA:", "PREACHER/S:", "PREACHERS:", "PREACHER:"]):
+            set_excel_cell_safely(ws, r_idx, 2, None, preserve_formula=False)
+            continue
+        if c2_up == "ADULTS" or c3.upper() == "ADULTS":
+            section = "ADULTS"
+            continue
+        elif c2_up in ["YOUTHS", "YOUTH"] or c3.upper() in ["YOUTHS", "YOUTH"]:
+            section = "YOUTHS"
+            continue
+        elif c2_up == "KIDS" or c3.upper() == "KIDS":
+            section = "KIDS"
+            continue
+        elif "TOTAL" in c1_up or "TOTAL" in c2_up:
+            for c_i in range(4, 10):
+                set_excel_cell_safely(ws, r_idx, c_i, 0, preserve_formula=False)
+            section = None
+            continue
+        if section:
+            for c_i in range(4, 10):
+                set_excel_cell_safely(ws, r_idx, c_i, None, preserve_formula=False)
+
+def ensure_all_12_month_sheets_in_parish_workbook(wb, parish_name: str = "") -> bool:
+    """Kung ang workbook ay Parish Weekly Reports (JAN. TO DEC. 2027), inaayos ang typo na 'FEBRAURY' -> 'FEBRUARY'
+    at awtomatikong binubuo ang JANUARY hanggang DECEMBER sheets (na may 1st Week hanggang 5th Week sa loob ng bawat buwan)."""
+    changed = False
+    try:
+        for s_name in list(wb.sheetnames):
+            if s_name.strip().upper() == "FEBRAURY" and "FEBRUARY" not in [x.upper() for x in wb.sheetnames]:
+                wb[s_name].title = "FEBRUARY"
+                changed = True
+
+        jan_ws = find_month_sheet_in_workbook(wb, "January")
+        if jan_ws is None:
+            return changed
+
+        # Tiyaking lahat ng 12 buwan (JANUARY..DECEMBER) ay may sariling sheet sa workbook
+        for m_name in MONTHS_2027:
+            m_up = m_name.upper()
+            existing_ws = find_month_sheet_in_workbook(wb, m_name)
+            if existing_ws is None:
+                cloned_ws = wb.copy_worksheet(jan_ws)
+                cloned_ws.title = m_up
+                for wk_lbl in WEEKS_2027:
+                    sr, er = find_parish_row_boundaries(cloned_ws, parish_name, week_name=wk_lbl)
+                    clear_week_block_values_in_sheet(cloned_ws, sr, er, m_up, wk_lbl)
+                changed = True
+    except Exception:
+        pass
+    return changed
+
+def extract_weekly_report_from_excel_bytes(file_bytes: bytes, target_parish: str = "", target_month: str = "", target_week: str = "") -> dict:
     result = {
         "parish": target_parish or "",
+        "month": target_month or "January",
+        "week": target_week or "1st Week",
         "mass_a": 0, "mass_y": 0, "pampamilya_a": 0, "pampamilya_y": 0,
         "online_a": 0, "online_y": 0, "youth_y": 0, "kids_k": 0,
         "adal_a": 0, "adal_y": 0, "total_members_say": 0, "total_members_y": 0, "total_members_k": 0,
@@ -2904,8 +3183,12 @@ def extract_weekly_report_from_excel_bytes(file_bytes: bytes, target_parish: str
     }
     try:
         wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
-        ws = wb["PARISH WEEKLY REPORT"] if "PARISH WEEKLY REPORT" in wb.sheetnames else wb.active
-        start_r, end_r = find_parish_row_boundaries(ws, target_parish) if target_parish else (1, ws.max_row)
+        ws = None
+        if target_month:
+            ws = find_month_sheet_in_workbook(wb, target_month)
+        if ws is None:
+            ws = wb["PARISH WEEKLY REPORT"] if "PARISH WEEKLY REPORT" in wb.sheetnames else wb.active
+        start_r, end_r = find_parish_row_boundaries(ws, target_parish, week_name=target_week) if (target_parish or target_week) else (1, ws.max_row)
         section = None
         adults_cnt, youths_cnt, kids_cnt = 0, 0, 0
         remarks_collected = []
@@ -2922,8 +3205,16 @@ def extract_weekly_report_from_excel_bytes(file_bytes: bytes, target_parish: str
                 if detected_p:
                     result["parish"] = detected_p
 
-            rem_cell_top = str(get_master_writable_cell(ws, r_idx, 10).value or "").strip()
-            if rem_cell_top and rem_cell_top.lower() != "nan" and rem_cell_top.upper() != "REMARKS" and rem_cell_top not in remarks_collected:
+            m_rem_c = get_master_writable_cell(ws, r_idx, 10)
+            rem_cell_top = str(m_rem_c.value or "").strip().strip('"').strip()
+            if (
+                m_rem_c.column == 10
+                and rem_cell_top
+                and rem_cell_top.lower() != "nan"
+                and rem_cell_top.upper() != "REMARKS"
+                and "CHURCH OF THE TEMPLE OF GOD" not in rem_cell_top.upper()
+                and rem_cell_top not in remarks_collected
+            ):
                 remarks_collected.append(rem_cell_top)
 
             for c_i, cell_txt in enumerate(row_vals[:6]):
@@ -3003,8 +3294,16 @@ def extract_weekly_report_from_excel_bytes(file_bytes: bytes, target_parish: str
                 y_v = is_present(7)
                 k_v = is_present(8)
                 a_v = is_present(9)
-                rem_v = str(get_master_writable_cell(ws, r_idx, 10).value or "").strip()
-                if rem_v and rem_v.lower() != "nan" and rem_v not in remarks_collected:
+                m_rem_v_cell = get_master_writable_cell(ws, r_idx, 10)
+                rem_v = str(m_rem_v_cell.value or "").strip().strip('"').strip()
+                if (
+                    m_rem_v_cell.column == 10
+                    and rem_v
+                    and rem_v.lower() != "nan"
+                    and rem_v.upper() != "REMARKS"
+                    and "CHURCH OF THE TEMPLE OF GOD" not in rem_v.upper()
+                    and rem_v not in remarks_collected
+                ):
                     remarks_collected.append(rem_v)
 
                 if section == "ADULTS":
@@ -3037,6 +3336,53 @@ def extract_weekly_report_from_excel_bytes(file_bytes: bytes, target_parish: str
     except Exception:
         pass
     return result
+
+def extract_all_months_and_weeks_from_parish_workbook(file_bytes: bytes, fallback_parish: str = "") -> list[dict]:
+    """Binabasa ang lahat ng Buwan (JANUARY..DECEMBER) at lahat ng Linggo (1st Week..5th Week) sa loob ng Parish Excel Workbook
+    (hal. '3. POBLACION PARISH WEEKLY REPORTS (JAN. TO DEC. 2027).xlsx') at ibinabalik lamang ang mga linggong may aktwal na datos."""
+    found_reports = []
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+        has_month_sheets = any(find_month_sheet_in_workbook(wb, m) is not None for m in MONTHS_2027)
+        if not has_month_sheets:
+            return []
+
+        for m_name in MONTHS_2027:
+            ws_m = find_month_sheet_in_workbook(wb, m_name)
+            if ws_m is None:
+                continue
+            # Hanapin kung aling weeks ang nasa loob ng sheet na ito
+            week_banners_in_sheet = []
+            for r in range(1, ws_m.max_row + 1):
+                wk_hit = is_week_banner_row(ws_m, r)
+                if wk_hit and wk_hit not in week_banners_in_sheet:
+                    week_banners_in_sheet.append(wk_hit)
+            if not week_banners_in_sheet:
+                week_banners_in_sheet = ["1st Week"]
+
+            for wk_lbl in week_banners_in_sheet:
+                ext = extract_weekly_report_from_excel_bytes(
+                    file_bytes,
+                    target_parish=fallback_parish,
+                    target_month=m_name,
+                    target_week=wk_lbl
+                )
+                tot_att = (
+                    int(ext.get("mass_a", 0)) + int(ext.get("mass_y", 0)) +
+                    int(ext.get("pampamilya_a", 0)) + int(ext.get("pampamilya_y", 0)) +
+                    int(ext.get("online_a", 0)) + int(ext.get("online_y", 0)) +
+                    int(ext.get("youth_y", 0)) + int(ext.get("kids_k", 0)) +
+                    int(ext.get("adal_a", 0)) + int(ext.get("adal_y", 0))
+                )
+                has_off = any(str(ext.get(k, "")).strip() for k in ["priest", "sakristan", "epistula", "evangelio", "tema_misa", "adal_evangelio"])
+                if tot_att > 0 or has_off or str(ext.get("remarks", "")).strip():
+                    ext["parish"] = ext.get("parish") or fallback_parish
+                    ext["month"] = m_name
+                    ext["week"] = wk_lbl
+                    found_reports.append(ext)
+    except Exception:
+        pass
+    return found_reports
 
 def sync_weekly_reports_from_google_drive_folder(folder_url: str, target_month: str = "January", target_week: str = "1st Week") -> tuple[int, str]:
     service = get_google_drive_service()
@@ -4005,6 +4351,9 @@ def build_parish_monitoring_attendance_df(selected_month: str, selected_week: st
         if "HONGKONG" in short_parish:
             short_parish = "HONGKONG CHAPTER"
 
+        sub_ph = str(rec.get("submitted_at_ph", "") or rec.get("updated_at", "")).strip() if has_data else "⏳ Hindi Pa Tapos"
+        status_tag = f"✅ Tapos Na ({sub_ph})" if (has_data and is_week_record_completed(rec)) else "⏳ Hindi Pa Tapos"
+
         rows.append({
             first_col_name: f"{short_parish} ({r_date})",
             "Week": week_num_only,
@@ -4014,6 +4363,7 @@ def build_parish_monitoring_attendance_df(selected_month: str, selected_week: st
             "Youth Fellowship": f"Y-{y_y}",
             "Kids Fellowship": f"K-{k_k}",
             "Adal ti Evangelio": f"A-{ad_a} | Y-{ad_y}",
+            "Date & Time Submitted (PH Time)": status_tag,
         })
         rows.append({
             first_col_name: "Total:",
@@ -4024,6 +4374,7 @@ def build_parish_monitoring_attendance_df(selected_month: str, selected_week: st
             "Youth Fellowship": calc_pct_str(y_y, tot_y),
             "Kids Fellowship": calc_pct_str(k_k, tot_k),
             "Adal ti Evangelio": calc_pct_str(ad_a + ad_y, tot_say),
+            "Date & Time Submitted (PH Time)": f"Month: {selected_month} 2027 ({selected_week})" if has_data else "-",
         })
 
     if filter_parish == "Lahat ng Parokya" and rows:
@@ -4036,6 +4387,7 @@ def build_parish_monitoring_attendance_df(selected_month: str, selected_week: st
             "Youth Fellowship": f"{sum_y_att}/{sum_y_mem} ({calc_pct_str(sum_y_att, sum_y_mem)})",
             "Kids Fellowship": f"{sum_k_att}/{sum_k_mem} ({calc_pct_str(sum_k_att, sum_k_mem)})",
             "Adal ti Evangelio": f"{sum_ad_att}/{sum_say_mem} ({calc_pct_str(sum_ad_att, sum_say_mem)})",
+            "Date & Time Submitted (PH Time)": f"🇵🇭 As of {get_philippine_datetime_str()}",
         })
 
     return pd.DataFrame(rows)
@@ -4062,35 +4414,88 @@ def build_summary_for_posting_per_parish_df(parish_name: str, selected_month: st
     if "HONGKONG" in short_p:
         short_p = "HONG KONG"
 
+    r_date = rec.get("report_date", "01/02/27") if has_data else "-"
+    sub_ph = str(rec.get("submitted_at_ph", "") or rec.get("updated_at", "")).strip() if has_data else "⏳ Hindi Pa Tapos"
+
     rows = [
         {
             short_p: "TOTAL MEMBERS",
+            "Month & Week (2027)": f"{selected_month} ({selected_week})",
             "Mass": str(tot_say),
             "Pampamilya": str(tot_say),
             "Online Ministry": str(tot_say),
             "Youth Fellowship": str(tot_y),
             "Kids Fellowship": str(tot_k),
             "Adal ti Evangelio": str(tot_say),
+            "Date & Time Submitted (PH Time)": f"Petsa ng Pagsamba: {r_date}",
         },
         {
             short_p: "TOTAL OF ATTENDEES",
+            "Month & Week (2027)": f"{selected_month} ({selected_week})",
             "Mass": str(m_att),
             "Pampamilya": str(p_att),
             "Online Ministry": str(o_att),
             "Youth Fellowship": str(y_att),
             "Kids Fellowship": str(k_att),
             "Adal ti Evangelio": str(ad_att),
+            "Date & Time Submitted (PH Time)": f"🇵🇭 {sub_ph}" if has_data else "⏳ Hindi Pa Tapos",
         },
         {
             short_p: "TOTAL AVERAGE",
+            "Month & Week (2027)": f"{selected_month} ({selected_week})",
             "Mass": calc_pct_str(m_att, tot_say),
             "Pampamilya": calc_pct_str(p_att, tot_say),
             "Online Ministry": calc_pct_str(o_att, tot_say),
             "Youth Fellowship": calc_pct_str(y_att, tot_y),
             "Kids Fellowship": calc_pct_str(k_att, tot_k),
             "Adal ti Evangelio": calc_pct_str(ad_att, tot_say),
+            "Date & Time Submitted (PH Time)": "✅ Tapos Na" if (has_data and is_week_record_completed(rec)) else "⏳ Hindi Pa Tapos",
         }
     ]
+    return pd.DataFrame(rows)
+
+def render_record_style_html_table(df: pd.DataFrame):
+    """Nagre-render ng Record-Style HTML Table kung saan nakikita nang buo at naka-wrap ang lahat ng nakasulat na Family Names, Pangalan ng mga Tao, at Remarks nang walang '...' truncation."""
+    if df is None or df.empty:
+        st.caption("Walang nakatalang datos.")
+        return
+    import html as html_lib
+    ths = "".join(f"<th>{html_lib.escape(str(c))}</th>" for c in df.columns)
+    trs = []
+    for _, row in df.iterrows():
+        first_cell_str = str(row.iloc[0] or "")
+        is_total_row = "TOTAL" in first_cell_str.upper()
+        row_style = " style='font-weight:700;background-color:rgba(20,83,45,0.22);'" if is_total_row else ""
+        tds = []
+        for c in df.columns:
+            val_esc = html_lib.escape(str(row[c] if row[c] is not None else "")).replace("\n", "<br>")
+            tds.append(f"<td>{val_esc}</td>")
+        trs.append(f"<tr{row_style}>{''.join(tds)}</tr>")
+    html_tbl = f"<div class='record-table-wrap'><table class='record-style-table'><thead><tr>{ths}</tr></thead><tbody>{''.join(trs)}</tbody></table></div>"
+    st.markdown(html_tbl, unsafe_allow_html=True)
+
+def build_2027_full_year_month_week_tracker_df(filter_parish: str = "Lahat ng Parokya") -> pd.DataFrame:
+    """Bumubuo ng buong taon (January hanggang December 2027, Weeks 1-5) tracker table na may Philippine Date & Time."""
+    db = load_weekly_monitoring_records()
+    rows = []
+    target_parishes = PARISH_ORDER if filter_parish == "Lahat ng Parokya" else [p for p in PARISH_ORDER if normalize_parish_match(p, filter_parish)]
+    for m_name in MONTHS_2027:
+        for p_name in target_parishes:
+            short_p = p_name.replace("PARISH", "").strip()
+            row_item = {"Buwan (2027)": m_name.upper(), "Parokya": short_p}
+            done_cnt = 0
+            for wk in WEEKS_2027:
+                rec = db.get(f"{p_name.upper()}__{m_name.upper()}__{wk}", {})
+                if is_week_record_completed(rec):
+                    done_cnt += 1
+                    m_tot = int(rec.get("mass_a", 0)) + int(rec.get("mass_y", 0))
+                    sub_t = str(rec.get("submitted_at_ph", "") or rec.get("updated_at", "")).strip()
+                    row_item[wk] = f"✅ Tapos ({rec.get('report_date', '')} | Mass:{m_tot} | 🕒 {sub_t})"
+                else:
+                    row_item[wk] = "⏳ Hindi Pa Tapos"
+            if done_cnt > 0 or m_name == "January":
+                row_item["Progreso"] = f"{done_cnt}/5 Weeks"
+                rows.append(row_item)
     return pd.DataFrame(rows)
 
 # 3️⃣-A TABLE PARA SA MASS, FELLOWSHIP, ONLINE & VISITORS ATTENDANCE REMARKS (GALING SA IMAGE AT EXCEL REPORTS)
@@ -4376,7 +4781,11 @@ def render_weekly_report_page():
         st.session_state["mon_view_week"] = st.session_state.pop("_next_mon_view_week")
 
     st.markdown("<div class='pmr-banner'>CHURCH OF THE TEMPLE OF GOD</div>", unsafe_allow_html=True)
-    st.markdown("<div class='pmr-subbanner'>Parish Monitoring Report — Full Year 2027 (January–December, Weeks 1–5) & Google Drive Auto-Sync</div>", unsafe_allow_html=True)
+    st.markdown(
+        f"<div class='pmr-subbanner'>Parish Monitoring Report — Full Year 2027 (January–December, Weeks 1–5) & Google Drive Auto-Sync "
+        f"<br><span class='ph-time-badge'>🇵🇭 Oras at Petsa sa Pilipinas: {get_philippine_datetime_str()}</span></div>",
+        unsafe_allow_html=True
+    )
 
     # TOP FILTER & GOOGLE DRIVE AUTO-SYNC BAR
     top_f1, top_f2, top_f3, top_f4, top_f5 = st.columns([1.05, 1.05, 1.35, 1.25, 0.9])
@@ -4486,7 +4895,20 @@ def render_weekly_report_page():
                     clean_p_name = target_parish.replace("PARISH", "").strip()
                     drive_filename = f"{clean_p_name} (PWR. {rep_date_input.replace('/', '-')} {sel_month} {sel_week}).{f_ext}"
 
-                    with st.spinner(f"Ina-upload sa Google Drive folder ng {target_parish} at tinatype ang lahat ng datos sa PARISH WEEKLY REPORT..."):
+                    with st.spinner(f"Ina-upload sa Google Drive folder ng {target_parish} at tinatype ang mga hindi pa tapos na datos (January–December 2027, Weeks 1–5)..."):
+                        ph_now_stamp = get_philippine_datetime_str()
+                        multi_reports_saved = 0
+                        if f_ext == "xlsx":
+                            # Kung Parish JAN-DEC 2027 Workbook ito, tiyaking kumpleto ang JANUARY hanggang DECEMBER sheets bago i-upload sa Google Drive
+                            try:
+                                wb_up = openpyxl.load_workbook(io.BytesIO(file_bytes))
+                                if ensure_all_12_month_sheets_in_parish_workbook(wb_up, parish_name=target_parish):
+                                    b_up = io.BytesIO()
+                                    wb_up.save(b_up)
+                                    file_bytes = b_up.getvalue()
+                            except Exception:
+                                pass
+
                         up_folder_url = st.session_state.custom_secrets.get("PARISH_UPLOAD_FOLDER_URL", ACTIVE_PARISH_UPLOAD_URL) or st.session_state.custom_secrets.get("WEEKLY_REPORT_FOLDER_URL", ACTIVE_WEEKLY_FOLDER_URL)
                         drive_link, drive_msg = upload_file_to_google_drive(
                             file_bytes,
@@ -4498,9 +4920,39 @@ def render_weekly_report_page():
                         )
 
                         if f_ext == "xlsx":
-                            extracted = extract_weekly_report_from_excel_bytes(file_bytes, target_parish=target_parish)
+                            all_multi = extract_all_months_and_weeks_from_parish_workbook(file_bytes, fallback_parish=target_parish)
+                            if all_multi:
+                                db_cur = load_weekly_monitoring_records()
+                                chosen_ext = None
+                                for rep_item in all_multi:
+                                    r_p = rep_item.get("parish") or target_parish
+                                    r_m = rep_item.get("month") or sel_month
+                                    r_w = rep_item.get("week") or sel_week
+                                    k_check = f"{r_p.upper()}__{r_m.upper()}__{r_w}"
+                                    existing_rec = db_cur.get(k_check, {})
+                                    # Ilagay lamang ang hindi pa tapos na data (o ang kasalukuyang napiling buwan/linggo) nang hindi binubura ang tapos na
+                                    if not is_week_record_completed(existing_rec) or (r_m.upper() == sel_month.upper() and r_w == sel_week):
+                                        rep_item["submitted_at_ph"] = existing_rec.get("submitted_at_ph") or ph_now_stamp
+                                        save_weekly_monitoring_record(
+                                            r_p, r_m, r_w,
+                                            rep_item.get("report_date", rep_date_input),
+                                            rep_item,
+                                            drive_link=drive_link or ""
+                                        )
+                                        multi_reports_saved += 1
+                                    if r_m.upper() == sel_month.upper() and r_w == sel_week:
+                                        chosen_ext = rep_item
+                                if chosen_ext is None:
+                                    chosen_ext = all_multi[-1]
+                                    sel_month = chosen_ext.get("month", sel_month)
+                                    sel_week = chosen_ext.get("week", sel_week)
+                                    target_parish = chosen_ext.get("parish", target_parish)
+                                extracted = chosen_ext
+                            else:
+                                extracted = extract_weekly_report_from_excel_bytes(file_bytes, target_parish=target_parish, target_month=sel_month, target_week=sel_week)
                         else:
                             extracted = extract_weekly_report_via_ai_vision(file_bytes, uploaded_rep.type, selected_model, target_parish=target_parish)
+                        extracted["submitted_at_ph"] = ph_now_stamp
 
                         denoms = get_parish_member_denominators(target_parish)
                         if int(extracted.get("total_members_say", 0)) <= 0:
@@ -4569,7 +5021,11 @@ def render_weekly_report_page():
 
         if "last_extracted_pwr" in st.session_state:
             flash = st.session_state["last_extracted_pwr"]
-            st.success(f"✅ Matagumpay na na-proseso ang Weekly Report ng **{flash.get('parish')}** para sa **{flash.get('month')} 2027 ({flash.get('week')})**! ({flash.get('sync_msg', '')})")
+            sub_ph_flash = flash.get("data", {}).get("submitted_at_ph", "") or get_philippine_datetime_str()
+            st.success(
+                f"✅ Matagumpay na na-proseso ang Weekly Report ng **{flash.get('parish')}** para sa **{flash.get('month')} 2027 ({flash.get('week')})**! "
+                f"(🇵🇭 Petsa at Oras ng Pag-submit sa Pilipinas: `{sub_ph_flash}` • {flash.get('sync_msg', '')})"
+            )
             if flash.get("drive_link"):
                 st.info(f"📂 Na-save sa Google Drive Folder ng {flash.get('parish')}: [Buksan ang File sa Google Drive]({flash.get('drive_link')})")
             elif flash.get("drive_msg"):
@@ -4826,17 +5282,31 @@ def render_weekly_report_page():
     st.divider()
 
     # =====================================================================
-    # 📊 TABLE 1: PARISH MONITORING REPORT (ATTENDANCE + TOTAL PERCENTAGE SA BABA)
+    # 📅 FULL-YEAR 2027 MONTHLY & WEEKLY PROGRESS TRACKER (JANUARY TO DECEMBER, WEEKS 1-5)
+    # =====================================================================
+    with st.expander(f"📅 Tingnan ang Buong Taon 2027 Monthly & Weekly Submission Tracker (January–December 2027, Weeks 1–5) — 🇵🇭 PH Time", expanded=False):
+        st.caption("Makikita rito kung aling Buwan at Linggo sa buong taon ng 2027 ang **✅ Tapos Na** (may petsa at oras ng pag-submit sa Pilipinas) at kung alin ang **⏳ Hindi Pa Tapos**.")
+        nxt_m, nxt_w = find_next_unfinished_month_and_week(v_parish, preferred_month=view_month)
+        col_nxt1, col_nxt2 = st.columns([2.2, 1.2])
+        with col_nxt1:
+            st.info(f"📌 **Susunod na Hindi Pa Tapos na Report para sa {v_parish}:** `{nxt_m} 2027 — {nxt_w}`")
+        with col_nxt2:
+            if st.button(f"⏭️ Buksan ang {nxt_m} ({nxt_w})", use_container_width=True):
+                st.session_state["_next_mon_view_month"] = nxt_m
+                st.session_state["_next_mon_view_week"] = nxt_w
+                st.session_state["_next_editor_month"] = nxt_m
+                st.session_state["_next_editor_week"] = nxt_w
+                st.rerun()
+        tracker_2027_df = build_2027_full_year_month_week_tracker_df(effective_parish_filter)
+        render_record_style_html_table(tracker_2027_df)
+
+    # =====================================================================
+    # 📊 TABLE 3: PARISH MONITORING REPORT (ATTENDANCE + TOTAL PERCENTAGE SA BABA + PH DATE/TIME)
     # =====================================================================
     st.markdown(f"### 📋 3. Parish Monitoring Report — Attendance & Total Percentage ({view_week} of {view_month.upper()} 2027)")
-    st.caption("Bawat Parokya ay nagsisimula sa `A-0 | Y-0` at `0%` hangga't walang nakukuhang datos mula sa Google Drive Excel.")
+    st.caption(f"Bawat Parokya ay may kasamang **Date & Time Submitted (PH Time)** at **Month/Week (2027)** upang makita ang lahat ng datos sa buong taon ng 2027.")
     att_monitoring_df = build_parish_monitoring_attendance_df(view_month, view_week, effective_parish_filter)
     st.dataframe(att_monitoring_df, use_container_width=True, hide_index=True)
-
-    st.markdown(f"#### 📝 3B. Remarks para sa mga Nag-attend ng Mass, Pampamilya, Adal, House Church, Online Mass & Visitors ({view_week} of {view_month.upper()} 2027)")
-    st.caption("Ito ay galing mismo sa ipinasa nilang Image at Excel Weekly Reports (nakahiwalay sa Outreach tables).")
-    mass_rem_df = build_mass_attendance_remarks_df(view_month, view_week, effective_parish_filter)
-    st.dataframe(mass_rem_df, use_container_width=True, hide_index=True)
 
     db_cards_3b = load_weekly_monitoring_records()
     mass_cards_list = []
@@ -4844,24 +5314,19 @@ def render_weekly_report_page():
         rec_c = db_cards_3b.get(f"{p_c.upper()}__{view_month.upper()}__{view_week}", {})
         if rec_c.get("has_data"):
             r_raw = str(rec_c.get("remarks", "")).strip()
-            p_ro = parse_remarks_into_mass_and_outreach(r_raw) if r_raw else {}
-            m_rem = str(rec_c.get("mass_remarks", "") or p_ro.get("mass_remarks", "")).strip()
-            if m_rem or r_raw:
-                mass_cards_list.append((p_c, rec_c, m_rem, r_raw))
+            if r_raw:
+                mass_cards_list.append((p_c, rec_c, r_raw))
     with st.expander(f"📝 Basahin nang Buo ang Nakasulat sa Remarks Mula sa Image / Excel Report ({len(mass_cards_list)} may Remarks)", expanded=True):
         if mass_cards_list:
-            for p_c, rec_c, m_rem, r_raw in mass_cards_list:
-                officers_summary = " | ".join([
-                    f"<b>{lbl}:</b> {rec_c.get(k)}"
-                    for lbl, k in [("Priest", "priest"), ("Sakristan", "sakristan"), ("Epistula", "epistula"), ("Evangelio", "evangelio"), ("Adal Topic", "adal_evangelio"), ("Tema Misa", "tema_misa"), ("Tema Pampamilya", "tema_pampamilya")]
-                    if str(rec_c.get(k, "")).strip()
-                ])
-                display_m_rem = (m_rem or r_raw).replace("\n", "<br>")
+            for p_c, rec_c, r_raw in mass_cards_list:
+                sub_ph_c = str(rec_c.get("submitted_at_ph", "") or rec_c.get("updated_at", "")).strip()
+                display_raw_rem = r_raw.replace("\n", "<br>")
                 st.markdown(
                     f"<div class='full-text-card'>"
-                    f"<b>⛪ {p_c}</b> • <code>{view_month} 2027 ({view_week})</code> • 📅 <b>Petsa:</b> {rec_c.get('report_date', '01/02/27')}<br>"
-                    + (f"👥 <b>Liturgical Officers & Topics:</b> {officers_summary}<br>" if officers_summary else "")
-                    + f"📝 <b>Buong Nakasulat sa Remarks (Mass / Online / House Church / Visitors):</b><br>{display_m_rem}"
+                    f"<b>⛪ {p_c}</b> • <code>{view_month} 2027 ({view_week})</code> • 📅 <b>Petsa ng Report:</b> {rec_c.get('report_date', '01/02/27')} "
+                    + (f"• 🇵🇭 <b>Submitted (PH Time):</b> <code>{sub_ph_c}</code>" if sub_ph_c else "")
+                    + f"<br><hr style='margin:6px 0;'>"
+                    f"📝 <b>Nakasulat sa Remarks:</b><br>{display_raw_rem}"
                     f"</div>",
                     unsafe_allow_html=True
                 )
@@ -4871,10 +5336,10 @@ def render_weekly_report_page():
     st.divider()
 
     # =====================================================================
-    # 📊 TABLE 2: SUMMARY FOR POSTING PER PARISH (TOTAL MEMBERS, TOTAL OF ATTENDEES, TOTAL AVERAGE %)
+    # 📊 TABLE 4: SUMMARY FOR POSTING PER PARISH (TOTAL MEMBERS, TOTAL OF ATTENDEES, TOTAL AVERAGE % + PH DATE/TIME)
     # =====================================================================
     st.markdown(f"### 📈 4. Summary for Posting — Per Parish Breakdown ({view_week} of {view_month.upper()} 2027)")
-    st.caption("Nagsisimula sa `0` at awtomatikong nalalagyan ng `TOTAL MEMBERS`, `TOTAL OF ATTENDEES`, at `TOTAL AVERAGE %` kapag nakuha ang data mula sa Google Drive Excel.")
+    st.caption("Makikita rito ang `TOTAL MEMBERS`, `TOTAL OF ATTENDEES`, `TOTAL AVERAGE %`, `Month & Week (2027)`, at `Date & Time Submitted (PH Time)` ng bawat Parokya.")
 
     parishes_to_show = PARISH_ORDER if effective_parish_filter == "Lahat ng Parokya" else [p for p in PARISH_ORDER if normalize_parish_match(p, effective_parish_filter)]
     for p_item in parishes_to_show:
@@ -4884,22 +5349,22 @@ def render_weekly_report_page():
     st.divider()
 
     # =====================================================================
-    # 📊 TABLE 5: 3 SEPARATE TABLES PARA SA HOUSE VISITATION, MISSIONARY WORK, AT INDOCTRINATION
+    # 📊 TABLE 5: RECORD-STYLE TABLES PARA SA HOUSE VISITATION, MISSIONARY WORK, AT INDOCTRINATION
     # =====================================================================
-    st.markdown(f"### 🏠 5. House Visitation, Missionary Work, Indoctrination & Remarks ({view_week} of {view_month.upper()} 2027)")
-    st.caption("Tatlong nakahiwalay na komprehensibong tables kung saan makikita ang lahat ng Family Names, Mga Pangalan ng Tao, Bilang ng Pamilya, Total ng mga Tao ayon sa Family Names, at Remarks.")
+    st.markdown(f"### 🏠 5. House Visitation, Missionary Work, Indoctrination & Remarks — Record Style View ({view_week} of {view_month.upper()} 2027)")
+    st.caption("Naka-Record Style na ang tatlong tables sa ibaba upang **buong-buo at malinaw na mabasa ang lahat ng nakasulat na Family Names, Mga Pangalan ng Tao, Bilang ng Pamilya, Total Tao, at Remarks** nang hindi napuputol.")
 
     st.markdown("#### 🏡 Unang Table: HOUSE Visitation: REQUIREMENTS 10 FAMILIES MEMBER OR NON-MEMBER")
     hv_table_df = build_house_visitation_table_df(view_month, view_week, effective_parish_filter)
-    st.dataframe(hv_table_df, use_container_width=True, hide_index=True)
+    render_record_style_html_table(hv_table_df)
 
     st.markdown("#### 🌍 Pangalawang Table: Missionary Work (Family Names, Mga Pangalan ng Dumalo, Total Tao & Remarks)")
     mw_table_df = build_missionary_work_table_df(view_month, view_week, effective_parish_filter)
-    st.dataframe(mw_table_df, use_container_width=True, hide_index=True)
+    render_record_style_html_table(mw_table_df)
 
     st.markdown("#### 📖 Pangatlong Table: INDOCTRINATION: FAMILY NAME OF A FAMILY UNDER INDOCTRINATION")
     ind_table_df = build_indoctrination_table_df(view_month, view_week, effective_parish_filter)
-    st.dataframe(ind_table_df, use_container_width=True, hide_index=True)
+    render_record_style_html_table(ind_table_df)
 
     outreach_cards_list = []
     for p_c in (PARISH_ORDER if effective_parish_filter == "Lahat ng Parokya" else [p for p in PARISH_ORDER if normalize_parish_match(p, effective_parish_filter)]):
@@ -5038,6 +5503,7 @@ with st.sidebar:
         nav_options = [
             "📑 Weekly Report & Parish Monitoring",
             "📈 Live Activity & Update Dashboard",
+            "📊 Parish Census & Member Manager",
             "📊 Parish Directory & Family Search",
             "🛡️ Master Admin Controller & Approval Queue",
             "🗣️ Ministry Messenger (Admin & Users Chat)",
@@ -5069,7 +5535,11 @@ with st.sidebar:
 
     app_mode = st.radio("Pumili ng Pahina:", nav_options, index=default_nav_idx)
     st.caption(f"💬 Ministry Messenger: **{len(visible_chats_for_me)}** mensahe sa iyong inbox")
-    selected_model = st.selectbox("Gemini Model (Fastest):", ["gemini-2.5-flash", "gemini-2.5-pro"], index=0)
+    selected_model = st.selectbox(
+        "Gemini Model (Fastest):",
+        ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
+        index=0
+    )
     st.divider()
     if st.button("🗑️ I-clear ang AI Chat History"):
         st.session_state.messages = []
@@ -5298,8 +5768,8 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
     c_opt1, c_opt2 = st.columns([3, 1])
     with c_opt1:
         expand_full_family = st.checkbox(
-            "👨‍👩‍👧‍👦 Ipakita ang BUONG PAMILYA kapag nag-search ng Family ID o Pangalan (Makikita lahat sa Summary, Active/Inactive/Non-Member, Age Categories, at Matching Members)",
-            value=True
+            "👨‍👩‍👧‍👦 Ipakita rin ang ibang kapamilya (Kapag naka-uncheck, TANGING YUNG PANGALAN LANG NA I-SEARCH MO ang lalabas)",
+            value=False
         )
     with c_opt2:
         if st.button("🔄 I-sync ang Excel Mula sa Drive", use_container_width=True):
@@ -5312,13 +5782,18 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
         final_df = final_df[final_df["Family ID"].astype(str).str.strip().str.upper() == selected_family_id.upper()]
 
     if keyword_search:
-        direct_mask = (
-            final_df["Family ID"].astype(str).str.contains(keyword_search, case=False, na=False) |
+        # Unahin ang eksaktong match sa Full Name o Family ID para tanging ang hinahanap na tao lang ang lumabas
+        name_or_id_mask = (
             final_df["Full Name"].astype(str).str.contains(keyword_search, case=False, na=False) |
-            final_df["Head of Family"].astype(str).str.contains(keyword_search, case=False, na=False) |
-            final_df["Remarks"].astype(str).str.contains(keyword_search, case=False, na=False)
+            final_df["Family ID"].astype(str).str.contains(keyword_search, case=False, na=False)
         )
-        matched_rows = final_df[direct_mask]
+        matched_rows = final_df[name_or_id_mask]
+        if matched_rows.empty:
+            fallback_mask = (
+                final_df["Head of Family"].astype(str).str.contains(keyword_search, case=False, na=False) |
+                final_df["Remarks"].astype(str).str.contains(keyword_search, case=False, na=False)
+            )
+            matched_rows = final_df[fallback_mask]
         if expand_full_family and not matched_rows.empty:
             matched_fids = matched_rows["Family ID"].astype(str).str.strip().unique().tolist()
             final_df = final_df[final_df["Family ID"].astype(str).str.strip().isin(matched_fids)]
@@ -5335,58 +5810,78 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
 
     summary_df, df_act_list, df_inact_list, df_non_list = build_status_summary_and_lists(final_df)
     df_seniors, df_adults, df_youth, df_kids = build_age_category_tables(final_df)
-
     total_families = final_df["Family ID"].nunique() if not final_df.empty else 0
 
-    k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("👨‍👩‍👧‍👦 Pamilyang Nahanap", total_families)
-    k2.metric("👥 Kabuuang Miyembro", len(final_df))
-    k3.metric("🟢 Active Members", len(df_act_list))
-    k4.metric("🟡 Inactive Members", len(df_inact_list))
-    k5.metric("🔵 Non-Members", len(df_non_list))
+    is_searching_specific = bool(keyword_search or selected_family_id != "Lahat ng Family ID")
 
-    c_tot1, c_tot2, c_tot3, c_tot4 = st.columns(4)
-    c_tot1.metric("👴 TOTAL SENIORS (Active)", len(df_seniors))
-    c_tot2.metric("🧑 TOTAL ADULTS (Active)", len(df_adults))
-    c_tot3.metric("👦 TOTAL YOUTH (Active)", len(df_youth))
-    c_tot4.metric("👶 TOTAL KIDS (Active)", len(df_kids))
+    if is_searching_specific:
+        st.markdown(f"### 🔍 Resulta ng Paghahanap: `{keyword_search or selected_family_id}` ({len(final_df)} Nahanap)")
+        st.caption("Tanging ang datos lamang ng iyong hinanap na pangalan/ID ang ipinapakita sa ibaba para madaling makita at ma-edit.")
+        if not final_df.empty:
+            for _, m_row in final_df.iterrows():
+                st.markdown(
+                    f"<div class='full-text-card'>"
+                    f"<b>👤 Buong Pangalan: <span style='font-size:1.15em;color:#38BDF8;'>{m_row['Full Name']}</span></b><br>"
+                    f"⛪ <b>Parokya:</b> {m_row['Parish']} | 🆔 <b>Family ID:</b> <code>{m_row['Family ID']}</code> | 📊 <b>Status:</b> <b>{m_row['Status']}</b><br>"
+                    f"🏠 <b>Head of Family:</b> {m_row['Head of Family'] or 'N/A'} | 👨‍👩‍👧 <b>Relasyon:</b> {m_row['Relationship'] or 'N/A'}<br>"
+                    f"🎂 <b>Edad / Kasarian / Kategorya:</b> {m_row['Age'] or 'N/A'} • {m_row['Sex'] or 'N/A'} • <code>{m_row['Category'] or 'N/A'}</code><br>"
+                    f"📱 <b>Contact No.:</b> {m_row['Contact No.'] or 'N/A'} | 📍 <b>Tirahan:</b> {m_row['Current Address (If living separately)'] or 'N/A'}<br>"
+                    f"📝 <b>Remarks / Tala:</b> {m_row['Remarks'] or 'Walang espesyal na remarks'}"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+        with st.expander("📊 Buksan ang Pangkalahatang Summary Tables (Optional)", expanded=False):
+            st.dataframe(summary_df, use_container_width=True, hide_index=True)
+    else:
+        k1, k2, k3, k4, k5 = st.columns(5)
+        k1.metric("👨‍👩‍👧‍👦 Pamilyang Nahanap", total_families)
+        k2.metric("👥 Kabuuang Miyembro", len(final_df))
+        k3.metric("🟢 Active Members", len(df_act_list))
+        k4.metric("🟡 Inactive Members", len(df_inact_list))
+        k5.metric("🔵 Non-Members", len(df_non_list))
 
-    st.markdown("### 📋 MEMBER STATUS SUMMARY")
-    st.caption(f"**Kasalukuyang Filter / Search:** {search_label}")
-    st.dataframe(summary_df, use_container_width=True, hide_index=True)
+        c_tot1, c_tot2, c_tot3, c_tot4 = st.columns(4)
+        c_tot1.metric("👴 TOTAL SENIORS (Active)", len(df_seniors))
+        c_tot2.metric("🧑 TOTAL ADULTS (Active)", len(df_adults))
+        c_tot3.metric("👦 TOTAL YOUTH (Active)", len(df_youth))
+        c_tot4.metric("👶 TOTAL KIDS (Active)", len(df_kids))
 
-    st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("### 📋 MEMBER STATUS SUMMARY")
+        st.caption(f"**Kasalukuyang Filter / Search:** {search_label}")
+        st.dataframe(summary_df, use_container_width=True, hide_index=True)
 
-    st.markdown("### 📊 MGA TALAAN AYON SA MEMBER STATUS (ACTIVE / INACTIVE / NON-MEMBER)")
-    col_act, col_inact, col_non = st.columns(3)
-    with col_act:
-        st.success(f"**ACTIVE MEMBERS ({len(df_act_list)})**")
-        st.dataframe(df_act_list, use_container_width=True, hide_index=True)
-    with col_inact:
-        st.warning(f"**INACTIVE MEMBERS ({len(df_inact_list)})**")
-        st.dataframe(df_inact_list, use_container_width=True, hide_index=True)
-    with col_non:
-        st.info(f"**NON-MEMBERS ({len(df_non_list)})**")
-        st.dataframe(df_non_list, use_container_width=True, hide_index=True)
+        st.markdown("<br>", unsafe_allow_html=True)
 
-    st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("### 📊 MGA TALAAN AYON SA MEMBER STATUS (ACTIVE / INACTIVE / NON-MEMBER)")
+        col_act, col_inact, col_non = st.columns(3)
+        with col_act:
+            st.success(f"**ACTIVE MEMBERS ({len(df_act_list)})**")
+            st.dataframe(df_act_list, use_container_width=True, hide_index=True)
+        with col_inact:
+            st.warning(f"**INACTIVE MEMBERS ({len(df_inact_list)})**")
+            st.dataframe(df_inact_list, use_container_width=True, hide_index=True)
+        with col_non:
+            st.info(f"**NON-MEMBERS ({len(df_non_list)})**")
+            st.dataframe(df_non_list, use_container_width=True, hide_index=True)
 
-    st.markdown("### 👥 MGA TALAAN NG ACTIVE MEMBERS AYON SA KATEGORYA (SENIORS • ADULTS • YOUTH • KIDS)")
-    col_sen, col_adu, col_you, col_kid = st.columns(4)
-    with col_sen:
-        st.markdown(f"<div class='category-header-seniors'>👴 TOTAL SENIORS ({len(df_seniors)})</div>", unsafe_allow_html=True)
-        st.dataframe(df_seniors, use_container_width=True, hide_index=True)
-    with col_adu:
-        st.markdown(f"<div class='category-header-adults'>🧑 TOTAL ADULTS ({len(df_adults)})</div>", unsafe_allow_html=True)
-        st.dataframe(df_adults, use_container_width=True, hide_index=True)
-    with col_you:
-        st.markdown(f"<div class='category-header-youth'>👦 TOTAL YOUTH ({len(df_youth)})</div>", unsafe_allow_html=True)
-        st.dataframe(df_youth, use_container_width=True, hide_index=True)
-    with col_kid:
-        st.markdown(f"<div class='category-header-kids'>👶 TOTAL KIDS ({len(df_kids)})</div>", unsafe_allow_html=True)
-        st.dataframe(df_kids, use_container_width=True, hide_index=True)
+        st.markdown("<br>", unsafe_allow_html=True)
 
-    st.divider()
+        st.markdown("### 👥 MGA TALAAN NG ACTIVE MEMBERS AYON SA KATEGORYA (SENIORS • ADULTS • YOUTH • KIDS)")
+        col_sen, col_adu, col_you, col_kid = st.columns(4)
+        with col_sen:
+            st.markdown(f"<div class='category-header-seniors'>👴 TOTAL SENIORS ({len(df_seniors)})</div>", unsafe_allow_html=True)
+            st.dataframe(df_seniors, use_container_width=True, hide_index=True)
+        with col_adu:
+            st.markdown(f"<div class='category-header-adults'>🧑 TOTAL ADULTS ({len(df_adults)})</div>", unsafe_allow_html=True)
+            st.dataframe(df_adults, use_container_width=True, hide_index=True)
+        with col_you:
+            st.markdown(f"<div class='category-header-youth'>👦 TOTAL YOUTH ({len(df_youth)})</div>", unsafe_allow_html=True)
+            st.dataframe(df_youth, use_container_width=True, hide_index=True)
+        with col_kid:
+            st.markdown(f"<div class='category-header-kids'>👶 TOTAL KIDS ({len(df_kids)})</div>", unsafe_allow_html=True)
+            st.dataframe(df_kids, use_container_width=True, hide_index=True)
+
+        st.divider()
 
     if not final_df.empty:
         with st.expander("⚡ Quick Member Status, Category & Remarks Updater (Auto-Sync sa Excel & Google Drive)", expanded=False):
@@ -6156,31 +6651,233 @@ elif app_mode == "🤝 Notion CRM (Visitors & Members)":
             st.markdown(details_html, unsafe_allow_html=True)
     st.stop()
 
+def extract_members_from_uploaded_image_or_file(file_bytes: bytes, filename: str, mime_type: str, default_parish: str, model_name: str = "gemini-2.5-flash") -> list[dict]:
+    """Bumabasa ng Image (.jpg, .png) o Excel/CSV File (.xlsx, .csv) sa 'Magdagdag ng Miyembro' at kinukuha ang mga datos ng miyembro."""
+    ext = filename.split(".")[-1].lower()
+    extracted_list = []
+
+    if ext in ["xlsx", "csv"]:
+        try:
+            df_in = pd.read_csv(io.BytesIO(file_bytes)) if ext == "csv" else pd.read_excel(io.BytesIO(file_bytes))
+            df_in.columns = [str(c).strip() for c in df_in.columns]
+            for _, r in df_in.iterrows():
+                fn_v = str(r.get("Full Name", r.get("Pangalan", r.get("Name", ""))) or "").strip()
+                if not fn_v or fn_v.lower() == "nan":
+                    continue
+                p_v = str(r.get("Parish", r.get("Parokya", default_parish)) or default_parish).strip()
+                matched_p = default_parish
+                for p_cand in PARISH_ORDER:
+                    if normalize_parish_match(p_v, p_cand):
+                        matched_p = p_cand
+                        break
+                extracted_list.append({
+                    "Parish": matched_p,
+                    "Family ID": str(r.get("Family ID", r.get("Member / Record ID", "")) or "").strip() or f"CTG-{matched_p[:3]}-FAM-NEW",
+                    "Head of Family": str(r.get("Head of Family", fn_v) or fn_v).strip(),
+                    "Full Name": fn_v,
+                    "Relationship": str(r.get("Relationship", "HEAD OF FAMILY") or "HEAD OF FAMILY").strip().upper(),
+                    "Sex": str(r.get("Sex", "MALE") or "MALE").strip().upper(),
+                    "Age": str(r.get("Age", "") or "").strip(),
+                    "Category": str(r.get("Category", "ADULT") or "ADULT").strip().upper(),
+                    "Status": str(r.get("Status", "ACTIVE") or "ACTIVE").strip().upper(),
+                    "Contact No.": str(r.get("Contact No.", r.get("Contact Number", "")) or "").strip(),
+                    "Current Address (If living separately)": str(r.get("Current Address (If living separately)", r.get("Address", "")) or "").strip(),
+                    "Remarks": str(r.get("Remarks", "") or "").strip(),
+                })
+            if extracted_list:
+                return extracted_list
+        except Exception:
+            pass
+
+    # Para sa Image (.jpg, .png, .jpeg): subukan muna ang Gemini Vision, at may fallback sa OCR (RapidOCR / pytesseract / OCR.space)
+    valid_keys = get_valid_gemini_keys()
+    if valid_keys:
+        try:
+            pil_rgb = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+            jb = io.BytesIO()
+            pil_rgb.save(jb, format="JPEG", quality=92)
+            image_part = types.Part.from_bytes(data=jb.getvalue(), mime_type="image/jpeg")
+            prompt_m = (
+                f"Basahin ang lahat ng impormasyon ng miyembro na nakasulat sa larawang ito (default parish: {default_parish}). "
+                "Ibalik LAMANG ang valid JSON list ng objects na may keys: "
+                '[{"Parish": "", "Family ID": "", "Head of Family": "", "Full Name": "", '
+                '"Relationship": "HEAD OF FAMILY", "Sex": "MALE", "Age": "", "Category": "ADULT", '
+                '"Status": "ACTIVE", "Contact No.": "", "Current Address (If living separately)": "", "Remarks": ""}]'
+            )
+            for k_api in valid_keys:
+                client = genai.Client(api_key=k_api)
+                for m_try in ["gemini-2.5-flash", "gemini-2.0-flash", model_name]:
+                    try:
+                        res = client.models.generate_content(
+                            model=m_try,
+                            contents=[image_part, prompt_m],
+                            config=types.GenerateContentConfig(temperature=0.1, response_mime_type="application/json")
+                        )
+                        raw_t = re.sub(r"^```(?:json)?\s*|\s*```$", "", (res.text or "").strip(), flags=re.I).strip()
+                        cand = json.loads(raw_t)
+                        if isinstance(cand, dict):
+                            cand = [cand]
+                        if isinstance(cand, list) and len(cand) > 0:
+                            for item in cand:
+                                if isinstance(item, dict) and str(item.get("Full Name", "")).strip():
+                                    p_in = str(item.get("Parish", default_parish) or default_parish).strip()
+                                    matched_p = default_parish
+                                    for p_cand in PARISH_ORDER:
+                                        if normalize_parish_match(p_in, p_cand):
+                                            matched_p = p_cand
+                                            break
+                                    item["Parish"] = matched_p
+                                    if not str(item.get("Family ID", "")).strip():
+                                        item["Family ID"] = f"CTG-{matched_p[:3]}-FAM-NEW"
+                                    if not str(item.get("Head of Family", "")).strip():
+                                        item["Head of Family"] = item["Full Name"]
+                                    extracted_list.append(item)
+                            if extracted_list:
+                                return extracted_list
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+    # OCR Fallback (OCR.space / RapidOCR / pytesseract) kung walang Gemini quota
+    ocr_txt = ""
+    try:
+        pil_img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+        w, h = pil_img.size
+        scale = min(1.0, 940.0 / max(1, max(w, h)))
+        send_im = pil_img.resize((int(w * scale), int(h * scale)), Image.Resampling.BICUBIC) if scale < 1.0 else pil_img
+        ob = io.BytesIO()
+        send_im.save(ob, format="JPEG", quality=90)
+        b64_im = "data:image/jpeg;base64," + base64.b64encode(ob.getvalue()).decode("utf-8")
+        r_ocr = requests.post("https://api.ocr.space/parse/image", data={"apikey": "helloworld", "base64Image": b64_im, "language": "eng", "OCREngine": "2"}, timeout=12)
+        if r_ocr.status_code == 200:
+            ocr_txt = "\n".join(str(pr.get("ParsedText", "")).strip() for pr in r_ocr.json().get("ParsedResults", []))
+    except Exception:
+        pass
+
+    if ocr_txt.strip():
+        lines = [ln.strip() for ln in ocr_txt.splitlines() if ln.strip()]
+        fid_m = re.search(r"(CTG-[A-Z0-9\-]+)", ocr_txt, flags=re.I)
+        fid_val = fid_m.group(1).upper() if fid_m else f"CTG-{default_parish[:3]}-FAM-NEW"
+        fn_val = lines[0] if lines else ""
+        for ln in lines:
+            if re.search(r"^(?:FULL\s*NAME|PANGALAN|NAME)\s*[:\-]", ln, flags=re.I):
+                fn_val = re.sub(r"^(?:FULL\s*NAME|PANGALAN|NAME)\s*[:\-]\s*", "", ln, flags=re.I).strip()
+                break
+        if fn_val:
+            extracted_list.append({
+                "Parish": default_parish,
+                "Family ID": fid_val,
+                "Head of Family": fn_val,
+                "Full Name": fn_val,
+                "Relationship": "HEAD OF FAMILY",
+                "Sex": "FEMALE" if "FEMALE" in ocr_txt.upper() else "MALE",
+                "Age": "",
+                "Category": "YOUTH" if "YOUTH" in ocr_txt.upper() else ("KIDS" if "KID" in ocr_txt.upper() else ("SENIOR CITIZEN" if "SENIOR" in ocr_txt.upper() else "ADULT")),
+                "Status": "INACTIVE" if "INACTIVE" in ocr_txt.upper() else "ACTIVE",
+                "Contact No.": "",
+                "Current Address (If living separately)": "",
+                "Remarks": " ".join(lines[1:4]) if len(lines) > 1 else "",
+            })
+    return extracted_list
+
 # =====================================================================
-# 4. MAGDAGDAG NG MIYEMBRO & LITRATO
+# 4. MAGDAGDAG NG MIYEMBRO & LITRATO (MAY AUTO-EXTRACT MULA SA IMAGE O FILE PARA SA LAHAT NG ADMINS)
 # =====================================================================
-elif app_mode == "➕ Magdagdag ng Miyembro & Litrato":
+if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
     render_title_with_logo(
-        "Magdagdag ng Miyembro",
-        "Awtomatikong idaragdag ang bagong miyembro sa Excel Database ng Parokya at ise-save ang litrato sa iyong Google Drive Cloud."
+        "Magdagdag ng Miyembro (Manual o Auto-Upload ng Image / File)",
+        "Mag-upload ng Image (ID / Form / Screenshot) o Excel/CSV file para awtomatikong mapunan at ma-save ang miyembro sa kaukulang Parokya at Google Drive."
     )
+    allowed_parishes_add = [st.session_state.assigned_parish] if st.session_state.user_role == "Parish Leader" else PARISH_ORDER
+
+    with st.expander("📸 1. Awtomatikong Magdagdag Mula sa In-upload na Image (.jpg, .png) o Excel/CSV File (.xlsx, .csv)", expanded=True):
+        st.caption("Kapag nag-upload ka ng larawan o file dito, awtomatikong babasahin ang datos sa larawan/file at ilalagay sa form sa ibaba (o maaari mo nang i-save agad sa isang pindot!).")
+        up_c1, up_c2 = st.columns([1.2, 1.8])
+        with up_c1:
+            def_p_auto = st.selectbox("Target na Parokya:", allowed_parishes_add, key="auto_add_mem_parish")
+        with up_c2:
+            auto_mem_file = st.file_uploader(
+                "📤 Mag-upload ng Image (.jpg, .png) o File (.xlsx, .csv) ng Miyembro:",
+                type=["jpg", "jpeg", "png", "xlsx", "csv"],
+                key="auto_add_mem_uploader"
+            )
+        if auto_mem_file is not None:
+            if st.button("🔍 Basahin ang Datos sa Image/File & Punan ang Form", type="primary", use_container_width=True):
+                with st.spinner("Binabasa ang mga datos mula sa in-upload na Image/File..."):
+                    f_bytes_m = auto_mem_file.read()
+                    ext_members = extract_members_from_uploaded_image_or_file(
+                        f_bytes_m, auto_mem_file.name, auto_mem_file.type, def_p_auto, selected_model
+                    )
+                    if ext_members:
+                        st.session_state["extracted_members_batch"] = ext_members
+                        st.session_state["extracted_member_form_prefill"] = ext_members[0]
+                        st.success(f"✅ Nakakuha ng **{len(ext_members)}** miyembro mula sa `{auto_mem_file.name}`! Na-fill na ang form sa ibaba.")
+                    else:
+                        st.warning("Walang nabasang pangalan sa image/file. Maaari mong i-type nang direkta sa form sa ibaba.")
+
+        if "extracted_members_batch" in st.session_state and st.session_state["extracted_members_batch"]:
+            batch_list = st.session_state["extracted_members_batch"]
+            st.markdown(f"**📋 Mga Nabasa Mula sa Image/File ({len(batch_list)} Miyembro):**")
+            render_record_style_html_table(pd.DataFrame(batch_list))
+            if st.button(f"🚀 Direktang I-save ang Lahat ({len(batch_list)} Miyembro) sa Excel Database & Google Drive", type="primary", use_container_width=True):
+                saved_cnt = 0
+                for m_item in batch_list:
+                    m_payload = {
+                        "Parish": m_item.get("Parish", def_p_auto),
+                        "Family ID": m_item.get("Family ID", f"CTG-{def_p_auto[:3]}-FAM-NEW"),
+                        "Head of Family": m_item.get("Head of Family") or m_item.get("Full Name", ""),
+                        "Full Name": m_item.get("Full Name", ""),
+                        "Relationship": m_item.get("Relationship", "HEAD OF FAMILY"),
+                        "Sex": m_item.get("Sex", "MALE"),
+                        "Age": m_item.get("Age", ""),
+                        "Status": m_item.get("Status", "ACTIVE"),
+                        "Contact No.": m_item.get("Contact No.", ""),
+                        "Current Address (If living separately)": m_item.get("Current Address (If living separately)", ""),
+                        "Category": m_item.get("Category", "ADULT"),
+                        "Church Member": "NO" if "NON" in str(m_item.get("Status", "")).upper() else "YES",
+                        "Remarks": f"{m_item.get('Remarks', '')} (Added on {get_philippine_datetime_str()})".strip(),
+                    }
+                    ok_b, _ = append_new_member_to_excel_and_sync(ACTIVE_SPREADSHEET_URL, m_payload)
+                    if ok_b:
+                        saved_cnt += 1
+                st.session_state.pop("extracted_members_batch", None)
+                st.cache_data.clear()
+                st.success(f"✅ Matagumpay na naidagdag ang **{saved_cnt}** miyembro sa Excel Database at Google Drive ({get_philippine_datetime_str()})!")
+                time.sleep(0.7)
+                st.rerun()
+
+    prefill_m = st.session_state.get("extracted_member_form_prefill", {})
+    rel_opts = ["HEAD OF FAMILY", "HUSBAND", "WIFE", "SON", "DAUGHTER", "RELATIVE", "OTHER"]
+    sex_opts = ["MALE", "FEMALE"]
+    cat_opts = ["KIDS", "YOUTH", "ADULT", "SENIOR CITIZEN"]
+    st_opts = ["ACTIVE", "INACTIVE", "NON-MEMBER"]
+
+    def_p_val = prefill_m.get("Parish", allowed_parishes_add[0])
+    def_p_i = allowed_parishes_add.index(def_p_val) if def_p_val in allowed_parishes_add else 0
+    def_rel_i = rel_opts.index(prefill_m.get("Relationship", "HEAD OF FAMILY")) if prefill_m.get("Relationship") in rel_opts else 0
+    def_sex_i = sex_opts.index(prefill_m.get("Sex", "MALE")) if prefill_m.get("Sex") in sex_opts else 0
+    def_cat_i = cat_opts.index(prefill_m.get("Category", "ADULT")) if prefill_m.get("Category") in cat_opts else 2
+    def_st_i = st_opts.index(prefill_m.get("Status", "ACTIVE")) if prefill_m.get("Status") in st_opts else 0
+
     with st.form("add_form"):
+        st.markdown("##### ✍️ 2. Detalye ng Miyembro (Maaaring I-edit Bago I-save)")
         c1, c2 = st.columns(2)
         with c1:
-            mp = st.selectbox("Parish:", [st.session_state.assigned_parish] if st.session_state.user_role == "Parish Leader" else PARISH_ORDER)
-            fid = st.text_input("Family ID (hal. CTG-LN-FAM-0001):").strip()
-            m_head = st.text_input("Head of Family:").strip()
-            fn = st.text_input("Buong Pangalan:").strip()
-            m_rel = st.selectbox("Relasyon sa Pamilya:", ["HEAD OF FAMILY", "HUSBAND", "WIFE", "SON", "DAUGHTER", "RELATIVE", "OTHER"])
-            m_addr = st.text_input("Current Address (Tirahan):").strip()
+            mp = st.selectbox("Parish:", allowed_parishes_add, index=def_p_i)
+            fid = st.text_input("Family ID (hal. CTG-LN-FAM-0001):", value=str(prefill_m.get("Family ID", ""))).strip()
+            m_head = st.text_input("Head of Family:", value=str(prefill_m.get("Head of Family", ""))).strip()
+            fn = st.text_input("Buong Pangalan:", value=str(prefill_m.get("Full Name", ""))).strip()
+            m_rel = st.selectbox("Relasyon sa Pamilya:", rel_opts, index=def_rel_i)
+            m_addr = st.text_input("Current Address (Tirahan):", value=str(prefill_m.get("Current Address (If living separately)", ""))).strip()
         with c2:
-            m_sex = st.selectbox("Kasarian:", ["MALE", "FEMALE"])
-            m_age = st.text_input("Edad (Age):").strip()
-            m_cat = st.selectbox("Kategorya:", ["KIDS", "YOUTH", "ADULT", "SENIOR CITIZEN"])
-            m_st = st.selectbox("Status:", ["ACTIVE", "INACTIVE", "NON-MEMBER"])
-            m_con = st.text_input("Contact Number:").strip()
+            m_sex = st.selectbox("Kasarian:", sex_opts, index=def_sex_i)
+            m_age = st.text_input("Edad (Age):", value=str(prefill_m.get("Age", ""))).strip()
+            m_cat = st.selectbox("Kategorya:", cat_opts, index=def_cat_i)
+            m_st = st.selectbox("Status:", st_opts, index=def_st_i)
+            m_con = st.text_input("Contact Number:", value=str(prefill_m.get("Contact No.", ""))).strip()
             pho = st.file_uploader("Litrato (Direktang i-save sa Google Drive):", type=["jpg", "png", "jpeg"])
-        m_rem = st.text_area("Remarks / Tala para sa Miyembro:").strip()
+        m_rem = st.text_area("Remarks / Tala para sa Miyembro:", value=str(prefill_m.get("Remarks", ""))).strip()
 
         if st.form_submit_button("💾 I-save sa App Excel at I-upload sa Google Drive", type="primary"):
             if fid and fn:
@@ -6635,12 +7332,56 @@ elif app_mode == "🛠️ App Settings":
     st.stop()
 
 # =====================================================================
-# 8. TURBO STREAMING CHAT ASSISTANT (WEB SEARCH + INSTANT DB + AI DRAFT)
+# 8. MADALING SUNDAN NA AI CHAT ASSISTANT (STEP-BY-STEP GUIDE + ONE-CLICK BUTTONS)
 # =====================================================================
+def query_weekly_monitoring_reports(search_query: str = "") -> str:
+    """Naghahanap sa 2027 Weekly Reports (Attendance, Liturgical Officers, Preachers, Topics, Outreach, at Remarks) ng mga Parokya."""
+    try:
+        db = load_weekly_monitoring_records()
+        if not db:
+            return "Wala pang naka-save na Weekly Report sa database."
+        q_low = str(search_query or "").strip().lower()
+        lines = []
+        for k, rec in db.items():
+            if not isinstance(rec, dict) or not rec.get("has_data"):
+                continue
+            p_n = rec.get("parish", "")
+            m_n = rec.get("month", "")
+            w_n = rec.get("week", "")
+            summary_str = (
+                f"Parish: {p_n} | Month/Week: {m_n} 2027 ({w_n}) | Date: {rec.get('report_date','')} | "
+                f"Submitted PH Time: {rec.get('submitted_at_ph','')} | "
+                f"Priest: {rec.get('priest','')} | Sakristan: {rec.get('sakristan','')} | "
+                f"Tema Misa: {rec.get('tema_misa','')} | Adal Topic: {rec.get('adal_evangelio','')} | "
+                f"Mass(A:{rec.get('mass_a',0)}, Y:{rec.get('mass_y',0)}) | "
+                f"Pampamilya(A:{rec.get('pampamilya_a',0)}, Y:{rec.get('pampamilya_y',0)}) | "
+                f"Online(A:{rec.get('online_a',0)}, Y:{rec.get('online_y',0)}) | "
+                f"Youth:{rec.get('youth_y',0)} | Kids:{rec.get('kids_k',0)} | "
+                f"Remarks: {rec.get('remarks','')[:180]}"
+            )
+            if not q_low or q_low in summary_str.lower():
+                lines.append(summary_str)
+        if not lines:
+            return f"Walang nahanap na Weekly Report para sa '{search_query}'."
+        return "Mga 2027 Weekly Reports:\n" + "\n".join(lines[:20])
+    except Exception as e:
+        return f"Error sa pagbasa ng Weekly Reports: {str(e)}"
+
 render_title_with_logo(
-    "⚡ CTG Gabay AI — Fast Streaming Ministry Assistant & Web Search",
-    "Opisyal na AI Assistant ng Church of the Temple of God (Saturday Worship) — konektado sa Excel, Notion, at Google Search."
+    "💬 CTG Gabay AI — Madaling Sundan na Ministry Assistant",
+    f"Opisyal na AI Assistant ng Church of the Temple of God ({st.session_state.assigned_parish}) • 🇵🇭 {get_philippine_datetime_str()}"
 )
+
+st.markdown(
+    "<div class='full-text-card'>"
+    "<b>🧭 Paano Gamitin ang AI Chat Assistant (3 Madaling Hakbang):</b><br>"
+    "<b>1️⃣ Pumili ng Wika at Mode sa Ibaba</b> (Tagalog, Ilokano, o English).<br>"
+    "<b>2️⃣ Pindutin ang Kahit Aling 'Mabilisang Tanong' Button</b> sa ibaba kung ayaw mong mag-type, O<br>"
+    "<b>3️⃣ Mag-type sa Chat Box sa Pinakababa</b> (hal. <i>'Hanapin si Pacita Agasen'</i> o <i>'Gumawa ng mensahe para sa pagsamba sa Sabado'</i>)."
+    "</div>",
+    unsafe_allow_html=True
+)
+
 valid_keys = get_valid_gemini_keys()
 if not valid_keys:
     st.warning("Wala pang GEMINI_API_KEY. Mangyaring ilagay ito sa App Settings.")
@@ -6651,38 +7392,74 @@ if "messages" not in st.session_state:
 if "current_model" not in st.session_state:
     st.session_state.current_model = selected_model
 
-col_chat_opt1, col_chat_opt2 = st.columns([1.3, 1.7])
+col_chat_opt1, col_chat_opt2, col_chat_opt3 = st.columns([1.2, 1.6, 0.9])
 with col_chat_opt1:
-    pref_lang = st.selectbox("🌐 Wika ng Sagot:", ["Awto (Kung ano ang tanong)", "Tagalog", "Ilokano", "English"], index=0)
+    pref_lang = st.selectbox("🌐 1. Pumili ng Wika:", ["Tagalog", "Ilokano", "English", "Awto (Kung ano ang tanong)"], index=0)
 with col_chat_opt2:
     assistant_mode = st.selectbox(
-        "🤖 Mode ng Assistant:",
+        "🤖 2. Pumili ng Gawain:",
         [
-            "💬 All-in-One Assistant (Ministry Data + Internet Search)",
-            "✍️ AI Draft Answer Generator (Gawaan ng Mensahe / Tugon sa Miyembro)"
+            "💬 All-in-One Assistant (Maghanap ng Miyembro, Attendance & Gabay)",
+            "✍️ Gawaan ng Mensahe / Tugon sa Miyembro (AI Draft Generator)"
         ],
         index=0
     )
+with col_chat_opt3:
+    st.write("")
+    if st.button("🧹 Burahin ang Usapan", use_container_width=True):
+        st.session_state.messages = []
+        st.session_state.pop("chat_session", None)
+        st.rerun()
+
+st.markdown("##### ⚡ Mabilisang Tanong (Pindutin lang ang button para sumagot agad ang AI):")
+qb1, qb2, qb3 = st.columns(3)
+qb4, qb5, qb6 = st.columns(3)
+quick_clicked_prompt = None
+with qb1:
+    if st.button("📊 Buod ng Weekly Report & Attendance", use_container_width=True):
+        quick_clicked_prompt = f"Ipakita ang malinaw na buod ng pinakahuling Weekly Report, Attendance, at Liturgical Officers para sa {st.session_state.assigned_parish}."
+with qb2:
+    if st.button("👥 Ilan ang Active Members sa Census?", use_container_width=True):
+        quick_clicked_prompt = f"Ipakita ang bilang ng Active Members (Seniors, Adults, Youth, Kids) sa {st.session_state.assigned_parish} mula sa Excel Census."
+with qb3:
+    if st.button("✉️ Imbitasyon sa Pagsamba ngayong Sabado", use_container_width=True):
+        quick_clicked_prompt = f"Gumawa ng maikli, magalang, at nakaka-inspire na mensahe ng paanyaya para sa ating pagsamba ngayong Sabado sa Church of the Temple of God ({st.session_state.assigned_parish})."
+with qb4:
+    if st.button("🙏 Panalangin & Comforting Bible Verse", use_container_width=True):
+        quick_clicked_prompt = "Magbigay ng isang nakaka-comfort na Bible verse at maikling panalangin para sa pamilyang dumadaan sa pagsubok."
+with qb5:
+    if st.button("📥 Tingnan ang Pending Requests sa Inbox", use_container_width=True):
+        quick_clicked_prompt = f"Ano ang mga kasalukuyang Prayer Requests, Questions, o Counselling sa Notion CRM para sa {st.session_state.assigned_parish}?"
+with qb6:
+    if st.button("🏠 Gabay sa House Visitation & Outreach", use_container_width=True):
+        quick_clicked_prompt = "Magbigay ng 5 madaling hakbang at gabay para sa aming House Visitation (10 families requirement) at Missionary Work ngayong linggo."
 
 lang_rule = "Sumagot gamit ang wikang ginamit ng nagtatanong." if "Awto" in pref_lang else f"Sumagot nang buo sa wikang {pref_lang}."
 sys_inst = (
-    f"Ikaw si CTG Gabay AI, ang opisyal at mabilis na AI assistant ng Church of the Temple of God (CTG) "
+    f"Ikaw si CTG Gabay AI, ang opisyal, magalang, at napakadaling sundan na AI assistant ng Church of the Temple of God (CTG) "
     f"para sa parokya ng {st.session_state.assigned_parish}. Tandaan na ang opisyal na pangalan ng simbahan ay "
     f"'Church of the Temple of God' at ang araw ng pagsamba at pangunahing pagtitipon (Worship / Sabbath Service) ay tuwing SABADO (Saturday).\n"
     f"- {lang_rule}\n"
-    f"- Gamitin LAMANG ang `query_excel_database` kung partikular na hinahanap ang isang miyembro o Family ID sa Excel.\n"
-    f"- Gamitin LAMANG ang `query_notion_crm` kung partikular na tinatanong ang Prayer Requests, Questions, Counselling, o Visitors sa Notion.\n"
-    f"- Gamitin ang `search_web_for_answers` kung ang tanong ay tungkol sa kasalukuyang balita o real-time internet facts.\n"
-    f"- Kung kaya mo nang sagutin nang direkta (hal. Bible verses, payo, general knowledge, o pagbuo ng AI Draft Answer), sumagot agad nang hindi tumatawag ng tool para mas mabilis!"
+    f"- Isulat ang iyong sagot sa malinaw na bullet points o numbered steps (1, 2, 3) upang hindi mahirapan ang mga users sa pagbasa sa cellphone, tablet, o computer.\n"
+    f"- Gamitin ang `query_excel_database` kapag naghahanap ng miyembro o Family ID sa Excel Census.\n"
+    f"- Gamitin ang `query_weekly_monitoring_reports` kapag tinatanong ang 2027 Weekly Reports, Attendance, Officers, o Remarks.\n"
+    f"- Gamitin ang `query_notion_crm` kapag tinatanong ang Prayer Requests, Questions, Counselling, o Visitors sa Notion.\n"
+    f"- Gamitin ang `search_web_for_answers` para sa real-time internet facts."
 )
+
+def resolve_callable_gemini_model(requested_model: str) -> str:
+    if requested_model == "gemini-3.8-flash":
+        return "gemini-2.5-flash"
+    return requested_model or "gemini-2.5-flash"
 
 def create_chat(api_key, model_name):
     client = genai.Client(api_key=api_key)
+    actual_m = resolve_callable_gemini_model(model_name)
     return client.chats.create(
-        model=model_name,
+        model=actual_m,
         config=types.GenerateContentConfig(
             system_instruction=sys_inst,
-            tools=[query_excel_database, query_notion_crm, send_email_via_gmail, search_web_for_answers],
+            tools=[query_excel_database, query_weekly_monitoring_reports, query_notion_crm, send_email_via_gmail, search_web_for_answers],
             temperature=0.3
         )
     )
@@ -6693,13 +7470,13 @@ if "chat_session" not in st.session_state or st.session_state.current_model != s
 
 def stream_chat_response(prompt_text: str):
     final_prompt = prompt_text
-    if "AI Draft Answer" in assistant_mode:
+    if "Gawaan ng Mensahe" in assistant_mode or "AI Draft" in assistant_mode:
         final_prompt = (
-            f"Gumawa ng opisyal at magalang na AI Draft Answer / Tugon mula sa Church of the Temple of God ({st.session_state.assigned_parish}) "
+            f"Gumawa ng opisyal, malinaw, at magalang na AI Draft Answer / Mensahe mula sa Church of the Temple of God ({st.session_state.assigned_parish}) "
             f"(kung saan ang araw ng pagsamba ay tuwing Sabado / Saturday) na may kasamang Bible verse at comforting message para dito ({lang_rule}):\n\n{prompt_text}"
         )
     elif "Awto" not in pref_lang:
-        final_prompt = f"[Sagutin sa wikang {pref_lang}] {prompt_text}"
+        final_prompt = f"[Sagutin nang malinaw at madaling sundan sa wikang {pref_lang}] {prompt_text}"
 
     try:
         for chunk in st.session_state.chat_session.send_message_stream(final_prompt):
@@ -6710,7 +7487,7 @@ def stream_chat_response(prompt_text: str):
         pass
 
     for backup_key in valid_keys:
-        for fallback_m in ["gemini-2.5-flash", selected_model]:
+        for fallback_m in ["gemini-2.5-flash", resolve_callable_gemini_model(selected_model)]:
             try:
                 st.session_state.chat_session = create_chat(backup_key, fallback_m)
                 for chunk in st.session_state.chat_session.send_message_stream(final_prompt):
@@ -6731,10 +7508,13 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-if user_prompt := st.chat_input("Magtanong tungkol sa ministry, magpagawa ng AI Draft Answer, o mag-search sa internet..."):
-    st.session_state.messages.append({"role": "user", "content": user_prompt})
+typed_prompt = st.chat_input("✍️ Mag-type dito ng iyong tanong (hal. 'Hanapin si Pacita Agasen' o 'Gumawa ng panalangin')...")
+active_prompt = quick_clicked_prompt or typed_prompt
+
+if active_prompt:
+    st.session_state.messages.append({"role": "user", "content": active_prompt})
     with st.chat_message("user"):
-        st.markdown(user_prompt)
+        st.markdown(active_prompt)
     with st.chat_message("assistant"):
-        full_reply = st.write_stream(stream_chat_response(user_prompt))
+        full_reply = st.write_stream(stream_chat_response(active_prompt))
         st.session_state.messages.append({"role": "assistant", "content": str(full_reply)})
