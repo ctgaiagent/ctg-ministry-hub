@@ -4,8 +4,10 @@ import re
 import json
 import time
 import base64
+import importlib
 import requests
 import openpyxl
+from PIL import Image
 from datetime import datetime
 from email.message import EmailMessage
 import streamlit as st
@@ -62,6 +64,14 @@ def get_secret(key, default=""):
         val = st.session_state.custom_secrets[key]
         if val:
             return str(val).strip()
+    try:
+        if os.path.exists("ctg_app_cloud_config.json"):
+            with open("ctg_app_cloud_config.json", "r", encoding="utf-8") as f:
+                cfg_data = json.load(f)
+            if cfg_data.get(key):
+                return str(cfg_data[key]).strip()
+    except Exception:
+        pass
     try:
         if key in st.secrets:
             return str(st.secrets[key]).strip()
@@ -2531,35 +2541,340 @@ def sync_weekly_reports_from_google_drive_folder(folder_url: str, target_month: 
     except Exception as e:
         return synced_count, f"Drive Folder Sync Notice: {str(e)}"
 
-def extract_weekly_report_via_ai_vision(file_bytes: bytes, mime_type: str, model_name: str = "gemini-2.5-flash", target_parish: str = "") -> dict:
-    valid_keys = get_valid_gemini_keys()
-    default_res = {
+def extract_pwr_grid_and_ocr_from_image(file_bytes: bytes) -> dict:
+    """Pure-Python PIL pixel grid analyzer + multi-engine OCR para sa PWR table screenshots (gumagana kahit offline o walang Gemini quota)."""
+    out = {
         "mass_a": 0, "mass_y": 0, "pampamilya_a": 0, "pampamilya_y": 0,
         "online_a": 0, "online_y": 0, "youth_y": 0, "kids_k": 0,
         "adal_a": 0, "adal_y": 0, "total_members_say": 0, "total_members_y": 0, "total_members_k": 0,
-        "house_visitation": "0", "missionary_work": "0",
-        "indoctrination": "0", "priest": "", "sakristan": "", "epistula": "", "evangelio": "",
+        "priest": "", "sakristan": "", "epistula": "", "evangelio": "",
         "casasaad": "", "candle_holder": "", "usher": "", "marshal": "",
         "adal_evangelio": "", "adal_preacher": "", "tema_misa": "", "misa_preacher": "",
         "tema_pampamilya": "", "pampamilya_preacher": "",
+        "report_date": "", "remarks": "",
         "adults_records": [], "youths_records": [], "kids_records": [],
-        "report_date": "01/02/27", "remarks": ""
+        "has_officer_ink": False
     }
+    try:
+        img = Image.open(io.BytesIO(file_bytes)).convert("L")
+        w, h = img.size
+        pixels = img.load()
+
+        x_scan_start = int(w * 0.02)
+        x_scan_end = int(w * 0.68)
+        scan_w = max(1, x_scan_end - x_scan_start)
+
+        h_lines = []
+        for y in range(h):
+            dark_cnt = 0
+            for x in range(x_scan_start, x_scan_end, 2):
+                if pixels[x, y] < 170:
+                    dark_cnt += 1
+            if (dark_cnt * 2) / scan_w > 0.38:
+                h_lines.append(y)
+
+        grouped_h = []
+        for y in h_lines:
+            if not grouped_h or y - grouped_h[-1][-1] > 4:
+                grouped_h.append([y])
+            else:
+                grouped_h[-1].append(y)
+        h_coords = [int(sum(g) / len(g)) for g in grouped_h]
+
+        row_bands = []
+        for i in range(len(h_coords) - 1):
+            y1, y2 = h_coords[i], h_coords[i + 1]
+            if 10 <= (y2 - y1) <= 45:
+                row_bands.append((y1, y2))
+
+        if len(row_bands) < 12:
+            return out
+
+        y_att_top = row_bands[len(row_bands) // 3][0]
+        y_att_bot = row_bands[-1][1]
+        att_h = max(1, y_att_bot - y_att_top)
+
+        v_lines = []
+        for x in range(w):
+            dark_cnt = 0
+            for y in range(y_att_top, y_att_bot, 2):
+                if pixels[x, y] < 170:
+                    dark_cnt += 1
+            if (dark_cnt * 2) / att_h > 0.40:
+                v_lines.append(x)
+
+        grouped_v = []
+        for x in v_lines:
+            if not grouped_v or x - grouped_v[-1][-1] > 4:
+                grouped_v.append([x])
+            else:
+                grouped_v[-1].append(x)
+        v_coords = [int(sum(g) / len(g)) for g in grouped_v]
+
+        col_spans = []
+        for i in range(len(v_coords) - 1):
+            x1, x2 = v_coords[i], v_coords[i + 1]
+            if (x2 - x1) >= 10:
+                col_spans.append((x1, x2))
+
+        att_col_start_idx = None
+        for idx in range(1, len(col_spans) - 6):
+            w_name = col_spans[idx][1] - col_spans[idx][0]
+            next_6_widths = [col_spans[idx + k][1] - col_spans[idx + k][0] for k in range(1, 7)]
+            min_w6, max_w6 = min(next_6_widths), max(next_6_widths)
+            if w_name > max_w6 * 1.5 and min_w6 >= 20 and (max_w6 / max(1, min_w6)) < 1.8:
+                att_col_start_idx = idx + 1
+                break
+
+        if att_col_start_idx is None:
+            return out
+
+        name_span = col_spans[att_col_start_idx - 1]
+        num_span = col_spans[att_col_start_idx - 2]
+        col_a_span = col_spans[0]
+        att_spans = col_spans[att_col_start_idx:att_col_start_idx + 6]
+
+        def cell_stats(y1, y2, x1, x2):
+            cy1, cy2 = y1 + 3, y2 - 3
+            cx1, cx2 = x1 + 3, x2 - 3
+            if cy2 <= cy1 or cx2 <= cx1:
+                return 0.0, 255.0
+            dark = 0
+            val_sum = 0
+            tot = 0
+            for yy in range(cy1, cy2):
+                for xx in range(cx1, cx2):
+                    p = pixels[xx, yy]
+                    tot += 1
+                    val_sum += p
+                    if p < 175:
+                        dark += 1
+            return (dark / tot if tot > 0 else 0.0), (val_sum / tot if tot > 0 else 255.0)
+
+        def has_att_grid_borders(y1, y2) -> bool:
+            cy1, cy2 = y1 + 3, y2 - 3
+            if cy2 <= cy1:
+                return False
+            hits = 0
+            for x_div, _ in att_spans:
+                dark_line = sum(1 for yy in range(cy1, cy2) if pixels[x_div, yy] < 175)
+                if dark_line / (cy2 - cy1) > 0.5:
+                    hits += 1
+            return hits >= 4
+
+        groups = []
+        current_group = []
+        seen_member_rows = False
+        officer_row_bands = []
+
+        for y1, y2 in row_bands:
+            ry1 = max(y1, y2 - 19) if (y2 - y1) > 24 else y1
+            is_grid = has_att_grid_borders(ry1, y2)
+            name_ink, name_bg = cell_stats(ry1, y2, name_span[0], name_span[1])
+            num_ink, num_bg = cell_stats(ry1, y2, num_span[0], num_span[1])
+            col_a_ink, col_a_bg = cell_stats(ry1, y2, col_a_span[0], col_a_span[1])
+
+            if name_bg < 190 or col_a_bg < 190:
+                if current_group:
+                    groups.append(current_group)
+                    current_group = []
+                continue
+
+            if not is_grid and not seen_member_rows and col_a_ink > 0.015:
+                officer_row_bands.append((ry1, y2))
+                val_ink, _ = cell_stats(ry1, y2, col_a_span[1], att_spans[-1][1])
+                if val_ink > 0.004:
+                    out["has_officer_ink"] = True
+
+            if is_grid and num_ink > 0.03 and name_ink > 0.025:
+                seen_member_rows = True
+                att_inks = [cell_stats(ry1, y2, sx1, sx2)[0] for sx1, sx2 in att_spans]
+                marks = [1 if ink > 0.008 else 0 for ink in att_inks]
+                current_group.append({
+                    "name": "",
+                    "mass": marks[0],
+                    "pampamilya": marks[1],
+                    "online": marks[2],
+                    "youth": marks[3],
+                    "kids": marks[4],
+                    "adal": marks[5],
+                    "remarks": ""
+                })
+            else:
+                if current_group:
+                    groups.append(current_group)
+                    current_group = []
+
+        if current_group:
+            groups.append(current_group)
+
+        if len(groups) >= 1:
+            out["adults_records"] = groups[0]
+        if len(groups) >= 2:
+            out["youths_records"] = groups[1]
+        if len(groups) >= 3:
+            out["kids_records"] = groups[2]
+
+        a_recs = out["adults_records"]
+        y_recs = out["youths_records"]
+        k_recs = out["kids_records"]
+
+        out["mass_a"] = sum(r["mass"] for r in a_recs)
+        out["pampamilya_a"] = sum(r["pampamilya"] for r in a_recs)
+        out["online_a"] = sum(r["online"] for r in a_recs)
+        out["adal_a"] = sum(r["adal"] for r in a_recs)
+
+        out["mass_y"] = sum(r["mass"] for r in y_recs)
+        out["pampamilya_y"] = sum(r["pampamilya"] for r in y_recs)
+        out["online_y"] = sum(r["online"] for r in y_recs)
+        out["youth_y"] = sum(r["youth"] for r in y_recs)
+        out["adal_y"] = sum(r["adal"] for r in y_recs)
+
+        out["kids_k"] = sum(r["kids"] for r in k_recs)
+
+        out["total_members_say"] = len(a_recs) + len(y_recs)
+        out["total_members_y"] = len(y_recs)
+        out["total_members_k"] = len(k_recs)
+
+        # Basahin ang 14 Officer & Preacher fields mula sa stacked canvas (gamit ang pytesseract o OCR.space fallback)
+        officer_keys_order = [
+            "priest", "sakristan", "epistula", "evangelio", "casasaad",
+            "candle_holder", "usher", "marshal", "adal_evangelio", "adal_preacher",
+            "tema_misa", "misa_preacher", "tema_pampamilya", "pampamilya_preacher"
+        ]
+        if len(officer_row_bands) >= 14 and out["has_officer_ink"]:
+            target_14 = officer_row_bands[-14:]
+            slot_h = 90
+            strip_w = max(240, int(att_spans[-1][1] - col_a_span[1]) * 3)
+            canvas = Image.new("L", (strip_w + 40, len(target_14) * slot_h), 255)
+            for idx, (oy1, oy2) in enumerate(target_14):
+                val_ink, _ = cell_stats(oy1, oy2, col_a_span[1], att_spans[-1][1])
+                if val_ink > 0.003:
+                    crop_box = img.crop((col_a_span[1] + 4, oy1 + 2, int(att_spans[-1][1] - 4), oy2 - 1))
+                    scaled = crop_box.resize((crop_box.width * 3, crop_box.height * 3), Image.Resampling.BICUBIC)
+                    canvas.paste(scaled, (20, idx * slot_h + 15))
+
+            slot_words = {i: [] for i in range(len(target_14))}
+            ocr_done = False
+
+            # Subukan muna ang local pytesseract kung naka-install
+            try:
+                pytesseract = importlib.import_module("pytesseract")
+                data = pytesseract.image_to_data(canvas, config="--psm 6", output_type=pytesseract.Output.DICT)
+                for i in range(len(data["text"])):
+                    word = data["text"][i].strip()
+                    if word and int(data["conf"][i]) > 10:
+                        cy = data["top"][i] + data["height"][i] // 2
+                        s_idx = min(len(target_14) - 1, max(0, cy // slot_h))
+                        slot_words[s_idx].append(word)
+                if any(slot_words.values()):
+                    ocr_done = True
+            except Exception:
+                pass
+
+            # Kung walang local tesseract binary sa cloud container, gamitin ang OCR.space API sa stacked canvas
+            if not ocr_done:
+                try:
+                    c_buf = io.BytesIO()
+                    canvas.convert("RGB").save(c_buf, format="JPEG", quality=92)
+                    b64_img = "data:image/jpeg;base64," + base64.b64encode(c_buf.getvalue()).decode("utf-8")
+                    ocr_res = requests.post(
+                        "https://api.ocr.space/parse/image",
+                        data={
+                            "apikey": "helloworld",
+                            "base64Image": b64_img,
+                            "language": "eng",
+                            "isOverlayRequired": "true",
+                            "OCREngine": "2"
+                        },
+                        timeout=12
+                    )
+                    if ocr_res.status_code == 200:
+                        o_json = ocr_res.json()
+                        for pr in o_json.get("ParsedResults", []):
+                            for line_obj in pr.get("TextOverlay", {}).get("Lines", []):
+                                l_txt = str(line_obj.get("LineText", "")).strip()
+                                min_top = float(line_obj.get("MinTop", 0))
+                                max_h = float(line_obj.get("MaxHeight", 20))
+                                cy = int(min_top + max_h / 2)
+                                s_idx = min(len(target_14) - 1, max(0, cy // slot_h))
+                                if l_txt:
+                                    slot_words[s_idx].append(l_txt)
+                except Exception:
+                    pass
+
+            for idx, k_name in enumerate(officer_keys_order):
+                val_s = " ".join(slot_words.get(idx, [])).strip()
+                val_s = re.sub(r"^[|:\-\s]+|[|:\-\s]+$", "", val_s)
+                if val_s:
+                    out[k_name] = val_s
+    except Exception:
+        pass
+    return out
+
+def extract_weekly_report_via_ai_vision(file_bytes: bytes, mime_type: str, model_name: str = "gemini-2.5-flash", target_parish: str = "") -> dict:
+    # 1. Patakbuhin agad ang Pure-Python Table Grid + OCR Extractor (100% deterministic para sa attendance marks at officers)
+    grid_res = extract_pwr_grid_and_ocr_from_image(file_bytes)
+
+    default_res = {
+        "mass_a": grid_res.get("mass_a", 0),
+        "mass_y": grid_res.get("mass_y", 0),
+        "pampamilya_a": grid_res.get("pampamilya_a", 0),
+        "pampamilya_y": grid_res.get("pampamilya_y", 0),
+        "online_a": grid_res.get("online_a", 0),
+        "online_y": grid_res.get("online_y", 0),
+        "youth_y": grid_res.get("youth_y", 0),
+        "kids_k": grid_res.get("kids_k", 0),
+        "adal_a": grid_res.get("adal_a", 0),
+        "adal_y": grid_res.get("adal_y", 0),
+        "total_members_say": grid_res.get("total_members_say", 0),
+        "total_members_y": grid_res.get("total_members_y", 0),
+        "total_members_k": grid_res.get("total_members_k", 0),
+        "house_visitation": "0", "missionary_work": "0", "indoctrination": "0",
+        "priest": grid_res.get("priest", ""),
+        "sakristan": grid_res.get("sakristan", ""),
+        "epistula": grid_res.get("epistula", ""),
+        "evangelio": grid_res.get("evangelio", ""),
+        "casasaad": grid_res.get("casasaad", ""),
+        "candle_holder": grid_res.get("candle_holder", ""),
+        "usher": grid_res.get("usher", ""),
+        "marshal": grid_res.get("marshal", ""),
+        "adal_evangelio": grid_res.get("adal_evangelio", ""),
+        "adal_preacher": grid_res.get("adal_preacher", ""),
+        "tema_misa": grid_res.get("tema_misa", ""),
+        "misa_preacher": grid_res.get("misa_preacher", ""),
+        "tema_pampamilya": grid_res.get("tema_pampamilya", ""),
+        "pampamilya_preacher": grid_res.get("pampamilya_preacher", ""),
+        "adults_records": grid_res.get("adults_records", []),
+        "youths_records": grid_res.get("youths_records", []),
+        "kids_records": grid_res.get("kids_records", []),
+        "report_date": grid_res.get("report_date", "") or "01/02/27",
+        "remarks": grid_res.get("remarks", "")
+    }
+
+    valid_keys = get_valid_gemini_keys()
     if not valid_keys:
         return default_res
+
+    # 2. I-convert ang image sa malinis na RGB JPEG upang maiwasan ang RGBA / MIME-type mismatch errors sa Gemini API
+    try:
+        pil_rgb = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+        jpeg_buf = io.BytesIO()
+        pil_rgb.save(jpeg_buf, format="JPEG", quality=92)
+        clean_img_bytes = jpeg_buf.getvalue()
+        clean_mime = "image/jpeg"
+    except Exception:
+        clean_img_bytes = file_bytes
+        clean_mime = mime_type or "image/jpeg"
 
     parish_focus = f" para sa parokya ng {target_parish}" if target_parish else ""
     prompt = (
         f"Suriin nang mabuti ang larawang ito ng Church of the Temple of God (CTG) Parish Weekly Report{parish_focus}. "
         "Kunin ang lahat ng detalye sa itaas ng form ng parokya: DATE, PRIEST, SAKRISTAN, EPISTULA, EVANGELIO, CASASAAD, CANDLE HOLDER, USHER, MARSHAL, "
         "ADAL TI EVANGELIO (at Preacher/s), TEMA TI MISA (at Preacher), at TEMA TI PAMPAMILYA (at Preacher). "
-        "1. Bilangin kung ilang pangalan lahat ang nakalista sa ADULTS, ilang pangalan sa YOUTHS, at ilang pangalan sa KIDS. "
-        "2. Bilangin nang eksakto kung ilang ADULTS (A) at ilang YOUTHS (Y) ang may marka (1, ✓, ✔, /, x, o kulay/check) sa bawat column: "
-        "Mass (mass_a para sa Adults, mass_y para sa Youths), Pampamilya (pampamilya_a, pampamilya_y), Online Ministry (online_a, online_y), "
-        "Youth Fellowship (youth_y), Kids Fellowship (kids_k sa KIDS section), at Adal ti Evangelio (adal_a, adal_y), pati Remarks, House Visitation, Missionary Work, at Indoctrination. "
-        "Kung may nakasulat na A-<num> | Y-<num> o kabuuang bilang sa TOTAL row, gamitin din iyon. "
-        "3. Ilista sa adults_records, youths_records, at kids_records ang bawat miyembro at lagyan ng 1 kung may marka sa column: "
-        '[{"name": "Pangalan", "mass": 1, "pampamilya": 1, "online": 0, "youth": 0, "kids": 0, "adal": 1, "remarks": ""}]. '
+        "Bilangin din kung ilang ADULTS (A) at ilang YOUTHS (Y) ang may marka (1, ✓, ✔, /, x) sa bawat column: "
+        "Mass (mass_a, mass_y), Pampamilya (pampamilya_a, pampamilya_y), Online Ministry (online_a, online_y), "
+        "Youth Fellowship (youth_y), Kids Fellowship (kids_k sa KIDS section), at Adal ti Evangelio (adal_a, adal_y), pati Remarks. "
         "Ibalik LAMANG ang valid JSON object na may eksaktong keys: "
         '{"mass_a": 0, "mass_y": 0, "pampamilya_a": 0, "pampamilya_y": 0, '
         '"online_a": 0, "online_y": 0, "youth_y": 0, "kids_k": 0, '
@@ -2569,11 +2884,10 @@ def extract_weekly_report_via_ai_vision(file_bytes: bytes, mime_type: str, model
         '"candle_holder": "", "usher": "", "marshal": "", '
         '"adal_evangelio": "", "adal_preacher": "", "tema_misa": "", "misa_preacher": "", '
         '"tema_pampamilya": "", "pampamilya_preacher": "", '
-        '"adults_records": [], "youths_records": [], "kids_records": [], '
         '"report_date": "01/02/27", "remarks": ""}'
     )
 
-    models_to_try = [model_name, "gemini-2.5-flash", "gemini-2.5-pro"]
+    models_to_try = [model_name, "gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash", "gemini-2.5-pro"]
     seen_models = []
     for m in models_to_try:
         if m and m not in seen_models:
@@ -2581,8 +2895,11 @@ def extract_weekly_report_via_ai_vision(file_bytes: bytes, mime_type: str, model
 
     parsed = None
     for api_key in valid_keys:
-        client = genai.Client(api_key=api_key)
-        image_part = types.Part.from_bytes(data=file_bytes, mime_type=mime_type or "image/png")
+        try:
+            client = genai.Client(api_key=api_key)
+            image_part = types.Part.from_bytes(data=clean_img_bytes, mime_type=clean_mime)
+        except Exception:
+            continue
         for cur_m in seen_models:
             for use_json_mime in [True, False]:
                 try:
@@ -2621,14 +2938,23 @@ def extract_weekly_report_via_ai_vision(file_bytes: bytes, mime_type: str, model
     if not isinstance(parsed, dict):
         return default_res
 
+    # Kung hindi pa nakuha ng grid analyzer ang counts (hal. hindi table grid ang larawan), gamitin ang counts mula sa Gemini Vision
+    grid_total_att = (
+        default_res["mass_a"] + default_res["mass_y"] +
+        default_res["pampamilya_a"] + default_res["pampamilya_y"] +
+        default_res["online_a"] + default_res["online_y"] +
+        default_res["youth_y"] + default_res["kids_k"] +
+        default_res["adal_a"] + default_res["adal_y"]
+    )
     int_keys = [
         "mass_a", "mass_y", "pampamilya_a", "pampamilya_y",
         "online_a", "online_y", "youth_y", "kids_k",
         "adal_a", "adal_y", "total_members_say", "total_members_y", "total_members_k"
     ]
-    for k in int_keys:
-        if k in parsed and parsed[k] is not None:
-            default_res[k] = parse_int_from_text(parsed[k])
+    if grid_total_att == 0:
+        for k in int_keys:
+            if k in parsed and parsed[k] is not None:
+                default_res[k] = max(default_res[k], parse_int_from_text(parsed[k]))
 
     str_keys = [
         "house_visitation", "missionary_work", "indoctrination",
@@ -2639,48 +2965,8 @@ def extract_weekly_report_via_ai_vision(file_bytes: bytes, mime_type: str, model
     ]
     for k in str_keys:
         val = parsed.get(k)
-        if val is not None and str(val).strip().lower() not in ["none", "null", "n/a"]:
+        if val is not None and str(val).strip() and str(val).strip().lower() not in ["none", "null", "n/a", "0"]:
             default_res[k] = str(val).strip()
-
-    for list_key in ["adults_records", "youths_records", "kids_records"]:
-        if isinstance(parsed.get(list_key), list):
-            default_res[list_key] = [x for x in parsed[list_key] if isinstance(x, dict)]
-
-    def count_marks_in_records(rec_list, field_name):
-        cnt = 0
-        for item in rec_list:
-            v = item.get(field_name)
-            if v is not None and v is not False:
-                if isinstance(v, (int, float)) and v > 0:
-                    cnt += 1
-                elif str(v).strip().lower() in ["1", "1.0", "true", "yes", "y", "✓", "✔", "/", "x", "present"]:
-                    cnt += 1
-        return cnt
-
-    a_recs = default_res["adults_records"]
-    y_recs = default_res["youths_records"]
-    k_recs = default_res["kids_records"]
-
-    if a_recs:
-        default_res["mass_a"] = max(default_res["mass_a"], count_marks_in_records(a_recs, "mass"))
-        default_res["pampamilya_a"] = max(default_res["pampamilya_a"], count_marks_in_records(a_recs, "pampamilya"))
-        default_res["online_a"] = max(default_res["online_a"], count_marks_in_records(a_recs, "online"))
-        default_res["adal_a"] = max(default_res["adal_a"], count_marks_in_records(a_recs, "adal"))
-    if y_recs:
-        default_res["mass_y"] = max(default_res["mass_y"], count_marks_in_records(y_recs, "mass"))
-        default_res["pampamilya_y"] = max(default_res["pampamilya_y"], count_marks_in_records(y_recs, "pampamilya"))
-        default_res["online_y"] = max(default_res["online_y"], count_marks_in_records(y_recs, "online"))
-        default_res["youth_y"] = max(default_res["youth_y"], count_marks_in_records(y_recs, "youth"))
-        default_res["adal_y"] = max(default_res["adal_y"], count_marks_in_records(y_recs, "adal"))
-    if k_recs:
-        default_res["kids_k"] = max(default_res["kids_k"], count_marks_in_records(k_recs, "kids"))
-
-    if (len(a_recs) + len(y_recs)) > 0 and default_res["total_members_say"] <= 0:
-        default_res["total_members_say"] = len(a_recs) + len(y_recs)
-    if len(y_recs) > 0 and default_res["total_members_y"] <= 0:
-        default_res["total_members_y"] = len(y_recs)
-    if len(k_recs) > 0 and default_res["total_members_k"] <= 0:
-        default_res["total_members_k"] = len(k_recs)
 
     return default_res
 
@@ -4745,12 +5031,22 @@ elif app_mode == "🛠️ App Settings":
                 gcs = st.text_input("GMAIL_CLIENT_SECRET", value=st.session_state.custom_secrets.get("GMAIL_CLIENT_SECRET", ""), type="password")
                 grt = st.text_input("GMAIL_REFRESH_TOKEN", value=st.session_state.custom_secrets.get("GMAIL_REFRESH_TOKEN", ""), type="password")
                 if st.form_submit_button("💾 I-save ang API & Cloud Credentials", type="primary"):
-                    st.session_state.custom_secrets.update({
+                    new_creds = {
                         "GEMINI_API_KEY": ng, "GEMINI_API_KEY_2": ng2, "NOTION_TOKEN": nt,
                         "NOTION_CRM_DB_ID": ndb, "NOTION_PRAYER_DB_ID": npdb,
                         "NOTION_QUESTIONS_DB_ID": nqdb, "NOTION_COUNSELLING_DB_ID": ncdb,
                         "GMAIL_CLIENT_ID": gci, "GMAIL_CLIENT_SECRET": gcs, "GMAIL_REFRESH_TOKEN": grt
-                    })
+                    }
+                    st.session_state.custom_secrets.update(new_creds)
+                    try:
+                        existing_cfg = load_saved_config()
+                        for k_c, v_c in new_creds.items():
+                            if str(v_c or "").strip():
+                                existing_cfg[k_c] = str(v_c).strip()
+                        with open(LOCAL_CONFIG_FILE, "w", encoding="utf-8") as f:
+                            json.dump(existing_cfg, f, indent=2)
+                    except Exception:
+                        pass
                     st.cache_data.clear()
                     st.success("Na-save na ang mga credentials!")
                     time.sleep(1)
