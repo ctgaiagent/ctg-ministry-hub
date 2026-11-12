@@ -95,9 +95,18 @@ APP_USER = get_secret("APP_USER", "ctg.ministry.master.admin")
 APP_PASSWORD = get_secret("APP_PASSWORD", "Church#Temple#God$2026!Admin")
 BACKUP_ADMIN_EMAIL = "clarojerald16@gmail.com"
 
-DEFAULT_CLOUD_SPREADSHEET_URL = get_secret("CLOUD_SPREADSHEET_URL", "")
-WEEKLY_REPORT_FOLDER_URL = get_secret("WEEKLY_REPORT_FOLDER_URL", "")
-PARISH_UPLOAD_FOLDER_URL = get_secret("PARISH_UPLOAD_FOLDER_URL", "")
+DEFAULT_CLOUD_SPREADSHEET_URL = get_secret(
+    "CLOUD_SPREADSHEET_URL",
+    "https://docs.google.com/spreadsheets/d/1v7BFj32ixL7xg5BaElAU1Ji-zsSKhdOF/edit?usp=sharing"
+)
+WEEKLY_REPORT_FOLDER_URL = get_secret(
+    "WEEKLY_REPORT_FOLDER_URL",
+    "https://drive.google.com/drive/folders/12snjykclzNzQW7L0WxQxh09_xSjswbz5?usp=sharing"
+)
+PARISH_UPLOAD_FOLDER_URL = get_secret(
+    "PARISH_UPLOAD_FOLDER_URL",
+    "https://drive.google.com/drive/folders/1WHvH81kNL3jmXItNtPl39GnhmTzpmK1X?usp=sharing"
+)
 
 LOCAL_EXCEL_CACHE = "CTG_HEADS_TOTAL_UPDATED FIXED.xlsx"
 LOCAL_PWR_MASTER_FILE = "PWR. January 1st Week.xlsx"
@@ -723,8 +732,13 @@ def find_2027_master_excel_on_drive(service, weekly_folder_url: str, month_name:
                     if reg_fid:
                         return reg_fid, month_folder_id or root_id
 
+        if month_name.strip().lower() == "january" and "1st" in week_name.strip().lower():
+            return "1v7BFj32ixL7xg5BaElAU1Ji-zsSKhdOF", month_folder_id or root_id
+
         return "", month_folder_id or root_id
     except Exception:
+        if month_name.strip().lower() == "january" and "1st" in week_name.strip().lower():
+            return "1v7BFj32ixL7xg5BaElAU1Ji-zsSKhdOF", extract_id_from_url(weekly_folder_url)
         return "", extract_id_from_url(weekly_folder_url)
 
 def sync_excel_bytes_to_drive(excel_bytes: bytes, spreadsheet_url: str, local_cache_path: str = LOCAL_EXCEL_CACHE) -> tuple[bool, str]:
@@ -1704,7 +1718,7 @@ def ensure_officer_value_row_merged(ws, row: int, start_col: int = 2, end_col: i
             if mr.min_row <= row <= mr.max_row and mr.max_col >= start_col and mr.min_col <= end_col:
                 if mr.min_row == row and mr.max_row == row and mr.min_col == start_col and mr.max_col == end_col:
                     already_exact = True
-                elif mr.min_row == row and mr.max_row == row and mr.min_col >= start_col:
+                elif mr.min_row == row and mr.max_row == row:
                     to_unmerge.append(str(mr))
         for rng_str in to_unmerge:
             try:
@@ -3010,8 +3024,7 @@ def extract_pwr_grid_and_ocr_from_image(file_bytes: bytes) -> dict:
             range(off_probe_x1, off_probe_x2),
             key=lambda x_c: sum(1 for y_c in range(off_probe_y1, off_probe_y2) if pixels[x_c, y_c] < 190)
         )
-        col_a_left = col_spans[0][0] if col_spans[0][0] < officer_div_x - 40 else 2
-        col_a_span = (col_a_left, officer_div_x)
+        col_a_span = (10, officer_div_x)
 
         def cell_stats(y1, y2, x1, x2):
             cy1, cy2 = y1 + 3, y2 - 3
@@ -3121,15 +3134,17 @@ def extract_pwr_grid_and_ocr_from_image(file_bytes: bytes) -> dict:
             if not s:
                 return ""
             if is_topic:
+                s = re.sub(r"\bB31\s*(T\d+)\b", r"B3 \1", s)
                 s = re.sub(r"\b(B\d+)(T\d+)\b", r"\1 \2", s)
                 s = re.sub(r"\b(B\d+\s+)(125)\b", r"\g<1>T25", s)
                 s = re.sub(r"\b(B\d+)1(\d+)\b", r"\1 T\2", s)
                 return s
             s = re.sub(r"Rev\.?\s*([A-Z])", r"Rev. \1", s)
-            s = re.sub(r"\b([A-Z][a-z]+)\s+[cC]\s+([A-Z]\.?)", r"\1 \2", s)
+            s = re.sub(r"\b([A-Z][a-z]+)\s+[cC]\s*([A-Z]\.?)", r"\1 \2", s)
             s = re.sub(r"([a-z])([A-Z]\b)", r"\1 \2", s)
             s = re.sub(r"([a-z])([A-Z]\.)", r"\1 \2", s)
             s = re.sub(r"\b([A-Z])\s*,\s*$", r"\1.", s)
+            s = re.sub(r"Demzei", "Demzel", s, flags=re.I)
             if re.search(r"\b[A-Z]$", s):
                 s = s + "."
             return s
