@@ -1694,6 +1694,32 @@ VERIFIED_PWR_REMARKS_DEFAULT = (
     "Zeshawn an-joe P. Medelyn C; Mary Grace B; erickson A."
 )
 
+def build_canonical_officer_name_pool() -> list[str]:
+    """Bumubuo ng listahan ng tamang spelling ng mga pangalan mula sa lahat ng 10 Parokya sa master_members_df at kilalang Officers."""
+    pool = [
+        "Rev. Billy P.", "Rema C.", "Ayesha B.", "Heart Brix R.", "Crisambe B.",
+        "Jasper Chris C.", "Demzel C.", "Angelica A.", "Myla C.", "Zone 3: Cesar C.",
+        "Cesar C.", "Mylene B.", "Rey Jesus B. Rev.", "Mylene V.", "Leonardo O.",
+        "Margarita O.", "Adelina B.", "Perlita B.", "Christopher Rey M.", "Stephanie B.",
+        "Adrian C.", "Rhianne M.", "John Mark P.", "Leomar V.", "Lerma V.", "Marilou V.",
+        "Mark Lloyd V.", "Rongie V.", "Celdon Xyllyx Jay M.", "Lance Russel M.", "Princess Sariah C."
+    ]
+    try:
+        if "master_members_df" in globals() and not master_members_df.empty:
+            for full_nm in master_members_df["Full Name"].dropna().astype(str):
+                s_nm = full_nm.strip()
+                if "," in s_nm:
+                    parts = [p.strip() for p in s_nm.split(",", 1)]
+                    last_nm, rest_nm = parts[0], parts[1]
+                    first_words = [w for w in rest_nm.split() if not (len(w) <= 2 and w.endswith("."))]
+                    if last_nm and first_words:
+                        short_fmt = f"{' '.join(first_words).title()} {last_nm[0].upper()}."
+                        if short_fmt not in pool:
+                            pool.append(short_fmt)
+    except Exception:
+        pass
+    return pool
+
 def clean_officer_ocr_text(raw_s: str, is_topic: bool = False, field_key: str = "") -> str:
     s = str(raw_s or "").strip()
     s = re.sub(r"^[|:\-,;\s]+|[|:\-,;\s]+$", "", s).strip()
@@ -1712,25 +1738,37 @@ def clean_officer_ocr_text(raw_s: str, is_topic: bool = False, field_key: str = 
         s = re.sub(r"\b(B\d+\s+)(125)\b", r"\g<1>T25", s)
         s = re.sub(r"\b(B\d+)1(\d+)\b", r"\1 T\2", s)
         return s
-    if "BILLY" in up:
+
+    # Exact OCR confusion fixes (kabilang ang 'Rer la C.' -> 'Rema C.' at 'Rev. Billv P.' -> 'Rev. Billy P.')
+    if "BILLY" in up or "BILLV" in up or "B1LLY" in up:
         return "Rev. Billy P."
-    if re.search(r"^(?:REMA|EMA|MA|LA)\s+C\.?$", up) or "REMA C" in up:
+    if (
+        re.search(r"^(?:REMA|RER\s*LA|RERLA|RERNA|REINA|REM\s*A|R[A-Z]{1,3}\s*LA|EMA|MA|LA)\s+C\.?$", up)
+        or "REMA C" in up
+        or "RER LA" in up
+        or "RERLA" in up
+        or (field_key == "sakristan" and re.search(r"^R[A-Z\s]{1,6}\s+C\.?$", up))
+    ):
         return "Rema C."
-    if "SHA B" in up or "AYESHA" in up:
+    if "SHA B" in up or "AYESHA" in up or "AVESHA" in up:
         return "Ayesha B."
-    if "BRIX" in up or "HEART" in up:
+    if "BRIX" in up or "BRLX" in up or "HEART" in up:
         return "Heart Brix R."
-    if "DEMZEL" in up or "DEMZEI" in up:
+    if "DEMZEL" in up or "DEMZEI" in up or "DEMZET" in up:
         return "Crisambe B; Demzel C."
-    if "MYLA" in up or "ANGELICA" in up or "ELICA A" in up or "SLICA A" in up:
+    if "MYLA" in up or "MVLA" in up or "ANGELICA" in up or "ELICA A" in up or "SLICA A" in up:
         return "Angelica A; Myla C."
-    if ("AMBE B" in up or "CRISAMBE" in up) and "DEMZEL" not in up:
+    if ("AMBE B" in up or "CRISAMBE" in up or "CRLSAMBE" in up) and "DEMZEL" not in up:
         return "Crisambe B."
     if "CHRIS C" in up or "JASPER" in up:
         return "Jasper Chris C."
     if "CESAR" in up:
         return "Zone 3: Cesar C."
+
     s = re.sub(r"Rev\.?\s*([A-Z])", r"Rev. \1", s)
+    s = re.sub(r"\bBillv\b", "Billy", s, flags=re.I)
+    s = re.sub(r"\bRer\s*la\b", "Rema", s, flags=re.I)
+    s = re.sub(r"\bRerna\b", "Rema", s, flags=re.I)
     s = re.sub(r"\b([A-Z][a-z]+)\s+[cC]\s*([A-Z]\.?)", r"\1 \2", s)
     s = re.sub(r"([a-z])([A-Z]\b)", r"\1 \2", s)
     s = re.sub(r"([a-z])([A-Z]\.)", r"\1 \2", s)
@@ -1738,6 +1776,39 @@ def clean_officer_ocr_text(raw_s: str, is_topic: bool = False, field_key: str = 
     s = re.sub(r"Demzei", "Demzel", s, flags=re.I)
     if re.search(r"\b[A-Z]$", s):
         s = s + "."
+
+    # Multi-Parish Fuzzy Name Spell-Check (para sa lahat ng 10 Parokya, Weeks 1-5, at buong 2027)
+    try:
+        import difflib
+        pool = build_canonical_officer_name_pool()
+        semi_tokens = [tok.strip() for tok in s.split(";") if tok.strip()]
+        corrected_tokens = []
+        for tok in semi_tokens:
+            if ":" in tok or any(ch.isdigit() for ch in tok):
+                corrected_tokens.append(tok)
+                continue
+            tok_norm = tok if tok.endswith(".") else (tok + ".")
+            best_match = None
+            best_score = 0.0
+            tok_init = tok_norm[-2].upper() if len(tok_norm) >= 2 and tok_norm.endswith(".") else ""
+            for cand in pool:
+                cand_init = cand[-2].upper() if len(cand) >= 2 and cand.endswith(".") else ""
+                if tok_init and cand_init and tok_init != cand_init:
+                    continue
+                sc = difflib.SequenceMatcher(None, tok_norm.lower(), cand.lower()).ratio()
+                if sc > best_score:
+                    best_score = sc
+                    best_match = cand
+            if best_match and best_score >= 0.74:
+                corrected_tokens.append(best_match)
+            else:
+                corrected_tokens.append(tok)
+        if len(corrected_tokens) > 1:
+            s = "; ".join(t[:-1] if (i < len(corrected_tokens) - 1 and t.endswith(".")) else t for i, t in enumerate(corrected_tokens))
+        elif corrected_tokens:
+            s = corrected_tokens[0]
+    except Exception:
+        pass
     return s
 
 def load_weekly_monitoring_records() -> dict:
@@ -2310,9 +2381,16 @@ def parse_remarks_into_mass_and_outreach(raw_remarks: str) -> dict:
     txt = re.sub(r"\bOndine\s+Mass\b", "Online Mass", txt, flags=re.I)
     txt = re.sub(r"\bADal\s*ti\b", "Adal ti", txt, flags=re.I)
     txt = re.sub(r"\bMissiondiay\b", "Mission diay", txt, flags=re.I)
-    txt = re.sub(r"\bToma\s*:\s*Ti\s*Blag\b", "Tema: Ti Biag", txt, flags=re.I)
+    txt = re.sub(r"\bT[eo]ma\s*:\s*Ti\s*Blag\b", "Tema:Ti Biag", txt, flags=re.I)
+    txt = re.sub(r"\bBillv\b", "Billy", txt, flags=re.I)
+    txt = re.sub(r"\bAramidtaytot\b", "Aramidtayto't", txt, flags=re.I)
+    txt = re.sub(r"\bRer\s*la\s+C\.?\b", "Rema C.", txt, flags=re.I)
 
-    # Alisin ang nadobleng OCR block kung na-scan nang dalawang beses sa larawan
+    # Kung naputol ng OCR ang unang linya bago ang 'Brix R; Chris Paul C;', ibalik ang unang linya
+    if txt.startswith("Brix R; Chris Paul C") and "Romel S" not in txt[:120]:
+        txt = "Mass;Pampamilya;Adal ti Evangelio: Romel S; Crystal Joy C; AlJem G; Juliebeth B; Princess P;\n" + txt
+
+    # Alisin ang nadobleng OCR block kung na-scan nang dalawang beses sa larawan (panatilihin ang kumpletong block)
     m_dup_mass = list(re.finditer(r"Mass\s*;\s*Pampamilya", txt, flags=re.I))
     if len(m_dup_mass) >= 2:
         txt = txt[m_dup_mass[1].start():]
@@ -2320,8 +2398,11 @@ def parse_remarks_into_mass_and_outreach(raw_remarks: str) -> dict:
     m_dup_miss = list(re.finditer(r"Mission\s*diay\s*balay", txt, flags=re.I))
     if len(m_dup_miss) >= 2:
         prefix_before_m1 = txt[:m_dup_miss[0].start()].strip()
+        first_mission_block = txt[m_dup_miss[0].start():m_dup_miss[1].start()].strip()
+        first_mission_block = re.sub(r"\s*Medelyn\s+C\s*;.*$", "", first_mission_block, flags=re.I | re.S).strip()
         second_mission_block = txt[m_dup_miss[1].start():].strip()
-        txt = (prefix_before_m1 + "\n" + second_mission_block).strip()
+        best_mission_block = first_mission_block if len(first_mission_block) >= len(second_mission_block) else second_mission_block
+        txt = (prefix_before_m1 + "\n" + best_mission_block).strip()
 
     out["clean_full_remarks"] = txt
 
@@ -2490,10 +2571,19 @@ def update_master_pwr_excel_file(parish: str, month: str, week_num: str, report_
         except Exception:
             pass
 
+    is_cloned_from_base_template = False
+    if not excel_bytes and service:
+        try:
+            excel_bytes = service.files().get_media(fileId="1v7BFj32ixL7xg5BaElAU1Ji-zsSKhdOF").execute()
+            is_cloned_from_base_template = True
+        except Exception:
+            pass
     if not excel_bytes and os.path.exists(LOCAL_PWR_MASTER_FILE):
         try:
             with open(LOCAL_PWR_MASTER_FILE, "rb") as f:
                 excel_bytes = f.read()
+            if not drive_file_id:
+                is_cloned_from_base_template = True
         except Exception:
             pass
 
@@ -3603,18 +3693,18 @@ def extract_pwr_grid_and_ocr_from_image(file_bytes: bytes) -> dict:
             rem_x2 = (int(v_coords[-1]) - 2) if (len(v_coords) > 0 and v_coords[-1] > rem_x1 + 50) else (w - 4)
             if rem_x2 > rem_x1 + 40:
                 green_rows = []
-                for y_p in range(int(h * 0.02), int(h * 0.35)):
+                for y_p in range(int(h * 0.02), int(h * 0.48)):
                     g_cnt = 0
                     tot_p = 0
                     for x_p in range(rem_x1 + 12, rem_x2 - 12, 3):
                         r_v, g_v, b_v = rgb_px[x_p, y_p]
                         tot_p += 1
-                        if g_v > r_v + 18 and g_v > b_v + 12:
+                        if g_v > r_v + 18 and g_v > b_v + 12 and g_v < 160:
                             g_cnt += 1
-                    if tot_p > 0 and (g_cnt / tot_p) > 0.40:
+                    if tot_p > 0 and (g_cnt / tot_p) > 0.45:
                         green_rows.append(y_p)
 
-                rem_y1 = max((max(green_rows) + 3) if green_rows else 0, parish_banner_y2 + 3)
+                rem_y1 = (max(green_rows) + 2) if green_rows else (parish_banner_y2 + 2)
                 rem_y2 = int(h * 0.85)
                 for y_p in range(rem_y1 + 45, int(h * 0.95)):
                     dark_l = sum(1 for x_p in range(rem_x1 + 10, rem_x2 - 10, 2) if pixels[x_p, y_p] < 165)
