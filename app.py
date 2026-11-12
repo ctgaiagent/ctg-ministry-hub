@@ -3317,8 +3317,44 @@ def extract_pwr_grid_and_ocr_from_image(file_bytes: bytes) -> dict:
                     except Exception:
                         pass
 
-                # 2C) OCR.space fallback sa val_3x / off_3x kung wala pang nakuha
-                if sum(1 for k in officer_keys_order if out.get(k)) < 10:
+                # 2C) OCR.space fallback: (i) off_3x gamit ang Label+Value matching, at (ii) val_3x gamit ang isOverlayRequired=true Y-coordinate mapping
+                if sum(1 for k in officer_keys_order if out.get(k)) < 14:
+                    try:
+                        ow, oh = off_3x.size
+                        o_scale = min(1.0, 940.0 / max(1, max(ow, oh)))
+                        send_off = (
+                            off_3x.resize((max(1, int(ow * o_scale)), max(1, int(oh * o_scale))), Image.Resampling.BICUBIC)
+                            if o_scale < 1.0 else off_3x
+                        )
+                        ob = io.BytesIO()
+                        send_off.convert("RGB").save(ob, format="JPEG", quality=92)
+                        b64_off = "data:image/jpeg;base64," + base64.b64encode(ob.getvalue()).decode("utf-8")
+                        for eng_ver in ["2", "1"]:
+                            ocr_res = requests.post(
+                                "https://api.ocr.space/parse/image",
+                                data={
+                                    "apikey": "helloworld",
+                                    "base64Image": b64_off,
+                                    "language": "eng",
+                                    "OCREngine": eng_ver
+                                },
+                                timeout=14
+                            )
+                            if ocr_res.status_code == 200:
+                                o_json = ocr_res.json()
+                                for pr in o_json.get("ParsedResults", []):
+                                    p_txt = str(pr.get("ParsedText", "")).strip()
+                                    if p_txt:
+                                        parsed_api = parse_officer_lines_into_dict(p_txt.splitlines())
+                                        for k_name, v_str in parsed_api.items():
+                                            if not out.get(k_name):
+                                                out[k_name] = v_str
+                            if sum(1 for k in officer_keys_order if out.get(k)) >= 12:
+                                break
+                    except Exception:
+                        pass
+
+                if sum(1 for k in officer_keys_order if out.get(k)) < 14:
                     try:
                         vw, vh = val_3x.size
                         v_scale = min(1.0, 940.0 / max(1, max(vw, vh)))
@@ -3336,6 +3372,7 @@ def extract_pwr_grid_and_ocr_from_image(file_bytes: bytes) -> dict:
                                     "apikey": "helloworld",
                                     "base64Image": b64_val,
                                     "language": "eng",
+                                    "isOverlayRequired": "true",
                                     "OCREngine": eng_ver
                                 },
                                 timeout=14
@@ -3343,19 +3380,16 @@ def extract_pwr_grid_and_ocr_from_image(file_bytes: bytes) -> dict:
                             if ocr_res.status_code == 200:
                                 o_json = ocr_res.json()
                                 for pr in o_json.get("ParsedResults", []):
-                                    p_lines = [
-                                        ln.strip() for ln in str(pr.get("ParsedText", "")).splitlines()
-                                        if ln.strip() and "ATTENDANCE" not in ln.upper()
-                                    ]
-                                    if len(p_lines) == len(ink_slot_indices):
-                                        for lg_idx, ln_str in enumerate(p_lines):
-                                            slot_i = ink_slot_indices[lg_idx]
-                                            k_name = officer_keys_order[slot_i]
-                                            if not out.get(k_name):
-                                                c_val = clean_officer_ocr_text(ln_str, is_topic=(k_name in topic_keys))
-                                                if c_val:
-                                                    out[k_name] = c_val
-                            if sum(1 for k in officer_keys_order if out.get(k)) >= 10:
+                                    ov_lines = pr.get("TextOverlay", {}).get("Lines", [])
+                                    if ov_lines:
+                                        v_items = []
+                                        for l_obj in ov_lines:
+                                            l_txt = str(l_obj.get("LineText", "")).strip()
+                                            if l_txt:
+                                                cy_val = (float(l_obj.get("MinTop", 0)) + float(l_obj.get("MaxHeight", 14)) / 2.0) / max(0.01, v_scale)
+                                                v_items.append((cy_val, 0.0, l_txt))
+                                        assign_from_val_lines(v_items)
+                            if sum(1 for k in officer_keys_order if out.get(k)) >= 12:
                                 break
                     except Exception:
                         pass
@@ -4230,10 +4264,22 @@ def render_weekly_report_page():
         st.markdown("### ✏️ 2. Parish Weekly Report Data & Manual Verification Editor")
         st.caption("Lahat ng datos dito ay direktang tinatype sa `PARISH WEEKLY REPORT` sheet (Liturgical Officers, Topics/Preachers, Adults/Youths/Kids Attendance, at Remarks) upang gumana ang Excel formulas papunta sa Monitoring at Summary.")
 
-        last_info = st.session_state.get("last_extracted_pwr", {})
-        def_p = last_info.get("parish", my_parish if not is_master else PARISH_ORDER[0])
-
         db_all = load_weekly_monitoring_records()
+        last_info = st.session_state.get("last_extracted_pwr", {})
+        if last_info.get("parish"):
+            def_p = last_info["parish"]
+        elif not is_master:
+            def_p = my_parish
+        elif effective_parish_filter != "Lahat ng Parokya":
+            def_p = effective_parish_filter
+        else:
+            def_p = PARISH_ORDER[0]
+            for p_cand in PARISH_ORDER:
+                c_rec = db_all.get(f"{p_cand.upper()}__{view_month.upper()}__{view_week}", {})
+                if c_rec.get("has_data") and (c_rec.get("priest") or c_rec.get("remarks")):
+                    def_p = p_cand
+                    break
+
         cur_rec = db_all.get(f"{def_p.upper()}__{view_month.upper()}__{view_week}", {})
 
         with st.form("verify_weekly_counts_form"):
@@ -4452,6 +4498,36 @@ def render_weekly_report_page():
     mass_rem_df = build_mass_attendance_remarks_df(view_month, view_week, effective_parish_filter)
     st.dataframe(mass_rem_df, use_container_width=True, hide_index=True)
 
+    db_cards_3b = load_weekly_monitoring_records()
+    mass_cards_list = []
+    for p_c in (PARISH_ORDER if effective_parish_filter == "Lahat ng Parokya" else [p for p in PARISH_ORDER if normalize_parish_match(p, effective_parish_filter)]):
+        rec_c = db_cards_3b.get(f"{p_c.upper()}__{view_month.upper()}__{view_week}", {})
+        if rec_c.get("has_data"):
+            r_raw = str(rec_c.get("remarks", "")).strip()
+            p_ro = parse_remarks_into_mass_and_outreach(r_raw) if r_raw else {}
+            m_rem = str(rec_c.get("mass_remarks", "") or p_ro.get("mass_remarks", "")).strip()
+            if m_rem or r_raw:
+                mass_cards_list.append((p_c, rec_c, m_rem, r_raw))
+    with st.expander(f"📝 Basahin nang Buo ang Nakasulat sa Remarks Mula sa Image / Excel Report ({len(mass_cards_list)} may Remarks)", expanded=True):
+        if mass_cards_list:
+            for p_c, rec_c, m_rem, r_raw in mass_cards_list:
+                officers_summary = " | ".join([
+                    f"<b>{lbl}:</b> {rec_c.get(k)}"
+                    for lbl, k in [("Priest", "priest"), ("Sakristan", "sakristan"), ("Epistula", "epistula"), ("Evangelio", "evangelio"), ("Adal Topic", "adal_evangelio"), ("Tema Misa", "tema_misa"), ("Tema Pampamilya", "tema_pampamilya")]
+                    if str(rec_c.get(k, "")).strip()
+                ])
+                display_m_rem = (m_rem or r_raw).replace("\n", "<br>")
+                st.markdown(
+                    f"<div class='full-text-card'>"
+                    f"<b>⛪ {p_c}</b> • <code>{view_month} 2027 ({view_week})</code> • 📅 <b>Petsa:</b> {rec_c.get('report_date', '01/02/27')}<br>"
+                    + (f"👥 <b>Liturgical Officers & Topics:</b> {officers_summary}<br>" if officers_summary else "")
+                    + f"📝 <b>Buong Nakasulat sa Remarks (Mass / Online / House Church / Visitors):</b><br>{display_m_rem}"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+        else:
+            st.caption("Walang nakalagay na Remarks mula sa in-upload na Image o Excel report para sa linggong ito.")
+
     st.divider()
 
     # =====================================================================
@@ -4484,6 +4560,45 @@ def render_weekly_report_page():
     st.markdown("#### 📖 Pangatlong Table: INDOCTRINATION: FAMILY NAME OF A FAMILY UNDER INDOCTRINATION")
     ind_table_df = build_indoctrination_table_df(view_month, view_week, effective_parish_filter)
     st.dataframe(ind_table_df, use_container_width=True, hide_index=True)
+
+    outreach_cards_list = []
+    for p_c in (PARISH_ORDER if effective_parish_filter == "Lahat ng Parokya" else [p for p in PARISH_ORDER if normalize_parish_match(p, effective_parish_filter)]):
+        rec_c = db_cards_3b.get(f"{p_c.upper()}__{view_month.upper()}__{view_week}", {})
+        if rec_c.get("has_data"):
+            r_raw = str(rec_c.get("remarks", "")).strip()
+            p_ro = parse_remarks_into_mass_and_outreach(r_raw) if r_raw else {}
+            hv_n = str(rec_c.get("hv_names", "") or p_ro.get("hv_names", "")).strip()
+            mw_n = str(rec_c.get("mw_names", "") or p_ro.get("mw_names", "")).strip()
+            ind_n = str(rec_c.get("ind_names", "") or p_ro.get("ind_names", "")).strip()
+            if hv_n or mw_n or ind_n or parse_int_from_text(rec_c.get("house_visitation", "0")) > 0 or parse_int_from_text(rec_c.get("missionary_work", "0")) > 0 or parse_int_from_text(rec_c.get("indoctrination", "0")) > 0:
+                outreach_cards_list.append((p_c, rec_c, p_ro))
+
+    with st.expander(f"📝 Basahin nang Buo ang Outreach Details (House Visitation, Missionary Work & Indoctrination — {len(outreach_cards_list)} Parokya)", expanded=True):
+        if outreach_cards_list:
+            for p_c, rec_c, p_ro in outreach_cards_list:
+                hv_n = str(rec_c.get("hv_names", "") or p_ro.get("hv_names", "")).strip() or "Wala pang nakalistang pangalan"
+                hv_r = str(rec_c.get("hv_remarks", "") or p_ro.get("hv_remarks", "")).strip() or "-"
+                hv_ppl = int(rec_c.get("hv_people_count", 0) or p_ro.get("hv_people_count", 0))
+
+                mw_n = str(rec_c.get("mw_names", "") or p_ro.get("mw_names", "")).strip() or "Wala pang nakalistang pangalan"
+                mw_r = str(rec_c.get("mw_remarks", "") or p_ro.get("mw_remarks", "")).strip() or "-"
+                mw_ppl = int(rec_c.get("mw_people_count", 0) or p_ro.get("mw_people_count", 0))
+
+                ind_n = str(rec_c.get("ind_names", "") or p_ro.get("ind_names", "")).strip() or "Wala pang nakalistang pangalan"
+                ind_r = str(rec_c.get("ind_remarks", "") or p_ro.get("ind_remarks", "")).strip() or "-"
+                ind_ppl = int(rec_c.get("ind_people_count", 0) or p_ro.get("ind_people_count", 0))
+
+                st.markdown(
+                    f"<div class='full-text-card'>"
+                    f"<b>🏠 {p_c}</b> • <code>{view_month} 2027 ({view_week})</code> • 📅 <b>Petsa:</b> {rec_c.get('report_date', '01/02/27')}<br>"
+                    f"🏡 <b>House Visitation ({rec_c.get('house_visitation', '0')} Pamilya | {hv_ppl} Tao):</b> {hv_n} <i>(Remarks: {hv_r})</i><br>"
+                    f"🌍 <b>Missionary Work ({rec_c.get('missionary_work', '0')} Pamilya | {mw_ppl} Tao):</b> {mw_n} <i>(Remarks: {mw_r})</i><br>"
+                    f"📖 <b>Indoctrination ({rec_c.get('indoctrination', '0')} Pamilya | {ind_ppl} Tao):</b> {ind_n} <i>(Remarks: {ind_r})</i>"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+        else:
+            st.caption("Walang nakalagay na Outreach details (House Visitation, Missionary Work, Indoctrination) para sa linggong ito.")
 
     with st.expander("📊 Pangkalahatang Pinagsamang Table (House Visitation + Missionary Work + Indoctrination Summary)", expanded=False):
         vis_df = build_visitation_missionary_indoctrination_df(view_month, view_week, effective_parish_filter)
