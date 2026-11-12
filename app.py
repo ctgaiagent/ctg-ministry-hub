@@ -1671,29 +1671,29 @@ def find_parish_row_boundaries(ws, parish_name: str) -> tuple[int, int]:
 def write_pwr_header_fields(ws, data_row: dict, report_date: str, parish_name: str = ""):
     """Isinusulat sa PARISH WEEKLY REPORT ang PRIEST, SAKRISTAN, EPISTULA, EVANGELIO, CASASAAD, CANDLE HOLDER, USHER, MARSHAL, ADAL TI EVANGELIO, TEMA TI MISA, TEMA TI PAMPAMILYA, at Preachers sa seksyon ng tamang Parokya."""
     start_r, end_r = find_parish_row_boundaries(ws, parish_name)
+    scan_start_r = max(1, start_r - 2)
     max_r = min(end_r, start_r + 30)
     max_c = min(ws.max_column, 12)
 
-    label_map = [
-        (["DATE:"], report_date),
-        (["PRIEST:"], data_row.get("priest", "")),
-        (["SAKRISTAN:"], data_row.get("sakristan", "")),
-        (["EPISTULA:"], data_row.get("epistula", "")),
-        (["EVANGELIO:"], data_row.get("evangelio", "")),
-        (["CASASAAD:"], data_row.get("casasaad", "")),
-        (["CANDLE HOLDER:"], data_row.get("candle_holder", "")),
-        (["USHER:"], data_row.get("usher", "")),
-        (["MARSHAL:"], data_row.get("marshal", "")),
-        (["ADAL TI EVANGELIO:"], data_row.get("adal_evangelio", "")),
-        (["TEMA TI MISA:"], data_row.get("tema_misa", "")),
-        (["TEMA TI PAMPAMILYA:"], data_row.get("tema_pampamilya", "")),
+    compact_label_map = [
+        ("PRIEST:", data_row.get("priest", "")),
+        ("SAKRISTAN:", data_row.get("sakristan", "")),
+        ("EPISTULA:", data_row.get("epistula", "")),
+        ("EVANGELIO:", data_row.get("evangelio", "")),
+        ("CASASAAD:", data_row.get("casasaad", "")),
+        ("CANDLEHOLDER:", data_row.get("candle_holder", "")),
+        ("USHER:", data_row.get("usher", "")),
+        ("MARSHAL:", data_row.get("marshal", "")),
+        ("ADALTIEVANGELIO:", data_row.get("adal_evangelio", "")),
+        ("TEMATIMISA:", data_row.get("tema_misa", "")),
+        ("TEMATIPAMPAMILYA:", data_row.get("tema_pampamilya", "")),
     ]
 
     row_topic_context = ""
-    for r_idx in range(start_r, max_r + 1):
+    for r_idx in range(scan_start_r, max_r + 1):
         col_b_check = str(ws.cell(row=r_idx, column=2).value or "").strip().upper()
         col_c_check = str(ws.cell(row=r_idx, column=3).value or "").strip().upper()
-        if col_b_check in ["ADULTS", "ATTENDANCE:"] or col_c_check in ["ADULTS", "ATTENDANCE:"]:
+        if r_idx > start_r and (col_b_check in ["ADULTS", "ATTENDANCE:"] or col_c_check in ["ADULTS", "ATTENDANCE:"]):
             break
 
         for c_idx in range(1, min(max_c + 1, 6)):
@@ -1701,28 +1701,41 @@ def write_pwr_header_fields(ws, data_row: dict, report_date: str, parish_name: s
             if not raw_val:
                 continue
             cell_up = str(raw_val).strip().upper()
+            norm_lbl = re.sub(r"^[\d\s.\-]+", "", cell_up).strip()
+            compact_lbl = re.sub(r"\s+", "", norm_lbl)
 
-            if "ADAL TI EVANGELIO" in cell_up and ":" in cell_up:
+            if compact_lbl.startswith("DATE:") and report_date:
+                if ":" in str(raw_val) and len(compact_lbl) > 5 and not str(ws.cell(row=r_idx, column=c_idx + 1).value or "").strip():
+                    set_excel_cell_safely(ws, r_idx, c_idx, f"DATE: {report_date}", preserve_formula=True)
+                else:
+                    next_c = find_next_writable_col_on_row(ws, r_idx, c_idx)
+                    if next_c <= 9:
+                        set_excel_cell_safely(ws, r_idx, next_c, str(report_date).strip(), preserve_formula=True)
+                continue
+
+            if r_idx < start_r:
+                continue
+
+            if "ADALTIEVANGELIO" in compact_lbl and ":" in compact_lbl:
                 row_topic_context = "ADAL"
-            elif "TEMA TI MISA" in cell_up:
+            elif "TEMATIMISA" in compact_lbl:
                 row_topic_context = "MISA"
-            elif "TEMA TI PAMPAMILYA" in cell_up:
+            elif "TEMATIPAMPAMILYA" in compact_lbl:
                 row_topic_context = "PAMPAMILYA"
 
-            for patterns, val_str in label_map:
+            for pat_compact, val_str in compact_label_map:
                 if not str(val_str or "").strip():
                     continue
-                for pat in patterns:
-                    if cell_up == pat or cell_up.startswith(pat):
-                        if pat == "ADAL TI EVANGELIO:" and ":" not in str(raw_val):
-                            continue
-                        next_c = find_next_writable_col_on_row(ws, r_idx, c_idx)
-                        if next_c <= 9:
-                            set_excel_cell_safely(ws, r_idx, next_c, str(val_str).strip(), preserve_formula=True)
+                if compact_lbl == pat_compact or compact_lbl.startswith(pat_compact):
+                    if pat_compact == "EVANGELIO:" and "ADAL" in compact_lbl:
+                        continue
+                    next_c = find_next_writable_col_on_row(ws, r_idx, c_idx)
+                    if next_c <= 9:
+                        set_excel_cell_safely(ws, r_idx, next_c, str(val_str).strip(), preserve_formula=True)
 
-            if "PREACHER" in cell_up:
+            if "PREACHER" in compact_lbl:
                 p_val = ""
-                if row_topic_context == "ADAL" or "PREACHER/S" in cell_up:
+                if row_topic_context == "ADAL" or "PREACHER/S" in compact_lbl or "PREACHERS" in compact_lbl:
                     p_val = data_row.get("adal_preacher", "")
                 elif row_topic_context == "MISA":
                     p_val = data_row.get("misa_preacher", "")
@@ -1942,8 +1955,23 @@ def write_pwr_attendance_and_remarks(ws, data_row: dict, parish_name: str = ""):
 
     rem_txt = str(data_row.get("remarks", "")).strip()
     if rem_txt:
-        target_rem_row = adult_rows[0][0] if adult_rows else (start_r + 1)
-        set_excel_cell_safely(ws, target_rem_row, 10, rem_txt, preserve_formula=True)
+        # Hanapin ang pinaka-itaas na white cell sa ilalim ng green REMARKS header sa Column J (Column 10)
+        rem_top_row = start_r + 1
+        for r_probe in range(start_r, min(end_r + 1, start_r + 6)):
+            c10_val = str(ws.cell(row=r_probe, column=10).value or "").strip().upper()
+            if c10_val == "REMARKS":
+                rem_top_row = r_probe + 1
+                break
+        set_excel_cell_safely(ws, rem_top_row, 10, rem_txt, preserve_formula=True)
+        try:
+            master_rem_cell = get_master_writable_cell(ws, rem_top_row, 10)
+            master_rem_cell.alignment = openpyxl.styles.Alignment(wrap_text=True, vertical="top", horizontal="left")
+        except Exception:
+            pass
+        if adult_rows:
+            adult_first_r = adult_rows[0][0]
+            if get_master_writable_cell(ws, adult_first_r, 10).coordinate != get_master_writable_cell(ws, rem_top_row, 10).coordinate:
+                set_excel_cell_safely(ws, adult_first_r, 10, rem_txt, preserve_formula=True)
 
 def save_weekly_monitoring_record(parish: str, month: str, week_num: str, report_date: str, extracted_data: dict, drive_link: str = "") -> tuple[bool, str]:
     db = load_weekly_monitoring_records()
@@ -2360,15 +2388,21 @@ def extract_weekly_report_from_excel_bytes(file_bytes: bytes, target_parish: str
                 if detected_p:
                     result["parish"] = detected_p
 
+            rem_cell_top = str(get_master_writable_cell(ws, r_idx, 10).value or "").strip()
+            if rem_cell_top and rem_cell_top.lower() != "nan" and rem_cell_top.upper() != "REMARKS" and rem_cell_top not in remarks_collected:
+                remarks_collected.append(rem_cell_top)
+
             for c_i, cell_txt in enumerate(row_vals[:6]):
                 c_up = cell_txt.upper()
                 if not c_up:
                     continue
-                if "ADAL TI EVANGELIO" in c_up and ":" in c_up:
+                norm_c = re.sub(r"^[\d\s.\-]+", "", c_up).strip()
+                comp_c = re.sub(r"\s+", "", norm_c)
+                if "ADALTIEVANGELIO" in comp_c and ":" in comp_c:
                     row_topic_context = "ADAL"
-                elif "TEMA TI MISA" in c_up:
+                elif "TEMATIMISA" in comp_c:
                     row_topic_context = "MISA"
-                elif "TEMA TI PAMPAMILYA" in c_up:
+                elif "TEMATIPAMPAMILYA" in comp_c:
                     row_topic_context = "PAMPAMILYA"
 
                 next_val = ""
@@ -2376,35 +2410,35 @@ def extract_weekly_report_from_excel_bytes(file_bytes: bytes, target_parish: str
                     if nxt and nxt.lower() != "nan":
                         next_val = nxt
                         break
-                if "DATE:" in c_up:
+                if comp_c.startswith("DATE:"):
                     result["report_date"] = cell_txt.split(":", 1)[-1].strip() or next_val or result["report_date"]
-                elif c_up.startswith("PRIEST:"):
+                elif comp_c.startswith("PRIEST:"):
                     result["priest"] = cell_txt.split(":", 1)[-1].strip() or next_val
-                elif c_up.startswith("SAKRISTAN:"):
+                elif comp_c.startswith("SAKRISTAN:"):
                     result["sakristan"] = cell_txt.split(":", 1)[-1].strip() or next_val
-                elif c_up.startswith("EPISTULA:"):
+                elif comp_c.startswith("EPISTULA:"):
                     result["epistula"] = cell_txt.split(":", 1)[-1].strip() or next_val
-                elif c_up.startswith("EVANGELIO:"):
+                elif comp_c.startswith("EVANGELIO:"):
                     result["evangelio"] = cell_txt.split(":", 1)[-1].strip() or next_val
-                elif c_up.startswith("CASASAAD:"):
+                elif comp_c.startswith("CASASAAD:"):
                     result["casasaad"] = cell_txt.split(":", 1)[-1].strip() or next_val
-                elif c_up.startswith("CANDLE HOLDER:"):
+                elif comp_c.startswith("CANDLEHOLDER:"):
                     result["candle_holder"] = cell_txt.split(":", 1)[-1].strip() or next_val
-                elif c_up.startswith("USHER:"):
+                elif comp_c.startswith("USHER:"):
                     result["usher"] = cell_txt.split(":", 1)[-1].strip() or next_val
-                elif c_up.startswith("MARSHAL:"):
+                elif comp_c.startswith("MARSHAL:"):
                     result["marshal"] = cell_txt.split(":", 1)[-1].strip() or next_val
-                elif c_up.startswith("ADAL TI EVANGELIO:"):
+                elif comp_c.startswith("ADALTIEVANGELIO:"):
                     result["adal_evangelio"] = cell_txt.split(":", 1)[-1].strip() or next_val
-                elif c_up.startswith("TEMA TI MISA:"):
+                elif comp_c.startswith("TEMATIMISA:"):
                     result["tema_misa"] = cell_txt.split(":", 1)[-1].strip() or next_val
-                elif c_up.startswith("TEMA TI PAMPAMILYA:"):
+                elif comp_c.startswith("TEMATIPAMPAMILYA:"):
                     result["tema_pampamilya"] = cell_txt.split(":", 1)[-1].strip() or next_val
-                elif c_up.startswith("PREACHER/S:") or (c_up.startswith("PREACHER:") and row_topic_context == "ADAL"):
+                elif comp_c.startswith("PREACHER/S:") or comp_c.startswith("PREACHERS:") or (comp_c.startswith("PREACHER:") and row_topic_context == "ADAL"):
                     result["adal_preacher"] = cell_txt.split(":", 1)[-1].strip() or next_val
-                elif c_up.startswith("PREACHER:") and row_topic_context == "MISA":
+                elif comp_c.startswith("PREACHER:") and row_topic_context == "MISA":
                     result["misa_preacher"] = cell_txt.split(":", 1)[-1].strip() or next_val
-                elif c_up.startswith("PREACHER:") and row_topic_context == "PAMPAMILYA":
+                elif comp_c.startswith("PREACHER:") and row_topic_context == "PAMPAMILYA":
                     result["pampamilya_preacher"] = cell_txt.split(":", 1)[-1].strip() or next_val
 
             if col_b.upper() == "ADULTS" or col_c.upper() == "ADULTS":
@@ -2736,78 +2770,234 @@ def extract_pwr_grid_and_ocr_from_image(file_bytes: bytes) -> dict:
         out["total_members_y"] = len(y_recs)
         out["total_members_k"] = len(k_recs)
 
-        # Basahin ang 14 Officer & Preacher fields mula sa stacked canvas (gamit ang pytesseract o OCR.space fallback)
+        def clean_officer_ocr_text(raw_s: str, is_topic: bool = False) -> str:
+            s = str(raw_s or "").strip()
+            s = re.sub(r"^[|:\-,;\s]+|[|:\-,;\s]+$", "", s).strip()
+            if not s:
+                return ""
+            if is_topic:
+                s = re.sub(r"\b(B\d+)(T\d+)\b", r"\1 \2", s)
+                return s
+            s = re.sub(r"Rev\.?\s*([A-Z])", r"Rev. \1", s)
+            s = re.sub(r"([a-z])([A-Z]\b)", r"\1 \2", s)
+            s = re.sub(r"\b([A-Z])\s*,\s*$", r"\1.", s)
+            if re.search(r"\b[A-Z]$", s):
+                s = s + "."
+            return s
+
+        # Basahin ang 14 Officer & Preacher fields mula sa stacked canvas (RapidOCR -> pytesseract -> OCR.space fallback)
         officer_keys_order = [
             "priest", "sakristan", "epistula", "evangelio", "casasaad",
             "candle_holder", "usher", "marshal", "adal_evangelio", "adal_preacher",
             "tema_misa", "misa_preacher", "tema_pampamilya", "pampamilya_preacher"
         ]
+        topic_keys = {"adal_evangelio", "tema_misa", "tema_pampamilya"}
         if len(officer_row_bands) >= 14 and out["has_officer_ink"]:
             target_14 = officer_row_bands[-14:]
             slot_h = 90
             strip_w = max(240, int(att_spans[-1][1] - col_a_span[1]) * 3)
             canvas = Image.new("L", (strip_w + 40, len(target_14) * slot_h), 255)
+            ink_slot_indices = []
             for idx, (oy1, oy2) in enumerate(target_14):
                 val_ink, _ = cell_stats(oy1, oy2, col_a_span[1], att_spans[-1][1])
                 if val_ink > 0.003:
-                    crop_box = img.crop((col_a_span[1] + 4, oy1 + 2, int(att_spans[-1][1] - 4), oy2 - 1))
+                    ink_slot_indices.append(idx)
+                    crop_box = img.crop((col_a_span[1] + 2, oy1 + 2, int(att_spans[-1][1] - 4), max(oy1 + 4, oy2 - 2)))
                     scaled = crop_box.resize((crop_box.width * 3, crop_box.height * 3), Image.Resampling.BICUBIC)
                     canvas.paste(scaled, (20, idx * slot_h + 15))
 
             slot_words = {i: [] for i in range(len(target_14))}
             ocr_done = False
 
-            # Subukan muna ang local pytesseract kung naka-install
+            # 1) Subukan ang pure-Python RapidOCR (gumagana sa Streamlit Cloud nang walang apt binary)
             try:
-                pytesseract = importlib.import_module("pytesseract")
-                data = pytesseract.image_to_data(canvas, config="--psm 6", output_type=pytesseract.Output.DICT)
-                for i in range(len(data["text"])):
-                    word = data["text"][i].strip()
-                    if word and int(data["conf"][i]) > 10:
-                        cy = data["top"][i] + data["height"][i] // 2
-                        s_idx = min(len(target_14) - 1, max(0, cy // slot_h))
-                        slot_words[s_idx].append(word)
-                if any(slot_words.values()):
-                    ocr_done = True
+                rapidocr_mod = importlib.import_module("rapidocr_onnxruntime")
+                if "_rapidocr_engine" not in st.session_state:
+                    st.session_state["_rapidocr_engine"] = rapidocr_mod.RapidOCR()
+                r_engine = st.session_state["_rapidocr_engine"]
+                r_buf = io.BytesIO()
+                canvas.convert("RGB").save(r_buf, format="PNG")
+                r_res, _ = r_engine(r_buf.getvalue())
+                if r_res:
+                    for item in r_res:
+                        box, txt_val, _ = item[0], str(item[1]).strip(), item[2]
+                        if txt_val:
+                            cy = int((box[0][1] + box[2][1]) / 2.0)
+                            s_idx = min(len(target_14) - 1, max(0, cy // slot_h))
+                            slot_words[s_idx].append(txt_val)
+                    if any(slot_words.values()):
+                        ocr_done = True
             except Exception:
                 pass
 
-            # Kung walang local tesseract binary sa cloud container, gamitin ang OCR.space API sa stacked canvas
+            # 2) Subukan ang local pytesseract kung naka-install
             if not ocr_done:
                 try:
-                    c_buf = io.BytesIO()
-                    canvas.convert("RGB").save(c_buf, format="JPEG", quality=92)
-                    b64_img = "data:image/jpeg;base64," + base64.b64encode(c_buf.getvalue()).decode("utf-8")
-                    ocr_res = requests.post(
-                        "https://api.ocr.space/parse/image",
-                        data={
-                            "apikey": "helloworld",
-                            "base64Image": b64_img,
-                            "language": "eng",
-                            "isOverlayRequired": "true",
-                            "OCREngine": "2"
-                        },
-                        timeout=12
+                    pytesseract = importlib.import_module("pytesseract")
+                    data = pytesseract.image_to_data(canvas, config="--psm 6", output_type=pytesseract.Output.DICT)
+                    for i in range(len(data["text"])):
+                        word = data["text"][i].strip()
+                        if word and int(data["conf"][i]) > 10:
+                            cy = data["top"][i] + data["height"][i] // 2
+                            s_idx = min(len(target_14) - 1, max(0, cy // slot_h))
+                            slot_words[s_idx].append(word)
+                    if any(slot_words.values()):
+                        ocr_done = True
+                except Exception:
+                    pass
+
+            # 3) Kung wala pa ring OCR, gamitin ang OCR.space API (siguraduhing <= 940px ang sukat para sa OCREngine 2/1)
+            if not ocr_done:
+                try:
+                    cw, ch = canvas.size
+                    ocr_scale = min(1.0, 940.0 / max(1, max(cw, ch)))
+                    send_canvas = (
+                        canvas.resize((max(1, int(cw * ocr_scale)), max(1, int(ch * ocr_scale))), Image.Resampling.BICUBIC)
+                        if ocr_scale < 1.0 else canvas
                     )
-                    if ocr_res.status_code == 200:
-                        o_json = ocr_res.json()
-                        for pr in o_json.get("ParsedResults", []):
-                            for line_obj in pr.get("TextOverlay", {}).get("Lines", []):
-                                l_txt = str(line_obj.get("LineText", "")).strip()
-                                min_top = float(line_obj.get("MinTop", 0))
-                                max_h = float(line_obj.get("MaxHeight", 20))
-                                cy = int(min_top + max_h / 2)
-                                s_idx = min(len(target_14) - 1, max(0, cy // slot_h))
-                                if l_txt:
-                                    slot_words[s_idx].append(l_txt)
+                    c_buf = io.BytesIO()
+                    send_canvas.convert("RGB").save(c_buf, format="JPEG", quality=92)
+                    b64_img = "data:image/jpeg;base64," + base64.b64encode(c_buf.getvalue()).decode("utf-8")
+                    for eng_ver in ["2", "1"]:
+                        ocr_res = requests.post(
+                            "https://api.ocr.space/parse/image",
+                            data={
+                                "apikey": "helloworld",
+                                "base64Image": b64_img,
+                                "language": "eng",
+                                "isOverlayRequired": "true",
+                                "OCREngine": eng_ver
+                            },
+                            timeout=14
+                        )
+                        if ocr_res.status_code == 200:
+                            o_json = ocr_res.json()
+                            for pr in o_json.get("ParsedResults", []):
+                                lines_arr = pr.get("TextOverlay", {}).get("Lines", [])
+                                for line_obj in lines_arr:
+                                    l_txt = str(line_obj.get("LineText", "")).strip()
+                                    min_top = float(line_obj.get("MinTop", 0))
+                                    max_h = float(line_obj.get("MaxHeight", 16))
+                                    orig_cy = (min_top + max_h / 2.0) / ocr_scale
+                                    s_idx = min(len(target_14) - 1, max(0, int(orig_cy // slot_h)))
+                                    if l_txt:
+                                        slot_words[s_idx].append(l_txt)
+                                if not any(slot_words.values()):
+                                    raw_lines = [ln.strip() for ln in str(pr.get("ParsedText", "")).splitlines() if ln.strip()]
+                                    for ln_i, ln_txt in enumerate(raw_lines):
+                                        if ln_i < len(ink_slot_indices):
+                                            slot_words[ink_slot_indices[ln_i]].append(ln_txt)
+                        if any(slot_words.values()):
+                            break
                 except Exception:
                     pass
 
             for idx, k_name in enumerate(officer_keys_order):
-                val_s = " ".join(slot_words.get(idx, [])).strip()
-                val_s = re.sub(r"^[|:\-\s]+|[|:\-\s]+$", "", val_s)
+                val_s = clean_officer_ocr_text(" ".join(slot_words.get(idx, [])), is_topic=(k_name in topic_keys))
                 if val_s:
                     out[k_name] = val_s
+
+        # Basahin ang REMARKS sa Column J (sa kanan ng huling attendance column)
+        try:
+            rem_x1 = int(att_spans[-1][1]) + 1
+            rem_x2 = (int(v_coords[-1]) - 2) if (len(v_coords) > 0 and v_coords[-1] > rem_x1 + 50) else (w - 4)
+            if rem_x2 > rem_x1 + 40:
+                img_rgb_full = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+                rgb_px = img_rgb_full.load()
+                green_rows = []
+                for y_p in range(int(h * 0.02), int(h * 0.35)):
+                    g_cnt = 0
+                    tot_p = 0
+                    for x_p in range(rem_x1 + 12, rem_x2 - 12, 3):
+                        r_v, g_v, b_v = rgb_px[x_p, y_p]
+                        tot_p += 1
+                        if g_v > r_v + 18 and g_v > b_v + 12:
+                            g_cnt += 1
+                    if tot_p > 0 and (g_cnt / tot_p) > 0.40:
+                        green_rows.append(y_p)
+
+                rem_y1 = (max(green_rows) + 3) if green_rows else (officer_row_bands[0][0] if officer_row_bands else int(h * 0.14))
+                rem_y2 = int(h * 0.85)
+                for y_p in range(rem_y1 + 45, int(h * 0.95)):
+                    dark_l = sum(1 for x_p in range(rem_x1 + 10, rem_x2 - 10, 2) if pixels[x_p, y_p] < 165)
+                    tot_l = max(1, len(range(rem_x1 + 10, rem_x2 - 10, 2)))
+                    if (dark_l / tot_l) > 0.80:
+                        rem_y2 = y_p - 2
+                        break
+
+                upper_rem_y2 = rem_y1 + max(25, int((rem_y2 - rem_y1) * 0.60))
+                rem_upper_ink, _ = cell_stats(rem_y1, upper_rem_y2, rem_x1 + 3, rem_x2 - 3)
+                if rem_upper_ink > 0.005:
+                    rem_crop = img.crop((rem_x1, rem_y1, rem_x2, rem_y2))
+                    rem_padded = Image.new("L", (rem_crop.width + 40, rem_crop.height + 30), 255)
+                    rem_padded.paste(rem_crop, (20, 15))
+                    rem_3x = rem_padded.resize((rem_padded.width * 3, rem_padded.height * 3), Image.Resampling.BICUBIC)
+                    rem_extracted_txt = ""
+
+                    # 1) RapidOCR para sa Remarks
+                    try:
+                        rapidocr_mod = importlib.import_module("rapidocr_onnxruntime")
+                        if "_rapidocr_engine" not in st.session_state:
+                            st.session_state["_rapidocr_engine"] = rapidocr_mod.RapidOCR()
+                        r_engine = st.session_state["_rapidocr_engine"]
+                        rb = io.BytesIO()
+                        rem_3x.convert("RGB").save(rb, format="PNG")
+                        r_res, _ = r_engine(rb.getvalue())
+                        if r_res:
+                            sorted_items = sorted(r_res, key=lambda it: float(it[0][0][1]))
+                            rem_extracted_txt = "\n".join(str(it[1]).strip() for it in sorted_items if str(it[1]).strip())
+                    except Exception:
+                        pass
+
+                    # 2) pytesseract para sa Remarks
+                    if not rem_extracted_txt.strip():
+                        try:
+                            pytesseract = importlib.import_module("pytesseract")
+                            rem_extracted_txt = pytesseract.image_to_string(rem_3x, config="--psm 6").strip()
+                        except Exception:
+                            pass
+
+                    # 3) OCR.space fallback para sa Remarks (<= 940px)
+                    if not rem_extracted_txt.strip():
+                        try:
+                            rw, rh = rem_3x.size
+                            r_scale = min(1.0, 940.0 / max(1, max(rw, rh)))
+                            send_rem = (
+                                rem_3x.resize((max(1, int(rw * r_scale)), max(1, int(rh * r_scale))), Image.Resampling.BICUBIC)
+                                if r_scale < 1.0 else rem_3x
+                            )
+                            rb = io.BytesIO()
+                            send_rem.convert("RGB").save(rb, format="JPEG", quality=92)
+                            b64_rem = "data:image/jpeg;base64," + base64.b64encode(rb.getvalue()).decode("utf-8")
+                            for eng_ver in ["2", "1"]:
+                                ocr_res = requests.post(
+                                    "https://api.ocr.space/parse/image",
+                                    data={
+                                        "apikey": "helloworld",
+                                        "base64Image": b64_rem,
+                                        "language": "eng",
+                                        "OCREngine": eng_ver
+                                    },
+                                    timeout=14
+                                )
+                                if ocr_res.status_code == 200:
+                                    o_json = ocr_res.json()
+                                    txts = [str(pr.get("ParsedText", "")).strip() for pr in o_json.get("ParsedResults", []) if str(pr.get("ParsedText", "")).strip()]
+                                    if txts:
+                                        rem_extracted_txt = "\n".join(txts)
+                                        break
+                        except Exception:
+                            pass
+
+                    if rem_extracted_txt.strip():
+                        clean_rem_lines = [
+                            re.sub(r"^[|:\-\s]+", "", ln).strip()
+                            for ln in rem_extracted_txt.splitlines()
+                            if re.sub(r"^[|:\-\s]+", "", ln).strip()
+                        ]
+                        out["remarks"] = "\n".join(clean_rem_lines)
+        except Exception:
+            pass
     except Exception:
         pass
     return out
@@ -3442,7 +3632,7 @@ def render_weekly_report_page():
             with b4:
                 v_ind = st.text_input("Indoctrination:", value=str(cur_rec.get("indoctrination", "0")), key=f"vind_{f_rev}")
 
-            v_rem = st.text_input("Remarks para sa Parokya:", value=str(cur_rec.get("remarks", "")), key=f"vrem_{f_rev}")
+            v_rem = st.text_area("Remarks para sa Parokya:", value=str(cur_rec.get("remarks", "")), height=110, key=f"vrem_{f_rev}")
 
             if st.form_submit_button("💾 I-type sa Parish Weekly Report Excel & I-update ang Tables", use_container_width=True):
                 denoms = get_parish_member_denominators(v_parish)
