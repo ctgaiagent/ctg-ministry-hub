@@ -1688,14 +1688,27 @@ def set_excel_cell_safely(ws, row: int, col: int, value, preserve_formula: bool 
         return False
 
 def find_next_writable_col_on_row(ws, row: int, label_col: int) -> int:
-    """Ibinabalik ang unang column sa kanan ng label_col (nilalaktawan lamang ang merged range kung saan kabilang mismo ang label_col)."""
+    """Ibinabalik ang tamang value column sa kanan ng label_col (sinusuportahan ang B..I merged o A:B label + C..I merged)."""
     col = label_col
     for merged_range in ws.merged_cells.ranges:
         if (merged_range.min_row <= row <= merged_range.max_row and
                 merged_range.min_col <= label_col <= merged_range.max_col):
             col = merged_range.max_col
             break
-    return col + 1
+    candidate_col = col + 1
+    # Kung ang candidate_col ay Col 2 (B) na hindi merged, ngunit ang Col 3..9 (C..I) ay merged para sa value box, gamitin ang Col 3 (C)
+    if candidate_col == 2:
+        b_is_merged = any(
+            (mr.min_row <= row <= mr.max_row and mr.min_col <= 2 <= mr.max_col)
+            for mr in ws.merged_cells.ranges
+        )
+        c_is_wide_merged = any(
+            (mr.min_row <= row <= mr.max_row and mr.min_col == 3 and mr.max_col >= 6)
+            for mr in ws.merged_cells.ranges
+        )
+        if not b_is_merged and c_is_wide_merged:
+            return 3
+    return candidate_col
 
 def match_parish_header_in_row(row_text_upper: str, parish_name: str) -> bool:
     """Sinusuri kung ang row_text_upper ay header row para sa partikular na parish_name."""
@@ -1821,7 +1834,19 @@ def write_pwr_header_fields(ws, data_row: dict, report_date: str, parish_name: s
                         continue
                     next_c = find_next_writable_col_on_row(ws, r_idx, c_idx)
                     if next_c <= 9:
+                        if next_c == 3 and c_idx == 1:
+                            try:
+                                b_cell = ws.cell(row=r_idx, column=2)
+                                if type(b_cell).__name__ != "MergedCell":
+                                    b_cell.value = None
+                            except Exception:
+                                pass
                         set_excel_cell_safely(ws, r_idx, next_c, str(val_str).strip(), preserve_formula=True)
+                        try:
+                            m_c = get_master_writable_cell(ws, r_idx, next_c)
+                            m_c.alignment = openpyxl.styles.Alignment(horizontal="left", vertical="center")
+                        except Exception:
+                            pass
 
             if "PREACHER" in compact_lbl:
                 p_val = ""
@@ -1834,7 +1859,19 @@ def write_pwr_header_fields(ws, data_row: dict, report_date: str, parish_name: s
                 if str(p_val or "").strip():
                     next_c = find_next_writable_col_on_row(ws, r_idx, c_idx)
                     if next_c <= 9:
+                        if next_c == 3 and c_idx == 1:
+                            try:
+                                b_cell = ws.cell(row=r_idx, column=2)
+                                if type(b_cell).__name__ != "MergedCell":
+                                    b_cell.value = None
+                            except Exception:
+                                pass
                         set_excel_cell_safely(ws, r_idx, next_c, str(p_val).strip(), preserve_formula=True)
+                        try:
+                            m_c = get_master_writable_cell(ws, r_idx, next_c)
+                            m_c.alignment = openpyxl.styles.Alignment(horizontal="left", vertical="center")
+                        except Exception:
+                            pass
 
 def is_numeric_slot_label(val_str: str) -> bool:
     s = str(val_str or "").strip()
@@ -2044,6 +2081,20 @@ def write_pwr_attendance_and_remarks(ws, data_row: dict, parish_name: str = ""):
             set_excel_cell_safely(ws, avg_row_idx, c_i, calc_pct_str(att_v, den_v), preserve_formula=True)
 
     rem_txt = str(data_row.get("remarks", "")).strip()
+    if not rem_txt:
+        fallback_rem_parts = []
+        if str(data_row.get("mass_remarks", "")).strip():
+            fallback_rem_parts.append(str(data_row.get("mass_remarks", "")).strip())
+        for pfx_lbl, n_k, r_k in [
+            ("House Visitation", "hv_names", "hv_remarks"),
+            ("Missionary Work", "mw_names", "mw_remarks"),
+            ("Indoctrination", "ind_names", "ind_remarks")
+        ]:
+            n_v = str(data_row.get(n_k, "")).strip()
+            r_v = str(data_row.get(r_k, "")).strip()
+            if n_v or r_v:
+                fallback_rem_parts.append(f"{pfx_lbl}: {n_v} {r_v}".strip())
+        rem_txt = "\n".join(fallback_rem_parts).strip()
     if rem_txt:
         # Hanapin ang pinaka-itaas na white cell sa ilalim ng green REMARKS header sa Column J (Column 10)
         rem_top_row = start_r + 1
@@ -2874,8 +2925,11 @@ def extract_pwr_grid_and_ocr_from_image(file_bytes: bytes) -> dict:
         h_lines = []
         for y in range(h):
             dark_cnt = 0
+            y_up = max(0, y - 3)
+            y_dn = min(h - 1, y + 3)
             for x in range(x_scan_start, x_scan_end, 2):
-                if pixels[x, y] < 170:
+                p = pixels[x, y]
+                if p < 175 or (p < 202 and p < pixels[x, y_up] - 10 and p < pixels[x, y_dn] - 10):
                     dark_cnt += 1
             if (dark_cnt * 2) / scan_w > 0.38:
                 h_lines.append(y)
@@ -2904,19 +2958,26 @@ def extract_pwr_grid_and_ocr_from_image(file_bytes: bytes) -> dict:
         v_lines = []
         for x in range(w):
             dark_cnt = 0
+            x_lf = max(0, x - 3)
+            x_rt = min(w - 1, x + 3)
             for y in range(y_att_top, y_att_bot, 2):
-                if pixels[x, y] < 170:
+                p = pixels[x, y]
+                if p < 175 or (p < 202 and p < pixels[x_lf, y] - 10 and p < pixels[x_rt, y] - 10):
                     dark_cnt += 1
             if (dark_cnt * 2) / att_h > 0.40:
                 v_lines.append(x)
 
         grouped_v = []
         for x in v_lines:
-            if not grouped_v or x - grouped_v[-1][-1] > 4:
+            if not grouped_v or x - grouped_v[-1][-1] > 5:
                 grouped_v.append([x])
             else:
                 grouped_v[-1].append(x)
         v_coords = [int(sum(g) / len(g)) for g in grouped_v]
+        if v_coords and v_coords[0] > 40:
+            v_coords = [2] + v_coords
+        if v_coords and v_coords[-1] < w - 40:
+            v_coords = v_coords + [w - 2]
 
         col_spans = []
         for i in range(len(v_coords) - 1):
@@ -2938,8 +2999,18 @@ def extract_pwr_grid_and_ocr_from_image(file_bytes: bytes) -> dict:
 
         name_span = col_spans[att_col_start_idx - 1]
         num_span = col_spans[att_col_start_idx - 2]
-        col_a_span = col_spans[0]
         att_spans = col_spans[att_col_start_idx:att_col_start_idx + 6]
+
+        # Hanapin ang eksaktong vertical border line sa pagitan ng Officer Labels (PRIEST:..Preacher:) at Values (Rev. Billy P...)
+        # upang hindi kailanman maputol ang unang 3 letra (hal. 'Rev', 'Re', 'Aye', 'Hea', 'Cris', 'Jas') kahit walang left border ang screenshot!
+        off_probe_y1, off_probe_y2 = int(h * 0.20), int(h * 0.44)
+        off_probe_x1, off_probe_x2 = max(40, int(w * 0.08)), min(w - 20, int(name_span[0]) + 10)
+        officer_div_x = max(
+            range(off_probe_x1, off_probe_x2),
+            key=lambda x_c: sum(1 for y_c in range(off_probe_y1, off_probe_y2) if pixels[x_c, y_c] < 190)
+        )
+        col_a_left = col_spans[0][0] if col_spans[0][0] < officer_div_x - 40 else 2
+        col_a_span = (col_a_left, officer_div_x)
 
         def cell_stats(y1, y2, x1, x2):
             cy1, cy2 = y1 + 3, y2 - 3
@@ -3054,6 +3125,7 @@ def extract_pwr_grid_and_ocr_from_image(file_bytes: bytes) -> dict:
                 s = re.sub(r"\b(B\d+)1(\d+)\b", r"\1 T\2", s)
                 return s
             s = re.sub(r"Rev\.?\s*([A-Z])", r"Rev. \1", s)
+            s = re.sub(r"\b([A-Z][a-z]+)\s+[cC]\s+([A-Z]\.?)", r"\1 \2", s)
             s = re.sub(r"([a-z])([A-Z]\b)", r"\1 \2", s)
             s = re.sub(r"([a-z])([A-Z]\.)", r"\1 \2", s)
             s = re.sub(r"\b([A-Z])\s*,\s*$", r"\1.", s)
@@ -3650,8 +3722,14 @@ def extract_weekly_report_via_ai_vision(file_bytes: bytes, mime_type: str, model
     ]
     for k in str_keys:
         val = parsed.get(k)
-        if val is not None and str(val).strip() and str(val).strip().lower() not in ["none", "null", "n/a", "0"]:
-            default_res[k] = str(val).strip()
+        if val is not None and str(val).strip() and str(val).strip().lower() not in ["none", "null", "n/a", "0", "-"]:
+            val_s = str(val).strip()
+            existing_s = str(default_res.get(k, "")).strip()
+            if k == "remarks":
+                if len(val_s) > len(existing_s):
+                    default_res[k] = val_s
+            elif not existing_s:
+                default_res[k] = val_s
 
     return default_res
 
@@ -4233,6 +4311,9 @@ def render_weekly_report_page():
                         )
                         st.session_state["_next_mon_view_month"] = sel_month
                         st.session_state["_next_mon_view_week"] = sel_week
+                        st.session_state["_next_editor_parish"] = target_parish
+                        st.session_state["_next_editor_month"] = sel_month
+                        st.session_state["_next_editor_week"] = sel_week
                         st.session_state["pwr_form_rev"] = st.session_state.get("pwr_form_rev", 0) + 1
                         st.session_state["last_extracted_pwr"] = {
                             "parish": target_parish,
@@ -4265,6 +4346,13 @@ def render_weekly_report_page():
         st.caption("Lahat ng datos dito ay direktang tinatype sa `PARISH WEEKLY REPORT` sheet (Liturgical Officers, Topics/Preachers, Adults/Youths/Kids Attendance, at Remarks) upang gumana ang Excel formulas papunta sa Monitoring at Summary.")
 
         db_all = load_weekly_monitoring_records()
+        if "_next_editor_parish" in st.session_state:
+            st.session_state["editor_sel_parish"] = st.session_state.pop("_next_editor_parish")
+        if "_next_editor_month" in st.session_state:
+            st.session_state["editor_sel_month"] = st.session_state.pop("_next_editor_month")
+        if "_next_editor_week" in st.session_state:
+            st.session_state["editor_sel_week"] = st.session_state.pop("_next_editor_week")
+
         last_info = st.session_state.get("last_extracted_pwr", {})
         if last_info.get("parish"):
             def_p = last_info["parish"]
@@ -4276,23 +4364,30 @@ def render_weekly_report_page():
             def_p = PARISH_ORDER[0]
             for p_cand in PARISH_ORDER:
                 c_rec = db_all.get(f"{p_cand.upper()}__{view_month.upper()}__{view_week}", {})
-                if c_rec.get("has_data") and (c_rec.get("priest") or c_rec.get("remarks")):
+                if c_rec.get("has_data") and (c_rec.get("priest") or c_rec.get("remarks") or int(c_rec.get("mass_a", 0)) > 0):
                     def_p = p_cand
                     break
 
-        cur_rec = db_all.get(f"{def_p.upper()}__{view_month.upper()}__{view_week}", {})
+        if "editor_sel_parish" not in st.session_state or (not is_master and st.session_state["editor_sel_parish"] != my_parish):
+            st.session_state["editor_sel_parish"] = def_p if def_p in PARISH_ORDER else PARISH_ORDER[0]
+        if "editor_sel_month" not in st.session_state:
+            st.session_state["editor_sel_month"] = view_month
+        if "editor_sel_week" not in st.session_state:
+            st.session_state["editor_sel_week"] = view_week
+
+        v_c1, v_c2, v_c3 = st.columns(3)
+        with v_c1:
+            v_parish = st.selectbox("Parokya:", PARISH_ORDER if is_master else [my_parish], key="editor_sel_parish")
+        with v_c2:
+            v_month = st.selectbox("Buwan (2027):", MONTHS_2027, key="editor_sel_month")
+        with v_c3:
+            v_week = st.selectbox("Linggo:", WEEKS_2027, key="editor_sel_week")
+
+        cur_rec = db_all.get(f"{v_parish.upper()}__{v_month.upper()}__{v_week}", {})
+        f_rev = f"{st.session_state.get('pwr_form_rev', 0)}_{v_parish}_{v_month}_{v_week}"
+        def_denoms = get_parish_member_denominators(v_parish)
 
         with st.form("verify_weekly_counts_form"):
-            v_c1, v_c2, v_c3 = st.columns(3)
-            with v_c1:
-                v_parish = st.selectbox("Parokya:", PARISH_ORDER if is_master else [my_parish], index=PARISH_ORDER.index(def_p) if def_p in PARISH_ORDER and is_master else 0)
-            with v_c2:
-                v_month = st.selectbox("Buwan (2027):", MONTHS_2027, index=MONTHS_2027.index(view_month))
-            with v_c3:
-                v_week = st.selectbox("Linggo:", WEEKS_2027, index=WEEKS_2027.index(view_week))
-
-            f_rev = f"{st.session_state.get('pwr_form_rev', 0)}_{def_p}_{view_month}_{view_week}"
-            def_denoms = get_parish_member_denominators(def_p)
             with st.expander("⛪ Liturgical Officers & Preachers (Para sa PARISH WEEKLY REPORT Sheet)", expanded=True):
                 o1, o2, o3, o4 = st.columns(4)
                 with o1:
