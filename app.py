@@ -1,1 +1,1 @@
-cd ~/Desktop/ctg-ministry-hub && pbpaste > app.py && git add app.py && git commit -m "Update Admin and Parish dashboards, 2027 tracker dropdowns, and Outreach filters" && git push origin main
+pbpaste > app.py && git add app.py && git commit -m "Update Admin and Parish dashboards, 2027 tracker dropdowns, and Outreach filters" && git push origin main
