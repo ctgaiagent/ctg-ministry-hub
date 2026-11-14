@@ -1,1 +1,1 @@
-pbpaste > app.py && git add app.py && git commit -m "Apply Book1 Excel layout for Master Admin and Parish Admins with 2027 week dates and Notion Outreach sync" && git push origin main
+pbpaste > app.py && git add app.py && git commit -m "Fix Pylance undefined variable warnings in app.py" && git push origin main
