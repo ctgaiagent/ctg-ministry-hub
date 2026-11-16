@@ -95,17 +95,27 @@ LOGO_PATH = find_logo_file()
 
 def render_title_with_logo(title_text: str, subtitle_text: str = ""):
     if LOGO_PATH and os.path.exists(LOGO_PATH):
-        col_logo, col_text = st.columns([0.09, 0.91], vertical_alignment="center")
-        with col_logo:
-            st.image(LOGO_PATH, width=75)
-        with col_text:
-            st.title(title_text)
-            if subtitle_text:
-                st.caption(subtitle_text)
-    else:
-        st.title(title_text)
-        if subtitle_text:
-            st.caption(subtitle_text)
+        try:
+            with open(LOGO_PATH, "rb") as f_l:
+                b64_l = base64.b64encode(f_l.read()).decode("utf-8")
+            ext_l = LOGO_PATH.split(".")[-1].lower()
+            mime_l = "image/png" if ext_l == "png" else "image/jpeg"
+            sub_html = f"<div style='font-size:0.95rem;opacity:0.88;margin-top:4px;'>{subtitle_text}</div>" if subtitle_text else ""
+            st.markdown(
+                f"<div class='full-text-card' style='display:flex;align-items:center;gap:14px;padding:12px 16px;margin-top:4px;margin-bottom:14px;'>"
+                f"<img src='data:{mime_l};base64,{b64_l}' style='width:68px;height:68px;min-width:68px;object-fit:contain;border-radius:50%;border:2px solid #22c55e;' />"
+                f"<div style='flex:1;min-width:0;'>"
+                f"<div style='font-size:1.35rem;font-weight:800;line-height:1.25;word-wrap:break-word;'>{title_text}</div>"
+                f"{sub_html}"
+                f"</div></div>",
+                unsafe_allow_html=True
+            )
+            return
+        except Exception:
+            pass
+    st.title(title_text)
+    if subtitle_text:
+        st.caption(subtitle_text)
 
 def get_secret(key, default=""):
     if "custom_secrets" in st.session_state and key in st.session_state.custom_secrets:
@@ -282,7 +292,7 @@ def apply_dynamic_app_styles():
         card_bg = "#FFFFFF"
         card_text = "#0F172A"
         card_border = "#1E3A8A"
-        side_box_bg = "#F1F5F9"
+        side_box_bg = "#EFF6FF"
         side_box_text = "#0F172A"
         side_box_border = "#94A3B8"
         input_bg = "#FFFFFF"
@@ -290,6 +300,9 @@ def apply_dynamic_app_styles():
         accent_val_color = "#0F766E"
         officer_hdr_bg = "#DCFCE7"
         officer_hdr_text = "#14532D"
+        alert_bg = "#EFF6FF"
+        alert_text = "#0F172A"
+        alert_border = "#2563EB"
     elif "Royal Blue" in theme:
         app_bg = "#0A192F"
         sidebar_bg = "#112240"
@@ -299,12 +312,15 @@ def apply_dynamic_app_styles():
         card_border = "#64FFDA"
         side_box_bg = "#172A45"
         side_box_text = "#F8FAFC"
-        side_box_border = "#334E68"
+        side_box_border = "#38BDF8"
         input_bg = "#172A45"
         input_text = "#F8FAFC"
         accent_val_color = "#FDE047"
         officer_hdr_bg = "rgba(20,83,45,0.65)"
         officer_hdr_text = "#ECFDF5"
+        alert_bg = "#172A45"
+        alert_text = "#F8FAFC"
+        alert_border = "#38BDF8"
     else:
         app_bg = "#0E1117"
         sidebar_bg = "#161B22"
@@ -313,13 +329,16 @@ def apply_dynamic_app_styles():
         card_text = "#F8FAFC"
         card_border = "#38BDF8"
         side_box_bg = "#1E293B"
-        side_box_text = "#F1F5F9"
+        side_box_text = "#F8FAFC"
         side_box_border = "#475569"
-        input_bg = "#0F172A"
+        input_bg = "#1E293B"
         input_text = "#F8FAFC"
         accent_val_color = "#FDE047"
         officer_hdr_bg = "rgba(20,83,45,0.55)"
         officer_hdr_text = "#ECFDF5"
+        alert_bg = "#1E293B"
+        alert_text = "#F8FAFC"
+        alert_border = "#38BDF8"
 
     st.markdown(f"""
         <style>
@@ -332,22 +351,80 @@ def apply_dynamic_app_styles():
             --ctg-officer-hdr-text: {officer_hdr_text};
         }}
         html {{ font-size: {base_zoom}; }}
-        .stApp {{ background-color: {app_bg} !important; color: {text_color} !important; }}
-        [data-testid="stSidebar"], [data-testid="stSidebar"] * {{ color: {text_color} !important; }}
-        [data-testid="stSidebar"] {{ background-color: {sidebar_bg} !important; }}
-        .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5, .stApp h6,
-        .stApp p, .stApp label, .stApp span, .stMarkdown, .stCaption,
-        [data-testid="stExpander"] summary, [data-testid="stExpander"] summary * {{
+        .stApp {{
+            background-color: {app_bg} !important;
             color: {text_color} !important;
         }}
+        /* Top Header Bar (Para hindi matakpan ang Logo o Banner sa Phone at laging kita ang >> Sidebar Button) */
+        header[data-testid="stHeader"] {{
+            background-color: {app_bg} !important;
+            border-bottom: 1px solid {side_box_border} !important;
+        }}
+        .block-container {{
+            padding-top: 3.6rem !important;
+            padding-bottom: 4.5rem !important;
+        }}
+        [data-testid="stSidebar"] {{
+            background-color: {sidebar_bg} !important;
+        }}
+        [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3,
+        [data-testid="stSidebar"] p, [data-testid="stSidebar"] label, [data-testid="stSidebar"] span {{
+            color: {text_color} !important;
+        }}
+        .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5, .stApp h6,
+        .stApp p, .stApp label, .stMarkdown, .stCaption {{
+            color: {text_color} !important;
+        }}
+        /* Fix st.info / st.success / st.warning / st.error on Mobile Phone (iOS & Android Light/Dark OS) */
+        [data-testid="stAlert"], div[role="alert"] {{
+            background-color: {alert_bg} !important;
+            color: {alert_text} !important;
+            border: 1.5px solid {alert_border} !important;
+            border-left: 5px solid {alert_border} !important;
+            border-radius: 8px !important;
+        }}
+        [data-testid="stAlert"] p, [data-testid="stAlert"] span, [data-testid="stAlert"] div,
+        [data-testid="stAlert"] b, [data-testid="stAlert"] strong,
+        div[role="alert"] p, div[role="alert"] span, div[role="alert"] div {{
+            color: {alert_text} !important;
+        }}
+        /* Fix Expander Header & Body on Mobile Phone (para hindi puti sa puting background) */
+        [data-testid="stExpander"], [data-testid="stExpander"] details {{
+            background-color: {card_bg} !important;
+            border: 1px solid {side_box_border} !important;
+            border-radius: 8px !important;
+            color: {text_color} !important;
+        }}
+        [data-testid="stExpander"] summary, [data-testid="stExpander"] summary:hover {{
+            background-color: {side_box_bg} !important;
+            color: {text_color} !important;
+            border-radius: 8px !important;
+            padding: 8px 12px !important;
+        }}
+        [data-testid="stExpander"] summary p, [data-testid="stExpander"] summary span,
+        [data-testid="stExpander"] summary svg {{
+            color: {text_color} !important;
+            fill: {text_color} !important;
+        }}
+        /* Fix Selectbox, Inputs & Dropdown Popovers on Mobile Phone */
         .stTextInput input, .stTextArea textarea, .stNumberInput input,
         [data-baseweb="select"] > div, [data-baseweb="base-input"] {{
             background-color: {input_bg} !important;
             color: {input_text} !important;
-            border-color: {side_box_border} !important;
+            -webkit-text-fill-color: {input_text} !important;
+            border: 1px solid {side_box_border} !important;
         }}
-        [data-baseweb="select"] span, [data-baseweb="select"] div {{
+        [data-baseweb="select"] span, [data-baseweb="select"] div, [data-baseweb="select"] svg {{
             color: {input_text} !important;
+            fill: {input_text} !important;
+        }}
+        [data-baseweb="popover"] div, [data-baseweb="menu"], ul[role="listbox"], li[role="option"] {{
+            background-color: {input_bg} !important;
+            color: {input_text} !important;
+        }}
+        li[role="option"]:hover, li[role="option"][aria-selected="true"] {{
+            background-color: {side_box_bg} !important;
+            color: {text_color} !important;
         }}
         .stButton > button {{
             font-weight: 600 !important;
@@ -357,7 +434,13 @@ def apply_dynamic_app_styles():
             color: {text_color} !important;
             border: 1px solid {side_box_border} !important;
         }}
+        .stButton > button[kind="secondary"] p, .stButton > button[kind="secondary"] span {{
+            color: {text_color} !important;
+        }}
         .stButton > button[kind="primary"] {{
+            color: #FFFFFF !important;
+        }}
+        .stButton > button[kind="primary"] p, .stButton > button[kind="primary"] span {{
             color: #FFFFFF !important;
         }}
         .ctg-officer-val {{
@@ -375,7 +458,7 @@ def apply_dynamic_app_styles():
             border: 1px solid {side_box_border};
         }}
         .full-text-card {{
-            background-color: {card_bg};
+            background-color: {card_bg} !important;
             border-left: 4px solid {card_border};
             border: 1px solid {side_box_border};
             padding: {card_pad};
@@ -386,8 +469,11 @@ def apply_dynamic_app_styles():
             word-wrap: break-word;
             font-size: {font_scale};
         }}
+        .full-text-card *, .records-side-box *, .sidebar-log-card * {{
+            color: {card_text} !important;
+        }}
         .urgent-card {{
-            background-color: #FEF2F2;
+            background-color: #FEF2F2 !important;
             border-left: 4px solid #DC2626;
             padding: {card_pad};
             margin-bottom: {card_margin};
@@ -398,19 +484,19 @@ def apply_dynamic_app_styles():
             font-size: {font_scale};
         }}
         .submitted-parish-badge {{
-            background-color: #ECFDF5; border: 1px solid #10B981; color: #065F46 !important;
+            background-color: #ECFDF5 !important; border: 1px solid #10B981; color: #065F46 !important;
             padding: 6px 12px; border-radius: 6px; font-weight: 600; font-size: 0.88rem; margin-bottom: 8px; display: inline-block;
         }}
         .assigned-parish-badge {{
-            background-color: #EFF6FF; border: 1px solid #3B82F6; color: #1E40AF !important;
+            background-color: #EFF6FF !important; border: 1px solid #3B82F6; color: #1E40AF !important;
             padding: 6px 12px; border-radius: 6px; font-weight: 600; font-size: 0.88rem; margin-bottom: 8px; display: inline-block;
         }}
         .records-side-box {{
-            background-color: {side_box_bg}; border: 1px solid {side_box_border}; border-top: 4px solid #0F766E;
+            background-color: {side_box_bg} !important; border: 1px solid {side_box_border}; border-top: 4px solid #0F766E;
             padding: {card_pad}; border-radius: 8px; margin-bottom: {card_margin}; color: {side_box_text} !important; font-size: 0.88rem;
         }}
         .sidebar-log-card {{
-            background-color: {side_box_bg};
+            background-color: {side_box_bg} !important;
             border-left: 3px solid #38BDF8;
             border: 1px solid {side_box_border};
             padding: 8px 10px;
@@ -420,17 +506,18 @@ def apply_dynamic_app_styles():
             font-size: 0.80rem;
         }}
         .chat-bubble-mine {{
-            background-color: #1E3A8A;
+            background-color: #1E3A8A !important;
             border: 1px solid #3B82F6;
             color: #FFFFFF !important;
             padding: 10px 14px;
             border-radius: 12px 12px 2px 12px;
             margin-bottom: 8px;
-            margin-left: 15%;
+            margin-left: 8%;
             font-size: {font_scale};
         }}
+        .chat-bubble-mine * {{ color: #FFFFFF !important; }}
         .chat-bubble-other {{
-            background-color: {side_box_bg};
+            background-color: {side_box_bg} !important;
             border-left: 4px solid #10B981;
             border-top: 1px solid {side_box_border};
             border-right: 1px solid {side_box_border};
@@ -439,11 +526,12 @@ def apply_dynamic_app_styles():
             padding: 10px 14px;
             border-radius: 12px 12px 12px 2px;
             margin-bottom: 8px;
-            margin-right: 15%;
+            margin-right: 8%;
             font-size: {font_scale};
         }}
+        .chat-bubble-other * {{ color: {side_box_text} !important; }}
         .chat-bubble-broadcast {{
-            background-color: #4C1D95;
+            background-color: #4C1D95 !important;
             border: 1px solid #A78BFA;
             color: #F5F3FF !important;
             padding: 10px 14px;
@@ -451,67 +539,77 @@ def apply_dynamic_app_styles():
             margin-bottom: 8px;
             font-size: {font_scale};
         }}
+        .chat-bubble-broadcast * {{ color: #F5F3FF !important; }}
         .category-header-seniors {{
-            background-color: #3B0764;
-            border: 1px solid #A855F7;
-            color: #F3E8FF !important;
-            padding: 10px 14px;
-            border-radius: 8px;
-            font-weight: 700;
-            margin-bottom: 8px;
+            background-color: #3B0764 !important; border: 1px solid #A855F7; color: #F3E8FF !important;
+            padding: 10px 14px; border-radius: 8px; font-weight: 700; margin-bottom: 8px;
         }}
         .category-header-adults {{
-            background-color: #1E3A8A;
-            border: 1px solid #60A5FA;
-            color: #DBEAFE !important;
-            padding: 10px 14px;
-            border-radius: 8px;
-            font-weight: 700;
-            margin-bottom: 8px;
+            background-color: #1E3A8A !important; border: 1px solid #60A5FA; color: #DBEAFE !important;
+            padding: 10px 14px; border-radius: 8px; font-weight: 700; margin-bottom: 8px;
         }}
         .category-header-youth {{
-            background-color: #065F46;
-            border: 1px solid #34D399;
-            color: #D1FAE5 !important;
-            padding: 10px 14px;
-            border-radius: 8px;
-            font-weight: 700;
-            margin-bottom: 8px;
+            background-color: #065F46 !important; border: 1px solid #34D399; color: #D1FAE5 !important;
+            padding: 10px 14px; border-radius: 8px; font-weight: 700; margin-bottom: 8px;
         }}
         .category-header-kids {{
-            background-color: #78350F;
-            border: 1px solid #FBBF24;
-            color: #FEF3C7 !important;
-            padding: 10px 14px;
-            border-radius: 8px;
-            font-weight: 700;
-            margin-bottom: 8px;
+            background-color: #78350F !important; border: 1px solid #FBBF24; color: #FEF3C7 !important;
+            padding: 10px 14px; border-radius: 8px; font-weight: 700; margin-bottom: 8px;
         }}
         .pmr-banner {{
-            background-color: #14532D;
+            background-color: #14532D !important;
             color: #FFFFFF !important;
             text-align: center;
             padding: 12px;
             border-radius: 8px 8px 0 0;
             font-weight: 800;
-            font-size: 1.35rem;
-            letter-spacing: 1px;
+            font-size: 1.25rem;
+            letter-spacing: 0.8px;
+            margin-top: 6px;
         }}
         .pmr-subbanner {{
-            background-color: #DCFCE7;
+            background-color: #DCFCE7 !important;
             color: #14532D !important;
             text-align: center;
-            padding: 8px;
+            padding: 10px;
             border-radius: 0 0 8px 8px;
             font-weight: 700;
-            font-size: 1.1rem;
+            font-size: 1.02rem;
             margin-bottom: 14px;
             border: 1px solid #14532D;
         }}
-        [data-testid="collapsedControl"], [data-testid="stSidebarCollapseButton"] {{
-            display: flex !important; visibility: visible !important; opacity: 1 !important; z-index: 999999 !important;
-            background-color: #1E3A8A !important; color: #FFFFFF !important; border-radius: 8px !important; padding: 4px !important; margin: 6px !important;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.45) !important;
+        .pmr-subbanner * {{ color: #14532D !important; }}
+        .ph-time-badge {{
+            background-color: #065F46 !important;
+            color: #ECFDF5 !important;
+            border: 1px solid #34D399;
+            padding: 5px 12px;
+            border-radius: 999px;
+            font-size: 0.84rem;
+            font-weight: 700;
+            display: inline-block;
+            margin-top: 4px;
+            margin-bottom: 4px;
+        }}
+        .ph-time-badge * {{ color: #ECFDF5 !important; }}
+        /* Sidebar Toggle Button (>> and <<) para laging kitang-kita sa Phone */
+        [data-testid="collapsedControl"], [data-testid="stSidebarCollapsedControl"], [data-testid="stSidebarCollapseButton"],
+        button[kind="header"], button[kind="headerNoPadding"] {{
+            display: flex !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+            z-index: 999999 !important;
+            background-color: #1E3A8A !important;
+            color: #FFFFFF !important;
+            border: 1.5px solid #60A5FA !important;
+            border-radius: 8px !important;
+            padding: 4px !important;
+            margin: 4px !important;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.45) !important;
+        }}
+        [data-testid="collapsedControl"] svg, [data-testid="stSidebarCollapsedControl"] svg, [data-testid="stSidebarCollapseButton"] svg {{
+            fill: #FFFFFF !important;
+            color: #FFFFFF !important;
         }}
         .record-table-wrap {{
             width: 100%;
@@ -528,7 +626,7 @@ def apply_dynamic_app_styles():
             color: {card_text} !important;
         }}
         .record-style-table th {{
-            background-color: #14532D;
+            background-color: #14532D !important;
             color: #FFFFFF !important;
             padding: 10px 12px;
             text-align: left;
@@ -547,23 +645,13 @@ def apply_dynamic_app_styles():
         .record-style-table tr:nth-child(even) {{
             background-color: {side_box_bg};
         }}
-        .ph-time-badge {{
-            background-color: #065F46;
-            color: #ECFDF5 !important;
-            border: 1px solid #34D399;
-            padding: 5px 12px;
-            border-radius: 999px;
-            font-size: 0.85rem;
-            font-weight: 700;
-            display: inline-block;
-            margin-bottom: 6px;
-        }}
         /* 📱 RESPONSIVE TABLET & PHONE MEDIA QUERIES */
         @media (max-width: 1024px) {{
             .block-container {{
                 padding-left: 1rem !important;
                 padding-right: 1rem !important;
-                padding-top: 1.5rem !important;
+                padding-top: 3.8rem !important;
+                padding-bottom: 5.5rem !important;
             }}
             [data-testid="stHorizontalBlock"] {{
                 flex-wrap: wrap !important;
@@ -573,31 +661,35 @@ def apply_dynamic_app_styles():
                 min-width: 47% !important;
                 flex: 1 1 47% !important;
             }}
-            .pmr-banner {{ font-size: 1.15rem !important; padding: 10px !important; }}
-            .pmr-subbanner {{ font-size: 0.95rem !important; padding: 7px !important; }}
+            .pmr-banner {{ font-size: 1.12rem !important; padding: 10px !important; }}
+            .pmr-subbanner {{ font-size: 0.92rem !important; padding: 8px !important; }}
         }}
         @media (max-width: 640px) {{
-            html {{ font-size: 96% !important; }}
+            html {{ font-size: 95% !important; }}
             .block-container {{
-                padding-left: 0.6rem !important;
-                padding-right: 0.6rem !important;
-                padding-top: 1.2rem !important;
+                padding-left: 0.65rem !important;
+                padding-right: 0.65rem !important;
+                padding-top: 3.9rem !important;
+                padding-bottom: 6rem !important;
             }}
             [data-testid="column"] {{
                 min-width: 100% !important;
                 flex: 1 1 100% !important;
             }}
             .stButton > button, .stDownloadButton > button {{
-                min-height: 45px !important;
-                font-size: 0.95rem !important;
+                min-height: 44px !important;
+                font-size: 0.94rem !important;
                 width: 100% !important;
             }}
-            .chat-bubble-mine {{ margin-left: 4% !important; }}
-            .chat-bubble-other {{ margin-right: 4% !important; }}
+            .chat-bubble-mine {{ margin-left: 2% !important; }}
+            .chat-bubble-other {{ margin-right: 2% !important; }}
             .record-style-table th, .record-style-table td {{
                 padding: 8px 8px !important;
-                font-size: 0.86rem !important;
+                font-size: 0.85rem !important;
             }}
+            h1 {{ font-size: 1.55rem !important; line-height: 1.25 !important; }}
+            h2 {{ font-size: 1.3rem !important; line-height: 1.25 !important; }}
+            h3 {{ font-size: 1.12rem !important; line-height: 1.3 !important; }}
         }}
         [data-testid="stAppDeployButton"] {{ display: none !important; }}
         #MainMenu {{ visibility: hidden !important; display: none !important; }}
@@ -7372,36 +7464,45 @@ def render_ministry_messenger_page():
             if not conv_msgs:
                 st.caption(f"Wala pang mensahe sa pagitan ng **{my_id}** at **{partner_id}**. Mag-type sa ibaba para magsimula!")
             else:
-                for m in conv_msgs:
+                for idx_m, m in enumerate(conv_msgs):
+                    m_id = m.get("id", f"conv_{idx_m}")
                     s_name = m.get("sender", "Unknown")
                     r_name = m.get("recipient", "Unknown")
                     t_str = m.get("timestamp", "")
                     body_txt = m.get("message", "")
+                    can_del_this = is_master or (s_name == my_id) or (r_name == my_id)
 
-                    if r_name == "LAHAT NG USERS (BROADCAST)":
-                        st.markdown(
-                            f"<div class='chat-bubble-broadcast'>"
-                            f"<b>📢 {s_name}</b> → <i>Lahat ng Users</i> <span style='float:right;font-size:0.78rem;'>🕒 {t_str}</span><br>"
-                            f"{body_txt}"
-                            f"</div>",
-                            unsafe_allow_html=True
-                        )
-                    elif s_name == my_id:
-                        st.markdown(
-                            f"<div class='chat-bubble-mine'>"
-                            f"<b>👤 Ikaw ({s_name})</b> → <b>{r_name}</b> <span style='float:right;font-size:0.78rem;'>🕒 {t_str}</span><br>"
-                            f"{body_txt}"
-                            f"</div>",
-                            unsafe_allow_html=True
-                        )
-                    else:
-                        st.markdown(
-                            f"<div class='chat-bubble-other'>"
-                            f"<b>🏛️ {s_name}</b> → <b>{r_name}</b> <span style='float:right;font-size:0.78rem;'>🕒 {t_str}</span><br>"
-                            f"{body_txt}"
-                            f"</div>",
-                            unsafe_allow_html=True
-                        )
+                    mc_bub, mc_del = st.columns([0.88, 0.12])
+                    with mc_bub:
+                        if r_name == "LAHAT NG USERS (BROADCAST)":
+                            st.markdown(
+                                f"<div class='chat-bubble-broadcast'>"
+                                f"<b>📢 {s_name}</b> → <i>Lahat ng Users</i> <span style='float:right;font-size:0.78rem;'>🕒 {t_str}</span><br>"
+                                f"{body_txt}"
+                                f"</div>",
+                                unsafe_allow_html=True
+                            )
+                        elif s_name == my_id:
+                            st.markdown(
+                                f"<div class='chat-bubble-mine'>"
+                                f"<b>👤 Ikaw ({s_name})</b> → <b>{r_name}</b> <span style='float:right;font-size:0.78rem;'>🕒 {t_str}</span><br>"
+                                f"{body_txt}"
+                                f"</div>",
+                                unsafe_allow_html=True
+                            )
+                        else:
+                            st.markdown(
+                                f"<div class='chat-bubble-other'>"
+                                f"<b>🏛️ {s_name}</b> → <b>{r_name}</b> <span style='float:right;font-size:0.78rem;'>🕒 {t_str}</span><br>"
+                                f"{body_txt}"
+                                f"</div>",
+                                unsafe_allow_html=True
+                            )
+                    with mc_del:
+                        if can_del_this:
+                            if st.button("🗑️", key=f"del_conv_msg_{m_id}_{idx_m}", help="Burahin ang mensaheng ito"):
+                                delete_internal_chat_messages_by_ids({m_id})
+                                st.rerun()
 
         with st.form("send_internal_chat_form", clear_on_submit=True):
             c_in, c_btn = st.columns([4, 1])
@@ -7416,7 +7517,7 @@ def render_ministry_messenger_page():
 
             if send_btn:
                 if msg_input and msg_input.strip():
-                    save_internal_chat_message(my_id, partner_id, msg_input.strip())
+                    save_internal_chat_message(my_id, partner_id, msg_input.strip(), sync_to_drive=True)
                     dispatch_app_notification_and_messenger_alert(
                         sender_id=my_id,
                         recipient_id=partner_id,
@@ -7429,6 +7530,36 @@ def render_ministry_messenger_page():
                     st.rerun()
                 else:
                     st.warning("Mag-type muna ng mensahe.")
+
+        if conv_msgs:
+            dc_1, dc_2 = st.columns([2.2, 1.2])
+            with dc_1:
+                conv_del_opts = [
+                    (m.get("id", ""), f"[{m.get('timestamp', '')}] {m.get('sender', '')}: {str(m.get('message', ''))[:55]}")
+                    for m in conv_msgs if m.get("id")
+                ]
+                if conv_del_opts:
+                    sel_conv_del_idx = st.selectbox(
+                        "🗑️ Pumili ng Mensahe sa Chat Box na Burahin:",
+                        range(len(conv_del_opts)),
+                        format_func=lambda i: conv_del_opts[i][1],
+                        key="conv_box_del_sel"
+                    )
+            with dc_2:
+                st.write("")
+                b_d1, b_d2 = st.columns(2)
+                with b_d1:
+                    if st.button("🗑️ Delete Selected", use_container_width=True, key="btn_conv_del_sel"):
+                        if conv_del_opts:
+                            delete_internal_chat_messages_by_ids({conv_del_opts[sel_conv_del_idx][0]})
+                            st.success("Binura na ang mensahe!")
+                            st.rerun()
+                with b_d2:
+                    if st.button(f"🗑️ Clear Chat ({len(conv_msgs)})", use_container_width=True, key="btn_conv_clear_all"):
+                        ids_conv = {m.get("id") for m in conv_msgs if m.get("id")}
+                        delete_internal_chat_messages_by_ids(ids_conv)
+                        st.success("Binura na ang buong usapan!")
+                        st.rerun()
 
     if is_master and tab_all_monitor is not None:
         with tab_all_monitor:
