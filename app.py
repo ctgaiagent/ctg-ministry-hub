@@ -5599,18 +5599,22 @@ def get_week_date_for_month_year(month_name: str, week_label: str, year_val: int
 def is_auto_schedule_lock_enabled() -> bool:
     """Binabasa kung naka-enable ang Auto Unlock (Sabado 12:00 AM) at Auto Lock (Lunes Midnight / Martes–Biyernes)."""
     cfg = load_saved_config()
-    return bool(cfg.get("AUTO_SCHEDULE_LOCK_ENABLED", True))
+    mode = str(cfg.get("MANUAL_LOCK_OVERRIDE_MODE", "MANUAL"))
+    return bool(cfg.get("AUTO_SCHEDULE_LOCK_ENABLED", False)) and (mode == "AUTO")
 
 def set_auto_schedule_lock_enabled(enabled: bool):
     try:
         cfg = load_saved_config()
         cfg["AUTO_SCHEDULE_LOCK_ENABLED"] = bool(enabled)
         if enabled:
-            # Kapag in-ON ang Auto Schedule, isabay ang manual lock state sa kasalukuyang araw sa Pilipinas
             now_ph = get_philippine_now()
             is_open_day = (now_ph.weekday() in (5, 6, 0))
             cfg["DEADLINE_ENFORCEMENT_ENABLED"] = not is_open_day
             cfg["MANUAL_LOCK_OVERRIDE_MODE"] = "AUTO"
+            st.session_state["deadline_enforcement_enabled"] = not is_open_day
+            st.session_state["master_deadline_lock_toggle"] = not is_open_day
+        else:
+            cfg["MANUAL_LOCK_OVERRIDE_MODE"] = "MANUAL"
         with open(LOCAL_CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2)
     except Exception:
@@ -5621,11 +5625,8 @@ def is_deadline_enforcement_enabled() -> bool:
     Kapag naka-AUTO mode, kusang nag-a-unlock tuwing Sabado hanggang Lunes ng Hatinggabi (Monday 11:59 PM PHT)
     at kusang nagla-lock pagsapit ng Martes hanggang Biyernes."""
     cfg = load_saved_config()
-    mode = str(cfg.get("MANUAL_LOCK_OVERRIDE_MODE", "AUTO"))
-    if is_auto_schedule_lock_enabled() and mode == "AUTO":
+    if bool(cfg.get("AUTO_SCHEDULE_LOCK_ENABLED", False)) and str(cfg.get("MANUAL_LOCK_OVERRIDE_MODE", "MANUAL")) == "AUTO":
         now_ph = get_philippine_now()
-        # Weekday: 5 = Saturday, 6 = Sunday, 0 = Monday (hanggang 11:59:59 PM PHT) -> UNLOCKED (False)
-        # Weekday: 1 = Tuesday, 2 = Wednesday, 3 = Thursday, 4 = Friday -> AUTO-LOCKED (True)
         is_open_window = (now_ph.weekday() in (5, 6, 0))
         val = not is_open_window
     else:
@@ -5641,12 +5642,22 @@ def set_deadline_enforcement_enabled(enabled: bool, manual_override: bool = True
         cfg["DEADLINE_ENFORCEMENT_ENABLED"] = bool(enabled)
         if manual_override:
             cfg["MANUAL_LOCK_OVERRIDE_MODE"] = "MANUAL"
+            cfg["AUTO_SCHEDULE_LOCK_ENABLED"] = False
+            st.session_state["master_auto_sched_toggle"] = False
         if enabled:
             cfg["ADMIN_ALLOWED_SUBMISSION_OVERRIDES"] = []
         with open(LOCAL_CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2)
     except Exception:
         pass
+
+def _on_master_lock_toggle_clicked():
+    new_val = bool(st.session_state.get("master_deadline_lock_toggle", False))
+    set_deadline_enforcement_enabled(new_val, manual_override=True)
+
+def _on_master_auto_sched_clicked():
+    new_auto = bool(st.session_state.get("master_auto_sched_toggle", False))
+    set_auto_schedule_lock_enabled(new_auto)
 
 def get_admin_allowed_submission_overrides() -> list[str]:
     cfg = load_saved_config()
@@ -6650,28 +6661,22 @@ def render_weekly_report_page():
             with st.expander("🛡️ Master Admin Submission Schedule & Deadline Controller (Auto Sat–Mon Unlock/Lock & No Report Control)", expanded=True):
                 cur_auto_sched = is_auto_schedule_lock_enabled()
                 cur_dl_enabled = is_deadline_enforcement_enabled()
-                cfg_now = load_saved_config()
-                cur_mode_str = str(cfg_now.get("MANUAL_LOCK_OVERRIDE_MODE", "AUTO"))
+                st.session_state["master_deadline_lock_toggle"] = cur_dl_enabled
+                st.session_state["master_auto_sched_toggle"] = cur_auto_sched
 
                 dl_col_a, dl_col_b = st.columns([1.45, 1.35])
                 with dl_col_a:
                     lock_submission_on = st.toggle(
                         "🔒 Manual Lock / Unlock ng Pasahan (ON = Naka-LOCK ang Upload | OFF = UNLOCKED / Pwedeng Mag-upload ang mga Leaders)",
-                        value=cur_dl_enabled,
-                        key="master_deadline_lock_toggle"
+                        key="master_deadline_lock_toggle",
+                        on_change=_on_master_lock_toggle_clicked
                     )
-                    if lock_submission_on != cur_dl_enabled:
-                        set_deadline_enforcement_enabled(lock_submission_on, manual_override=True)
-                        st.rerun()
                 with dl_col_b:
                     auto_sched_on = st.toggle(
                         "⏰ Auto Unlock/Lock Schedule (Sabado 12:00 AM Auto-Unlock hanggang Lunes 11:59 PM Midnight Auto-Lock)",
-                        value=(cur_auto_sched and cur_mode_str == "AUTO"),
-                        key="master_auto_sched_toggle"
+                        key="master_auto_sched_toggle",
+                        on_change=_on_master_auto_sched_clicked
                     )
-                    if auto_sched_on != (cur_auto_sched and cur_mode_str == "AUTO"):
-                        set_auto_schedule_lock_enabled(auto_sched_on)
-                        st.rerun()
 
                 if lock_submission_on:
                     p_ov_currently_allowed = is_parish_week_allowed_by_admin(focused_parish_for_sheets, view_month, view_week)
@@ -9087,26 +9092,26 @@ def render_workflow_queue_section(df_source: pd.DataFrame, category_label: str, 
         st.info("Walang nahanap na request na tumutugma sa napiling filter.")
 
 # =====================================================================
-# ⚡ SILENT REAL-TIME LIVE SYNC WATCHER (AUTO-UPDATES ALL USERS WITHOUT MANUAL REFRESH)
+# ⚡ SILENT REAL-TIME LIVE SYNC WATCHER (NO BLINKING, UPDATES ONLY WHEN ANOTHER USER SUBMITS/CHANGES DATA)
 # =====================================================================
 def _compute_shared_state_signature() -> str:
     parts = []
-    for f_path in [LOCAL_WEEKLY_REPORTS_DB, LOCAL_CONFIG_FILE, LOCAL_NOTIFICATIONS_FILE, LOCAL_CHAT_FILE]:
+    for f_path in [LOCAL_WEEKLY_REPORTS_DB, LOCAL_CONFIG_FILE]:
         try:
             if os.path.exists(f_path):
-                st_stat = os.stat(f_path)
-                parts.append(f"{f_path}:{st_stat.st_mtime_ns}:{st_stat.st_size}")
+                with open(f_path, "rb") as f_b:
+                    parts.append(hashlib.md5(f_b.read()).hexdigest())
             else:
-                parts.append(f"{f_path}:0")
+                parts.append("0")
         except Exception:
-            parts.append(f"{f_path}:err")
+            parts.append("0")
     return "|".join(parts)
 
-if "_last_live_sync_sig" not in st.session_state:
-    st.session_state["_last_live_sync_sig"] = _compute_shared_state_signature()
+# Always sync signature at the start of every full page render so our own actions never cause a secondary blink/rerun
+st.session_state["_last_live_sync_sig"] = _compute_shared_state_signature()
 
 if hasattr(st, "fragment"):
-    @st.fragment(run_every="3s")
+    @st.fragment(run_every="6s")
     def _silent_realtime_state_watcher():
         cur_sig = _compute_shared_state_signature()
         prev_sig = st.session_state.get("_last_live_sync_sig", "")
@@ -9114,8 +9119,6 @@ if hasattr(st, "fragment"):
             st.session_state["_last_live_sync_sig"] = cur_sig
             st.cache_data.clear()
             st.rerun()
-        else:
-            st.session_state["_last_live_sync_sig"] = cur_sig
 
     _silent_realtime_state_watcher()
 
