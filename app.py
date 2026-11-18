@@ -3060,15 +3060,16 @@ def write_pwr_attendance_and_remarks(ws, data_row: dict, parish_name: str = "", 
     tot_y = int(data_row.get("total_members_y", 0)) or len(youth_named_rows)
     tot_k = int(data_row.get("total_members_k", 0)) or len(kids_named_rows)
 
+    is_no_rep_excel = bool(data_row.get("no_report_locked")) or str(data_row.get("priest", "")).strip().upper() == "(NO REPORT)"
     if total_row_idx:
         for c_i, val_t in [(4, m_tot), (5, p_tot), (6, o_tot), (7, y_tot), (8, k_tot), (9, ad_tot)]:
-            set_excel_cell_safely(ws, total_row_idx, c_i, val_t, preserve_formula=True)
+            set_excel_cell_safely(ws, total_row_idx, c_i, "(No Report)" if is_no_rep_excel else val_t, preserve_formula=not is_no_rep_excel)
     if avg_row_idx:
         for c_i, att_v, den_v in [
             (4, m_tot, tot_say), (5, p_tot, tot_say), (6, o_tot, tot_say),
             (7, y_tot, tot_y), (8, k_tot, tot_k), (9, ad_tot, tot_say)
         ]:
-            set_excel_cell_safely(ws, avg_row_idx, c_i, calc_pct_str(att_v, den_v), preserve_formula=True)
+            set_excel_cell_safely(ws, avg_row_idx, c_i, "(No Report)" if is_no_rep_excel else calc_pct_str(att_v, den_v), preserve_formula=not is_no_rep_excel)
 
     rem_txt = str(data_row.get("remarks", "")).strip()
     if not rem_txt:
@@ -3441,40 +3442,47 @@ def update_master_pwr_excel_file(parish: str, month: str, week_num: str, report_
             write_pwr_header_fields(ws_pwr, data_row, report_date, parish_name=parish, week_name=week_num)
             write_pwr_attendance_and_remarks(ws_pwr, data_row, parish_name=parish, week_name=week_num)
 
-        # 1. Update PARISH MONITORING REPORT sheet safely (preserving any Excel formulas!)
+        is_no_rep_row = bool(data_row.get("no_report_locked")) or str(data_row.get("priest", "")).strip().upper() == "(NO REPORT)"
+        keep_form = not is_no_rep_row
+
+        # 1. Update PARISH MONITORING REPORT sheet safely (writing '(No Report)' when marked as No Report!)
         if "PARISH MONITORING REPORT" in wb.sheetnames:
             ws = wb["PARISH MONITORING REPORT"]
             found_p = False
             for r_idx in range(5, ws.max_row + 1):
                 cell_val = str(ws.cell(row=r_idx, column=1).value or "").upper()
                 if clean_p and clean_p in cell_val:
-                    set_excel_cell_safely(ws, r_idx, 1, f"{clean_p} ({report_date})", preserve_formula=True)
-                    set_excel_cell_safely(ws, r_idx, 2, int(re.sub(r"\D", "", str(week_num)) or 1), preserve_formula=True)
-                    set_excel_cell_safely(ws, r_idx, 3, f"A-{data_row['mass_a']}\nY-{data_row['mass_y']}", preserve_formula=True)
-                    set_excel_cell_safely(ws, r_idx, 4, f"A-{data_row['pampamilya_a']}\nY-{data_row['pampamilya_y']}", preserve_formula=True)
-                    set_excel_cell_safely(ws, r_idx, 5, f"A-{data_row['online_a']}\nY-{data_row['online_y']}", preserve_formula=True)
-                    set_excel_cell_safely(ws, r_idx, 6, f"Y-{data_row['youth_y']}", preserve_formula=True)
-                    set_excel_cell_safely(ws, r_idx, 7, f"K-{data_row['kids_k']}", preserve_formula=True)
-                    set_excel_cell_safely(ws, r_idx, 8, f"A-{data_row['adal_a']}\nY-{data_row['adal_y']}", preserve_formula=True)
-                    set_excel_cell_safely(ws, r_idx, 9, data_row.get("house_visitation", "0"), preserve_formula=True)
-                    set_excel_cell_safely(ws, r_idx, 10, data_row.get("missionary_work", "0"), preserve_formula=True)
-                    set_excel_cell_safely(ws, r_idx, 11, data_row.get("indoctrination", "0"), preserve_formula=True)
-                    set_excel_cell_safely(ws, r_idx, 12, data_row.get("remarks", ""), preserve_formula=True)
+                    p_lbl_cell = f"{clean_p} ({report_date}) - (No Report)" if is_no_rep_row else f"{clean_p} ({report_date})"
+                    set_excel_cell_safely(ws, r_idx, 1, p_lbl_cell, preserve_formula=keep_form)
+                    set_excel_cell_safely(ws, r_idx, 2, int(re.sub(r"\D", "", str(week_num)) or 1), preserve_formula=keep_form)
+                    set_excel_cell_safely(ws, r_idx, 3, "(No Report)" if is_no_rep_row else f"A-{data_row['mass_a']}\nY-{data_row['mass_y']}", preserve_formula=keep_form)
+                    set_excel_cell_safely(ws, r_idx, 4, "(No Report)" if is_no_rep_row else f"A-{data_row['pampamilya_a']}\nY-{data_row['pampamilya_y']}", preserve_formula=keep_form)
+                    set_excel_cell_safely(ws, r_idx, 5, "(No Report)" if is_no_rep_row else f"A-{data_row['online_a']}\nY-{data_row['online_y']}", preserve_formula=keep_form)
+                    set_excel_cell_safely(ws, r_idx, 6, "(No Report)" if is_no_rep_row else f"Y-{data_row['youth_y']}", preserve_formula=keep_form)
+                    set_excel_cell_safely(ws, r_idx, 7, "(No Report)" if is_no_rep_row else f"K-{data_row['kids_k']}", preserve_formula=keep_form)
+                    set_excel_cell_safely(ws, r_idx, 8, "(No Report)" if is_no_rep_row else f"A-{data_row['adal_a']}\nY-{data_row['adal_y']}", preserve_formula=keep_form)
+                    set_excel_cell_safely(ws, r_idx, 9, "(No Report)" if is_no_rep_row else data_row.get("house_visitation", "0"), preserve_formula=keep_form)
+                    set_excel_cell_safely(ws, r_idx, 10, "(No Report)" if is_no_rep_row else data_row.get("missionary_work", "0"), preserve_formula=keep_form)
+                    set_excel_cell_safely(ws, r_idx, 11, "(No Report)" if is_no_rep_row else data_row.get("indoctrination", "0"), preserve_formula=keep_form)
+                    set_excel_cell_safely(ws, r_idx, 12, "(No Report)" if is_no_rep_row else data_row.get("remarks", ""), preserve_formula=keep_form)
                     found_p = True
                     break
             if not found_p:
                 ws.append([
-                    f"{clean_p} ({report_date})", int(re.sub(r"\D", "", str(week_num)) or 1),
-                    f"A-{data_row['mass_a']}\nY-{data_row['mass_y']}",
-                    f"A-{data_row['pampamilya_a']}\nY-{data_row['pampamilya_y']}",
-                    f"A-{data_row['online_a']}\nY-{data_row['online_y']}",
-                    f"Y-{data_row['youth_y']}", f"K-{data_row['kids_k']}",
-                    f"A-{data_row['adal_a']}\nY-{data_row['adal_y']}",
-                    data_row.get("house_visitation", "0"), data_row.get("missionary_work", "0"),
-                    data_row.get("indoctrination", "0"), data_row.get("remarks", "")
+                    f"{clean_p} ({report_date})" + (" - (No Report)" if is_no_rep_row else ""), int(re.sub(r"\D", "", str(week_num)) or 1),
+                    "(No Report)" if is_no_rep_row else f"A-{data_row['mass_a']}\nY-{data_row['mass_y']}",
+                    "(No Report)" if is_no_rep_row else f"A-{data_row['pampamilya_a']}\nY-{data_row['pampamilya_y']}",
+                    "(No Report)" if is_no_rep_row else f"A-{data_row['online_a']}\nY-{data_row['online_y']}",
+                    "(No Report)" if is_no_rep_row else f"Y-{data_row['youth_y']}",
+                    "(No Report)" if is_no_rep_row else f"K-{data_row['kids_k']}",
+                    "(No Report)" if is_no_rep_row else f"A-{data_row['adal_a']}\nY-{data_row['adal_y']}",
+                    "(No Report)" if is_no_rep_row else data_row.get("house_visitation", "0"),
+                    "(No Report)" if is_no_rep_row else data_row.get("missionary_work", "0"),
+                    "(No Report)" if is_no_rep_row else data_row.get("indoctrination", "0"),
+                    "(No Report)" if is_no_rep_row else data_row.get("remarks", "")
                 ])
 
-        # 2. Update SUMMARY FOR POSTING sheet safely (preserving any Excel formulas & avoiding MergedCell errors!)
+        # 2. Update SUMMARY FOR POSTING sheet safely
         if "SUMMARY FOR POSTING" in wb.sheetnames:
             ws_s = wb["SUMMARY FOR POSTING"]
             for r_idx in range(1, ws_s.max_row + 1):
@@ -3493,27 +3501,27 @@ def update_master_pwr_excel_file(parish: str, month: str, week_num: str, report_
                             else:
                                 set_excel_cell_safely(ws_s, sub_r, 3, tot_say, preserve_formula=True)
                         elif "TOTAL OF ATTENDEES" in lbl:
-                            set_excel_cell_safely(ws_s, sub_r, 2, m_att, preserve_formula=True)
+                            set_excel_cell_safely(ws_s, sub_r, 2, "(No Report)" if is_no_rep_row else m_att, preserve_formula=keep_form)
                             if "HONG" not in clean_p:
-                                set_excel_cell_safely(ws_s, sub_r, 3, p_att, preserve_formula=True)
-                                set_excel_cell_safely(ws_s, sub_r, 4, o_att, preserve_formula=True)
-                                set_excel_cell_safely(ws_s, sub_r, 5, y_att, preserve_formula=True)
-                                set_excel_cell_safely(ws_s, sub_r, 6, k_att, preserve_formula=True)
-                                set_excel_cell_safely(ws_s, sub_r, 7, ad_att, preserve_formula=True)
-                                set_excel_cell_safely(ws_s, sub_r, 8, parse_int_from_text(data_row.get("house_visitation", "0")), preserve_formula=True)
-                                set_excel_cell_safely(ws_s, sub_r, 9, parse_int_from_text(data_row.get("missionary_work", "0")) + parse_int_from_text(data_row.get("indoctrination", "0")), preserve_formula=True)
+                                set_excel_cell_safely(ws_s, sub_r, 3, "(No Report)" if is_no_rep_row else p_att, preserve_formula=keep_form)
+                                set_excel_cell_safely(ws_s, sub_r, 4, "(No Report)" if is_no_rep_row else o_att, preserve_formula=keep_form)
+                                set_excel_cell_safely(ws_s, sub_r, 5, "(No Report)" if is_no_rep_row else y_att, preserve_formula=keep_form)
+                                set_excel_cell_safely(ws_s, sub_r, 6, "(No Report)" if is_no_rep_row else k_att, preserve_formula=keep_form)
+                                set_excel_cell_safely(ws_s, sub_r, 7, "(No Report)" if is_no_rep_row else ad_att, preserve_formula=keep_form)
+                                set_excel_cell_safely(ws_s, sub_r, 8, "(No Report)" if is_no_rep_row else parse_int_from_text(data_row.get("house_visitation", "0")), preserve_formula=keep_form)
+                                set_excel_cell_safely(ws_s, sub_r, 9, "(No Report)" if is_no_rep_row else (parse_int_from_text(data_row.get("missionary_work", "0")) + parse_int_from_text(data_row.get("indoctrination", "0"))), preserve_formula=keep_form)
                             else:
-                                set_excel_cell_safely(ws_s, sub_r, 3, o_att, preserve_formula=True)
+                                set_excel_cell_safely(ws_s, sub_r, 3, "(No Report)" if is_no_rep_row else o_att, preserve_formula=keep_form)
                         elif "TOTAL AVERAGE" in lbl or "AVERAGE" in lbl:
-                            set_excel_cell_safely(ws_s, sub_r, 2, calc_pct_str(m_att, tot_say), preserve_formula=True)
+                            set_excel_cell_safely(ws_s, sub_r, 2, "(No Report)" if is_no_rep_row else calc_pct_str(m_att, tot_say), preserve_formula=keep_form)
                             if "HONG" not in clean_p:
-                                set_excel_cell_safely(ws_s, sub_r, 3, calc_pct_str(p_att, tot_say), preserve_formula=True)
-                                set_excel_cell_safely(ws_s, sub_r, 4, calc_pct_str(o_att, tot_say), preserve_formula=True)
-                                set_excel_cell_safely(ws_s, sub_r, 5, calc_pct_str(y_att, tot_y), preserve_formula=True)
-                                set_excel_cell_safely(ws_s, sub_r, 6, calc_pct_str(k_att, tot_k), preserve_formula=True)
-                                set_excel_cell_safely(ws_s, sub_r, 7, calc_pct_str(ad_att, tot_say), preserve_formula=True)
+                                set_excel_cell_safely(ws_s, sub_r, 3, "(No Report)" if is_no_rep_row else calc_pct_str(p_att, tot_say), preserve_formula=keep_form)
+                                set_excel_cell_safely(ws_s, sub_r, 4, "(No Report)" if is_no_rep_row else calc_pct_str(o_att, tot_say), preserve_formula=keep_form)
+                                set_excel_cell_safely(ws_s, sub_r, 5, "(No Report)" if is_no_rep_row else calc_pct_str(y_att, tot_y), preserve_formula=keep_form)
+                                set_excel_cell_safely(ws_s, sub_r, 6, "(No Report)" if is_no_rep_row else calc_pct_str(k_att, tot_k), preserve_formula=keep_form)
+                                set_excel_cell_safely(ws_s, sub_r, 7, "(No Report)" if is_no_rep_row else calc_pct_str(ad_att, tot_say), preserve_formula=keep_form)
                             else:
-                                set_excel_cell_safely(ws_s, sub_r, 3, calc_pct_str(o_att, tot_say), preserve_formula=True)
+                                set_excel_cell_safely(ws_s, sub_r, 3, "(No Report)" if is_no_rep_row else calc_pct_str(o_att, tot_say), preserve_formula=keep_form)
                     break
 
         out_buf = io.BytesIO()
@@ -3529,13 +3537,37 @@ def update_master_pwr_excel_file(parish: str, month: str, week_num: str, report_
                 mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 resumable=True
             )
+            # Kung may naka-save na partikular na Parish Workbook link sa Saved Links Registry para sa parokyang ito, i-update din iyon sa Google Drive
+            try:
+                for reg_it in load_saved_drive_links_registry():
+                    r_url = str(reg_it.get("url", "")).strip()
+                    r_par = str(reg_it.get("parish", "")).upper()
+                    r_lbl = str(reg_it.get("label", "")).upper()
+                    if r_url and "/folders/" not in r_url and clean_p and (clean_p in r_par or clean_p in r_lbl):
+                        p_fid = extract_id_from_url(r_url)
+                        if p_fid and p_fid != drive_file_id:
+                            p_bytes = service.files().get_media(fileId=p_fid, supportsAllDrives=True).execute()
+                            wb_p = openpyxl.load_workbook(io.BytesIO(p_bytes))
+                            ensure_all_12_month_sheets_in_parish_workbook(wb_p, parish_name=parish)
+                            m_ws_p = find_month_sheet_in_workbook(wb_p, month)
+                            if m_ws_p is not None:
+                                write_pwr_header_fields(m_ws_p, data_row, report_date, parish_name=parish, week_name=week_num)
+                                write_pwr_attendance_and_remarks(m_ws_p, data_row, parish_name=parish, week_name=week_num)
+                                b_p = io.BytesIO()
+                                wb_p.save(b_p)
+                                media_p = MediaIoBaseUpload(io.BytesIO(b_p.getvalue()), mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", resumable=True)
+                                service.files().update(fileId=p_fid, media_body=media_p, supportsAllDrives=True).execute()
+            except Exception:
+                pass
+
             if drive_file_id:
-                service.files().update(fileId=drive_file_id, media_body=media).execute()
+                service.files().update(fileId=drive_file_id, media_body=media, supportsAllDrives=True).execute()
                 return True, f"Matagumpay na na-type sa PARISH WEEKLY REPORT at na-update ang '{target_master_name}' sa Google Drive!"
             elif target_month_folder_id:
                 service.files().create(
                     body={"name": target_master_name, "parents": [target_month_folder_id]},
-                    media_body=media
+                    media_body=media,
+                    supportsAllDrives=True
                 ).execute()
                 return True, f"Nalikha at na-update ang '{target_master_name}' sa Google Drive!"
         return True, "Na-save sa lokal na Master Excel!"
@@ -5564,21 +5596,52 @@ def get_week_date_for_month_year(month_name: str, week_label: str, year_val: int
     except Exception:
         return "01/02/27"
 
-def is_deadline_enforcement_enabled() -> bool:
-    """Binabasa mula sa shared config kung naka-ON (Locked: hindi makakapag-upload ang mga Leaders) o naka-OFF (Open: pwedeng mag-upload ang mga Leaders) ang Deadline Controller."""
+def is_auto_schedule_lock_enabled() -> bool:
+    """Binabasa kung naka-enable ang Auto Unlock (Sabado 12:00 AM) at Auto Lock (Lunes Midnight / Martes–Biyernes)."""
     cfg = load_saved_config()
-    val = bool(cfg.get("DEADLINE_ENFORCEMENT_ENABLED", False))
+    return bool(cfg.get("AUTO_SCHEDULE_LOCK_ENABLED", True))
+
+def set_auto_schedule_lock_enabled(enabled: bool):
+    try:
+        cfg = load_saved_config()
+        cfg["AUTO_SCHEDULE_LOCK_ENABLED"] = bool(enabled)
+        if enabled:
+            # Kapag in-ON ang Auto Schedule, isabay ang manual lock state sa kasalukuyang araw sa Pilipinas
+            now_ph = get_philippine_now()
+            is_open_day = (now_ph.weekday() in (5, 6, 0))
+            cfg["DEADLINE_ENFORCEMENT_ENABLED"] = not is_open_day
+            cfg["MANUAL_LOCK_OVERRIDE_MODE"] = "AUTO"
+        with open(LOCAL_CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
+    except Exception:
+        pass
+
+def is_deadline_enforcement_enabled() -> bool:
+    """Binabasa mula sa shared config kung naka-LOCK (True) o UNLOCKED (False) ang Upload ng mga Leaders.
+    Kapag naka-AUTO mode, kusang nag-a-unlock tuwing Sabado hanggang Lunes ng Hatinggabi (Monday 11:59 PM PHT)
+    at kusang nagla-lock pagsapit ng Martes hanggang Biyernes."""
+    cfg = load_saved_config()
+    mode = str(cfg.get("MANUAL_LOCK_OVERRIDE_MODE", "AUTO"))
+    if is_auto_schedule_lock_enabled() and mode == "AUTO":
+        now_ph = get_philippine_now()
+        # Weekday: 5 = Saturday, 6 = Sunday, 0 = Monday (hanggang 11:59:59 PM PHT) -> UNLOCKED (False)
+        # Weekday: 1 = Tuesday, 2 = Wednesday, 3 = Thursday, 4 = Friday -> AUTO-LOCKED (True)
+        is_open_window = (now_ph.weekday() in (5, 6, 0))
+        val = not is_open_window
+    else:
+        val = bool(cfg.get("DEADLINE_ENFORCEMENT_ENABLED", False))
     st.session_state["deadline_enforcement_enabled"] = val
     return val
 
-def set_deadline_enforcement_enabled(enabled: bool):
-    """Sine-save ang ON/OFF state ng Submission Deadline Lock para sa lahat ng users."""
+def set_deadline_enforcement_enabled(enabled: bool, manual_override: bool = True):
+    """Sine-save ang manual Lock (True) o Unlock (False) state ng Submission Deadline Controller para sa lahat ng users."""
     st.session_state["deadline_enforcement_enabled"] = bool(enabled)
     try:
         cfg = load_saved_config()
         cfg["DEADLINE_ENFORCEMENT_ENABLED"] = bool(enabled)
+        if manual_override:
+            cfg["MANUAL_LOCK_OVERRIDE_MODE"] = "MANUAL"
         if enabled:
-            # Kapag in-ON ni Master Admin ang Deadline Lock, i-reset ang overrides para sarado agad sa lahat ng Leaders
             cfg["ADMIN_ALLOWED_SUBMISSION_OVERRIDES"] = []
         with open(LOCAL_CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2)
@@ -5586,7 +5649,6 @@ def set_deadline_enforcement_enabled(enabled: bool):
         pass
 
 def get_admin_allowed_submission_overrides() -> list[str]:
-    """Listahan ng mga partikular na 'PARISH__MONTH__WEEK' na binigyan ng pahintulot ni Master Admin habang naka-ON ang global lock."""
     cfg = load_saved_config()
     overrides = cfg.get("ADMIN_ALLOWED_SUBMISSION_OVERRIDES", [])
     return overrides if isinstance(overrides, list) else []
@@ -5618,11 +5680,6 @@ def is_parish_week_allowed_by_admin(parish_name: str, month_name: str, week_labe
     )
 
 def evaluate_reporting_deadline(month_name: str, week_label: str, year_val: int = 2027, parish_name: str = "") -> dict:
-    """Sinusuri ang Submission Schedule & Deadline Controller:
-    - Kapag NAKA-ON ang Deadline Controller (deadline_switch_on == True) at walang per-parish override:
-      SARADO ang pasahan (is_past_deadline = True) — hindi makakapag-upload ang mga Leaders, at ang mga hindi nakapag-submit sa araw ng pasahan ay nilalagyan ng '(No Report)'.
-    - Kapag NAKA-OFF ang Deadline Controller (deadline_switch_on == False):
-      BUKAS ang pasahan (is_past_deadline = False) — maaaring mag-upload at mag-submit ang mga Parish Leaders."""
     sats = get_saturdays_for_month_year(month_name, year_val)
     w_idx = WEEKS_2027.index(week_label) if week_label in WEEKS_2027 else 0
     sat_dt = sats[min(w_idx, len(sats) - 1)] if sats else datetime(int(year_val), 1, 2, tzinfo=PH_TIMEZONE)
@@ -5985,25 +6042,26 @@ def build_parish_member_attendance_sheet_df(parish_name: str, selected_month: st
     k_tot = int(rec.get("kids_k", 0)) if has_done else 0
     ad_tot = (int(rec.get("adal_a", 0)) + int(rec.get("adal_y", 0))) if has_done else 0
 
+    is_no_rep_mem = is_record_marked_no_report(rec)
     rows.append({
-        first_col: "TOTAL:",
-        "A.M & P.M Mass": "",
-        "Mass": str(m_tot),
-        "Pampamilya": str(p_tot),
-        "Online Ministry": str(o_tot),
-        "Youth Fellowship": str(y_tot),
-        "Kids Fellowship": str(k_tot),
-        "Adal ti Evangelio": str(ad_tot)
+        first_col: "TOTAL:" + (" (No Report)" if is_no_rep_mem else ""),
+        "A.M & P.M Mass": "(No Report)" if is_no_rep_mem else "",
+        "Mass": "(No Report)" if is_no_rep_mem else str(m_tot),
+        "Pampamilya": "(No Report)" if is_no_rep_mem else str(p_tot),
+        "Online Ministry": "(No Report)" if is_no_rep_mem else str(o_tot),
+        "Youth Fellowship": "(No Report)" if is_no_rep_mem else str(y_tot),
+        "Kids Fellowship": "(No Report)" if is_no_rep_mem else str(k_tot),
+        "Adal ti Evangelio": "(No Report)" if is_no_rep_mem else str(ad_tot)
     })
     rows.append({
         first_col: "AVERAGE:",
-        "A.M & P.M Mass": "",
-        "Mass": calc_pct_str(m_tot, tot_say),
-        "Pampamilya": calc_pct_str(p_tot, tot_say),
-        "Online Ministry": calc_pct_str(o_tot, tot_say),
-        "Youth Fellowship": calc_pct_str(y_tot, tot_y),
-        "Kids Fellowship": calc_pct_str(k_tot, tot_k),
-        "Adal ti Evangelio": calc_pct_str(ad_tot, tot_say)
+        "A.M & P.M Mass": "(No Report)" if is_no_rep_mem else "",
+        "Mass": "(No Report)" if is_no_rep_mem else calc_pct_str(m_tot, tot_say),
+        "Pampamilya": "(No Report)" if is_no_rep_mem else calc_pct_str(p_tot, tot_say),
+        "Online Ministry": "(No Report)" if is_no_rep_mem else calc_pct_str(o_tot, tot_say),
+        "Youth Fellowship": "(No Report)" if is_no_rep_mem else calc_pct_str(y_tot, tot_y),
+        "Kids Fellowship": "(No Report)" if is_no_rep_mem else calc_pct_str(k_tot, tot_k),
+        "Adal ti Evangelio": "(No Report)" if is_no_rep_mem else calc_pct_str(ad_tot, tot_say)
     })
 
     totals_meta = {
@@ -6589,33 +6647,45 @@ def render_weekly_report_page():
     ctrl_bar_1, ctrl_bar_2 = st.columns([1.85, 1.15]) if is_master else ([None, st.container()])
     if is_master and ctrl_bar_1 is not None:
         with ctrl_bar_1:
-            with st.expander("🛡️ Master Admin Submission Schedule & Deadline Controller (Lock/Unlock Upload & No Report Control)", expanded=True):
+            with st.expander("🛡️ Master Admin Submission Schedule & Deadline Controller (Auto Sat–Mon Unlock/Lock & No Report Control)", expanded=True):
+                cur_auto_sched = is_auto_schedule_lock_enabled()
                 cur_dl_enabled = is_deadline_enforcement_enabled()
+                cfg_now = load_saved_config()
+                cur_mode_str = str(cfg_now.get("MANUAL_LOCK_OVERRIDE_MODE", "AUTO"))
+
                 dl_col_a, dl_col_b = st.columns([1.45, 1.35])
                 with dl_col_a:
                     lock_submission_on = st.toggle(
-                        "🔒 Lock / Unlock ang Pasahan ng Report (ON = Naka-LOCK ang Upload ng mga Leaders | OFF = UNLOCKED / Pwedeng Mag-upload ang mga Leaders)",
+                        "🔒 Manual Lock / Unlock ng Pasahan (ON = Naka-LOCK ang Upload | OFF = UNLOCKED / Pwedeng Mag-upload ang mga Leaders)",
                         value=cur_dl_enabled,
                         key="master_deadline_lock_toggle"
                     )
                     if lock_submission_on != cur_dl_enabled:
-                        set_deadline_enforcement_enabled(lock_submission_on)
+                        set_deadline_enforcement_enabled(lock_submission_on, manual_override=True)
                         st.rerun()
                 with dl_col_b:
-                    if lock_submission_on:
-                        p_ov_currently_allowed = is_parish_week_allowed_by_admin(focused_parish_for_sheets, view_month, view_week)
-                        ov_btn_lbl = (
-                            f"🔒 I-lock Muli ang Upload ({focused_parish_for_sheets})"
-                            if p_ov_currently_allowed
-                            else f"🔓 I-unlock Lang para sa {focused_parish_for_sheets}"
-                        )
-                        if st.button(ov_btn_lbl, use_container_width=True, key="btn_parish_wk_override"):
-                            set_admin_allowed_submission_override(focused_parish_for_sheets, view_month, view_week, not p_ov_currently_allowed)
-                            st.rerun()
-                    else:
-                        st.caption("🔓 **Status: UNLOCKED (Bukas ang Pasahan)** — Maaaring mag-upload ang mga Parish Leaders sa `Upload the Image / Excel File Here!`.")
+                    auto_sched_on = st.toggle(
+                        "⏰ Auto Unlock/Lock Schedule (Sabado 12:00 AM Auto-Unlock hanggang Lunes 11:59 PM Midnight Auto-Lock)",
+                        value=(cur_auto_sched and cur_mode_str == "AUTO"),
+                        key="master_auto_sched_toggle"
+                    )
+                    if auto_sched_on != (cur_auto_sched and cur_mode_str == "AUTO"):
+                        set_auto_schedule_lock_enabled(auto_sched_on)
+                        st.rerun()
+
                 if lock_submission_on:
-                    st.caption("🔒 **Status: NAKA-LOCK ANG PASAHAN** — Hindi makakapag-upload ang mga Parish Leaders sa `Upload the Image / Excel File Here!` hangga't hindi ina-unlock (OFF) ng Master Admin.")
+                    p_ov_currently_allowed = is_parish_week_allowed_by_admin(focused_parish_for_sheets, view_month, view_week)
+                    ov_btn_lbl = (
+                        f"🔒 I-lock Muli ang Upload ({focused_parish_for_sheets})"
+                        if p_ov_currently_allowed
+                        else f"🔓 I-unlock Lang para sa {focused_parish_for_sheets}"
+                    )
+                    if st.button(ov_btn_lbl, use_container_width=True, key="btn_parish_wk_override"):
+                        set_admin_allowed_submission_override(focused_parish_for_sheets, view_month, view_week, not p_ov_currently_allowed)
+                        st.rerun()
+                    st.caption("🔒 **Status: NAKA-LOCK ANG PASAHAN** — Hindi makakapag-upload ang mga Parish Leaders sa `Upload the Image / Excel File Here!` (Auto-unlock tuwing Sabado o kapag in-OFF mo ang Lock).")
+                else:
+                    st.caption("🔓 **Status: UNLOCKED (Bukas ang Pasahan)** — Maaaring mag-upload ang mga Parish Leaders sa `Upload the Image / Excel File Here!` (Auto-lock pagsapit ng Lunes 11:59 PM Midnight).")
 
                 st.markdown("---")
                 st.markdown("##### 📌 Master Admin `(No Report)` Controller (Piliin kung aling Parokya, Buwan, at Linggo ang Lalagyan ng `No Report`)")
@@ -6786,85 +6856,20 @@ def render_weekly_report_page():
                 ad_y = st.number_input("Adal ti Evang. (Y):", min_value=0, value=int(cur_rec.get("adal_y", 0)), key=f"vady_{f_rev}")
 
             parsed_cur_ro = parse_remarks_into_mass_and_outreach(str(cur_rec.get("remarks", "")))
-            b1, b2, b3, b4 = st.columns(4)
-            with b1:
-                v_date = st.text_input("Petsa (MM/DD/YY):", value=default_wk_date, key=f"vdt_{f_rev}")
-            with b2:
-                v_hv = st.text_input("House Visitation (Bilang Pamilya):", value=str(cur_rec.get("house_visitation", "0")), key=f"vhv_{f_rev}")
-            with b3:
-                def_mw_cnt = str(cur_rec.get("missionary_work", "0"))
-                if def_mw_cnt == "0" and parsed_cur_ro.get("mw_families_count", 0) > 0:
-                    def_mw_cnt = str(parsed_cur_ro["mw_families_count"])
-                v_mw = st.text_input("Missionary Work (Bilang Pamilya):", value=def_mw_cnt, key=f"vmw_{f_rev}")
-            with b4:
-                v_ind = st.text_input("Indoctrination (Bilang Pamilya):", value=str(cur_rec.get("indoctrination", "0")), key=f"vind_{f_rev}")
-
-            with st.expander("🏠 Outreach Details: Family Names, Mga Pangalan ng Tao, Total Tao & Remarks (House Visitation, Missionary Work, Indoctrination)", expanded=False):
-                st.markdown("**1️⃣ House Visitation (Requirements: 10 Families Member or Non-Member):**")
-                hv_c1, hv_c2 = st.columns([2.2, 1.0])
-                with hv_c1:
-                    v_hv_names = st.text_area(
-                        "House Visitation — Family Names & Mga Pangalan (Hal. Dela Cruz Family: Juan D., Maria D.):",
-                        value=str(cur_rec.get("hv_names", "") or parsed_cur_ro.get("hv_names", "")),
-                        height=68,
-                        key=f"vhvn_{f_rev}"
-                    )
-                with hv_c2:
-                    v_hv_ppl = st.number_input(
-                        "Total Tao sa House Visitation:",
-                        min_value=0,
-                        value=int(cur_rec.get("hv_people_count", 0) or parsed_cur_ro.get("hv_people_count", 0)),
-                        key=f"vhvp_{f_rev}"
-                    )
-                    v_hv_rem = st.text_input(
-                        "Remarks sa House Visitation:",
-                        value=str(cur_rec.get("hv_remarks", "") or parsed_cur_ro.get("hv_remarks", "")),
-                        key=f"vhvr_{f_rev}"
-                    )
-
-                st.markdown("**2️⃣ Missionary Work:**")
-                mw_c1, mw_c2 = st.columns([2.2, 1.0])
-                with mw_c1:
-                    v_mw_names = st.text_area(
-                        "Missionary Work — Family Names & Mga Pangalan ng Dumalo:",
-                        value=str(cur_rec.get("mw_names", "") or parsed_cur_ro.get("mw_names", "")),
-                        height=68,
-                        key=f"vmwn_{f_rev}"
-                    )
-                with mw_c2:
-                    v_mw_ppl = st.number_input(
-                        "Total Tao sa Missionary Work:",
-                        min_value=0,
-                        value=int(cur_rec.get("mw_people_count", 0) or parsed_cur_ro.get("mw_people_count", 0)),
-                        key=f"vmwp_{f_rev}"
-                    )
-                    v_mw_rem = st.text_input(
-                        "Remarks sa Missionary Work:",
-                        value=str(cur_rec.get("mw_remarks", "") or parsed_cur_ro.get("mw_remarks", "")),
-                        key=f"vmwr_{f_rev}"
-                    )
-
-                st.markdown("**3️⃣ Indoctrination (Family Name of a Family Under Indoctrination):**")
-                ind_c1, ind_c2 = st.columns([2.2, 1.0])
-                with ind_c1:
-                    v_ind_names = st.text_area(
-                        "Indoctrination — Family Names & Mga Pangalan:",
-                        value=str(cur_rec.get("ind_names", "") or parsed_cur_ro.get("ind_names", "")),
-                        height=68,
-                        key=f"vindn_{f_rev}"
-                    )
-                with ind_c2:
-                    v_ind_ppl = st.number_input(
-                        "Total Tao sa Indoctrination:",
-                        min_value=0,
-                        value=int(cur_rec.get("ind_people_count", 0) or parsed_cur_ro.get("ind_people_count", 0)),
-                        key=f"vindp_{f_rev}"
-                    )
-                    v_ind_rem = st.text_input(
-                        "Remarks sa Indoctrination:",
-                        value=str(cur_rec.get("ind_remarks", "") or parsed_cur_ro.get("ind_remarks", "")),
-                        key=f"vindr_{f_rev}"
-                    )
+            v_date = st.text_input("Petsa ng Pagsamba / Sabado (MM/DD/YY):", value=default_wk_date, key=f"vdt_{f_rev}")
+            # Panatilihin ang kasalukuyang Outreach data mula sa nakahiwalay na pahina ng House Visitation, Missionary Work & Indoctrination
+            v_hv = str(cur_rec.get("house_visitation", "0"))
+            v_hv_names = str(cur_rec.get("hv_names", "") or parsed_cur_ro.get("hv_names", ""))
+            v_hv_ppl = int(cur_rec.get("hv_people_count", 0) or parsed_cur_ro.get("hv_people_count", 0))
+            v_hv_rem = str(cur_rec.get("hv_remarks", "") or parsed_cur_ro.get("hv_remarks", ""))
+            v_mw = str(cur_rec.get("missionary_work", "0"))
+            v_mw_names = str(cur_rec.get("mw_names", "") or parsed_cur_ro.get("mw_names", ""))
+            v_mw_ppl = int(cur_rec.get("mw_people_count", 0) or parsed_cur_ro.get("mw_people_count", 0))
+            v_mw_rem = str(cur_rec.get("mw_remarks", "") or parsed_cur_ro.get("mw_remarks", ""))
+            v_ind = str(cur_rec.get("indoctrination", "0"))
+            v_ind_names = str(cur_rec.get("ind_names", "") or parsed_cur_ro.get("ind_names", ""))
+            v_ind_ppl = int(cur_rec.get("ind_people_count", 0) or parsed_cur_ro.get("ind_people_count", 0))
+            v_ind_rem = str(cur_rec.get("ind_remarks", "") or parsed_cur_ro.get("ind_remarks", ""))
 
             v_mass_rem = st.text_area(
                 "Remarks para sa Nag-attend ng Mass / Pampamilya / Adal / House Church / Online Mass / Visitors (Galing sa Image/Excel Report):",
@@ -7005,19 +7010,14 @@ def render_weekly_report_page():
             is_up_locked = bool(up_dl_info["is_past_deadline"])
             if is_marked_nr_up:
                 st.error(
-                    f"⛔ **(No Report) — Ang {target_parish} para sa {sel_month} ({sel_week}, Petsa: `{up_dl_info['saturday_date_str']}`) ay naka-marka bilang `(No Report)`.** "
-                    + ("Naka-LOCK din ang pasahan sa ngayon." if is_up_locked else "Bukas (Unlocked) ang pasahan kung nais mong mag-upload ngayon.")
-                )
-            elif is_up_locked:
-                st.warning(
-                    f"🔒 **Naka-LOCK ang Pasahan para sa {target_parish}: {sel_month} ({sel_week})!** "
-                    f"Naka-ON ang Upload Lock ng Master Admin (**Sabado hanggang Lunes ng Hatinggabi — `{up_dl_info['monday_deadline_str']}`**). "
-                    f"Makakapag-upload lamang kapag in-OFF (Unlocked) ng Master Admin ang lock."
+                    f"⛔ **(No Report) — Ang {target_parish} para sa {sel_month} {selected_year} ({sel_week}, Petsa ng Sabado: `{up_dl_info['saturday_date_str']}`) ay naka-marka bilang `(No Report)`.** "
+                    f"Ang opisyal na araw ng pasahan ay tuwing **Sabado (Saturday)** hanggang **Lunes ng Hatinggabi (`{up_dl_info['monday_deadline_str']}`)**."
                 )
             else:
                 st.info(
-                    f"⏰ **Paalala sa Pasahan ({target_parish} — {sel_month} {sel_week} | Sabado: `{up_dl_info['saturday_date_str']}`):** "
-                    f"Bukas (Unlocked) ang pasahan (Sabado hanggang Lunes ng Hatinggabi — `{up_dl_info['monday_deadline_str']}`)."
+                    f"📅 **Paalala sa Araw ng Pasahan at Deadline ng Weekly Report ({target_parish} — {sel_month} {selected_year}, {sel_week} | Sabado: `{up_dl_info['saturday_date_str']}`):** "
+                    f"Ang pasahan ng Weekly Report ay nagbubukas tuwing **Sabado (Saturday)** at nagtatapos tuwing **Lunes ng Hatinggabi (Monday Midnight — `{up_dl_info['monday_deadline_str']}`)**. "
+                    f"Mangyaring mag-submit sa araw ng pasahan bago sumapit ang deadline."
                 )
 
             auto_up_date = get_week_date_for_month_year(sel_month, sel_week, int(selected_year))
@@ -7028,15 +7028,10 @@ def render_weekly_report_page():
                     type=["jpg", "jpeg", "png", "xlsx"],
                     disabled=is_up_locked
                 )
-                c_hv, c_mw, c_ind = st.columns(3)
-                with c_hv:
-                    up_hv = st.text_input("House Visitation (Bilang):", value="0", disabled=is_up_locked)
-                with c_mw:
-                    up_mw = st.text_input("Missionary Work (Bilang):", value="0", disabled=is_up_locked)
-                with c_ind:
-                    up_ind = st.text_input("Indoctrination (Bilang/Pamilya):", value="0", disabled=is_up_locked)
-
-                extra_remarks = st.text_input("Remarks / Tala (Optional):", disabled=is_up_locked).strip()
+                up_hv = str(existing_up_rec.get("house_visitation", "0"))
+                up_mw = str(existing_up_rec.get("missionary_work", "0"))
+                up_ind = str(existing_up_rec.get("indoctrination", "0"))
+                extra_remarks = "" 
 
                 submit_up = st.form_submit_button(
                     "🔒 Sarado ang Pasahan (Naka-ON ang Deadline Lock)" if is_up_locked else "🚀 I-upload sa Google Drive & I-type sa Parish Weekly Report",
@@ -7385,21 +7380,476 @@ def render_weekly_report_page():
         st.divider()
 
     # =====================================================================
-    # 🏠 SECTION E (BOOK1 EXCEL LAYOUT): HOUSE VISITATION, MISSIONARY WORK, INDOCTRINATION & REMARKS — RECORD STYLE VIEW
-    # + NOTION OUTREACH DATA SYNC TO EXCEL REPORT
+    # 🏆 SECTION E (MASTER ADMIN EXCLUSIVE): CHURCH OF THE TEMPLE OF GOD – PARISH MINISTRY PERFORMANCE REPORT
+    # (English & Ilokano, Editable Summary, Pulls Outreach & Remarks from Outreach Page, Sendable via Gmail)
     # =====================================================================
-    st.markdown(f"### 🏠 5. House Visitation, Missionary Work, Indoctrination & Remarks — Record Style View")
-    st.caption(
-        "Ang mga Outreach Tasks (**House Visitation**, **Missionary Work**, at **Indoctrination**) ay maaaring kunin nang direkta mula sa **Notion** "
-        "at awtomatikong ilalagay ng app sa tamang **Parokya, Buwan, at Linggo sa Excel Report**."
+    if is_master:
+        st.markdown("### 🏆 Church of the Temple of God – Parish Ministry Performance Report (Master Admin Exclusive)")
+        st.caption(
+            "Awtomatikong binubuo mula sa Attendance Percentages ng lahat ng 10 Parokya at kinukuha ang **House Visitation**, "
+            "**Missionary Work / Indoctrination**, at **Remarks** mula sa pahina ng `🏠 House Visitation, Missionary Work, Indoctrination & Remarks`. "
+            "Maaari mo itong i-switch sa **English** o **Ilokano**, i-edit, at direktang i-send sa **Gmail**."
+        )
+
+        pr_c1, pr_c2, pr_c3, pr_c4 = st.columns([1.1, 1.1, 1.1, 1.3])
+        with pr_c1:
+            perf_month = st.selectbox("📅 Buwan ng Report:", MONTHS_2027, index=MONTHS_2027.index(view_month) if view_month in MONTHS_2027 else 0, key="perf_rep_month")
+        perf_valid_weeks = get_weeks_for_month_year(perf_month, int(selected_year))
+        with pr_c2:
+            perf_week = st.selectbox("🗓️ Linggo ng Report:", perf_valid_weeks, index=perf_valid_weeks.index(view_week) if view_week in perf_valid_weeks else 0, key="perf_rep_week")
+        with pr_c3:
+            perf_lang = st.selectbox("🌐 Wika ng Performance Report:", ["English", "Ilokano"], key="perf_rep_lang")
+        with pr_c4:
+            st.write("")
+            regen_perf_btn = st.button("🔄 I-regenerate Mula sa Live Data", use_container_width=True, key="btn_regen_perf_rep")
+
+        perf_state_key = f"editable_perf_report_{perf_month}_{perf_week}_{selected_year}_{perf_lang}"
+        if regen_perf_btn or perf_state_key not in st.session_state:
+            st.session_state[perf_state_key] = generate_parish_ministry_performance_report_text(
+                perf_month, perf_week, str(selected_year), perf_lang
+            )
+
+        ai_pol_col1, ai_pol_col2 = st.columns([1.8, 1.8])
+        with ai_pol_col1:
+            if st.button(f"✨ I-polish / I-translate sa {perf_lang} Gamit ang Gemini AI (Optional)", use_container_width=True, key="btn_ai_polish_perf"):
+                valid_k = get_valid_gemini_keys()
+                if valid_k:
+                    with st.spinner(f"Inaayos ng Gemini AI sa wikang {perf_lang}..."):
+                        try:
+                            client_p = genai.Client(api_key=valid_k[0])
+                            base_txt = st.session_state.get(perf_state_key, "")
+                            p_prompt = (
+                                f"Translate and polish the following Church of the Temple of God – Parish Ministry Performance Report into natural, formal {perf_lang}. "
+                                "Keep the exact structure, headings, parish names, percentages, House Visitation, Missionary Work / Indoctrination, and Remarks intact:\n\n"
+                                + base_txt
+                            )
+                            res_p = safe_generate_content(client_p, selected_model, p_prompt)
+                            if res_p and res_p.text:
+                                st.session_state[perf_state_key] = res_p.text.strip()
+                                st.rerun()
+                        except Exception as ex_p:
+                            st.warning(f"AI Polish Notice: {str(ex_p)}")
+                else:
+                    st.warning("Maglagay ng GEMINI_API_KEY sa App Settings.")
+        with ai_pol_col2:
+            if st.button("💾 I-save ang In-edit na Summary sa App", type="primary", use_container_width=True, key="btn_save_perf_edits"):
+                cfg_s = load_saved_config()
+                saved_perf_map = cfg_s.get("SAVED_PERFORMANCE_REPORTS", {})
+                if not isinstance(saved_perf_map, dict):
+                    saved_perf_map = {}
+                saved_perf_map[perf_state_key] = st.session_state.get(perf_state_key, "")
+                cfg_s["SAVED_PERFORMANCE_REPORTS"] = saved_perf_map
+                try:
+                    with open(LOCAL_CONFIG_FILE, "w", encoding="utf-8") as f:
+                        json.dump(cfg_s, f, ensure_ascii=False, indent=2)
+                except Exception:
+                    pass
+                st.success("✅ Na-save na ang iyong in-edit na Parish Ministry Performance Report!")
+
+        edited_perf_text = st.text_area(
+            f"✏️ Parish Ministry Performance Report ({perf_lang} — Maaari mong i-edit bago i-save o i-send sa Gmail):",
+            value=st.session_state.get(perf_state_key, ""),
+            height=520,
+            key=f"ta_{perf_state_key}"
+        )
+        st.session_state[perf_state_key] = edited_perf_text
+
+        with st.expander("📖 Preview ng Parish Ministry Performance Report (Formatted Card View)", expanded=True):
+            st.markdown(f"<div class='full-text-card'>{edited_perf_text}</div>", unsafe_allow_html=True)
+
+        with st.expander("📧 I-send ang Parish Ministry Performance Report sa Gmail", expanded=True):
+            gm_c1, gm_c2, gm_c3 = st.columns([1.4, 1.6, 1.0])
+            with gm_c1:
+                perf_email_to = st.text_input(
+                    "📧 Email ng Tatanggap (pwedeng marami, paghiwalayin ng comma):",
+                    value=BACKUP_ADMIN_EMAIL,
+                    key="perf_rep_email_to"
+                )
+            with gm_c2:
+                perf_email_subj = st.text_input(
+                    "🏷️ Subject ng Email:",
+                    value=f"Church of the Temple of God – Parish Ministry Performance Report ({perf_week} of {perf_month} {selected_year} - {perf_lang})",
+                    key="perf_rep_email_subj"
+                )
+            with gm_c3:
+                st.write("")
+                if st.button("🚀 I-send Ngayon sa Gmail", type="primary", use_container_width=True, key="btn_send_perf_gmail"):
+                    recipients_list = [e.strip() for e in str(perf_email_to or "").split(",") if "@" in e.strip()]
+                    if not recipients_list:
+                        st.warning("Maglagay ng valid na Email Address.")
+                    else:
+                        sent_ok = []
+                        err_list = []
+                        for r_addr in recipients_list:
+                            res_em = send_email_via_gmail(r_addr, perf_email_subj, edited_perf_text)
+                            if "Matagumpay" in res_em:
+                                sent_ok.append(r_addr)
+                            else:
+                                err_list.append(f"{r_addr}: {res_em}")
+                        if sent_ok:
+                            st.success(f"✅ Matagumpay na naipadala ang Parish Ministry Performance Report sa: {', '.join(sent_ok)}!")
+                        if err_list:
+                            st.error(" | ".join(err_list))
+
+        st.divider()
+
+    if os.path.exists(LOCAL_PWR_MASTER_FILE):
+        with open(LOCAL_PWR_MASTER_FILE, "rb") as f:
+            pwr_bytes = f.read()
+        st.download_button(
+            label=f"📥 I-download ang Na-update na Master Excel (PWR. {view_month} {view_week}.xlsx)",
+            data=pwr_bytes,
+            file_name=f"PWR. {view_month} {view_week}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+def _format_grouped_ministry_percentages(pcts_dict: dict, is_hongkong: bool = False, lang: str = "English") -> str:
+    """Ginugrupo ang mga ministries na may parehong percentage (hal. '73% attendance on Mass, Pampamilya, and Adal ti Evangelio; 67% on Youth Fellowship...')."""
+    if is_hongkong:
+        m_p = pcts_dict.get("Mass", 0)
+        o_p = pcts_dict.get("Online Ministry", 0)
+        if lang == "Ilokano":
+            if m_p == o_p:
+                return f"{m_p}% attendance iti agpada a Mass ken Online Ministry."
+            return f"{m_p}% attendance iti Mass; ken {o_p}% iti Online Ministry."
+        else:
+            if m_p == o_p:
+                return f"{m_p}% attendance on both Mass and Online Ministry."
+            return f"{m_p}% attendance on Mass; and {o_p}% on Online Ministry."
+
+    ordered_mins = [
+        ("Mass", pcts_dict.get("Mass", 0)),
+        ("Pampamilya", pcts_dict.get("Pampamilya", 0)),
+        ("Adal ti Evangelio", pcts_dict.get("Adal ti Evangelio", 0)),
+        ("Online Ministry", pcts_dict.get("Online Ministry", 0)),
+        ("Youth Fellowship", pcts_dict.get("Youth Fellowship", 0)),
+        ("Kids Fellowship", pcts_dict.get("Kids Fellowship", 0)),
+    ]
+    groups = {}
+    for m_name, p_val in ordered_mins:
+        groups.setdefault(p_val, []).append(m_name)
+
+    # Sort groups: Mass group first, then descending by percentage
+    mass_pct = pcts_dict.get("Mass", 0)
+    sorted_pcts = [mass_pct] + sorted([p for p in groups.keys() if p != mass_pct], reverse=True)
+
+    def join_names(names_list, l_mode):
+        if len(names_list) == 1:
+            return names_list[0]
+        conj = "ken" if l_mode == "Ilokano" else "and"
+        if len(names_list) == 2:
+            return f"{names_list[0]} {conj} {names_list[1]}"
+        return f"{', '.join(names_list[:-1])}, {conj} {names_list[-1]}"
+
+    clauses = []
+    for idx_g, p_val in enumerate(sorted_pcts):
+        m_names = groups[p_val]
+        if m_names == ["Youth Fellowship", "Kids Fellowship"]:
+            joined_n = "Youth ken Kids Fellowship" if lang == "Ilokano" else "Youth and Kids Fellowship"
+        else:
+            joined_n = join_names(m_names, lang)
+        if idx_g == 0:
+            if lang == "Ilokano":
+                clauses.append(f"{p_val}% attendance iti {joined_n}")
+            else:
+                clauses.append(f"{p_val}% attendance on {joined_n}")
+        else:
+            if lang == "Ilokano":
+                clauses.append(f"{p_val}% iti {joined_n}")
+            else:
+                clauses.append(f"{p_val}% on {joined_n}")
+
+    if len(clauses) == 1:
+        return clauses[0] + "."
+    last_conj = "ken" if lang == "Ilokano" else "and"
+    return "; ".join(clauses[:-1]) + f"; {last_conj} {clauses[-1]}."
+
+def generate_parish_ministry_performance_report_text(selected_month: str, selected_week: str, selected_year: str = "2027", report_lang: str = "English") -> str:
+    """Bumubuo ng kumpletong Church of the Temple of God – Parish Ministry Performance Report sa English o Ilokano
+    gamit ang live attendance percentages at ang House Visitation, Missionary Work / Indoctrination, at Remarks mula sa Outreach page."""
+    cfg = load_saved_config()
+    saved_map = cfg.get("SAVED_PERFORMANCE_REPORTS", {})
+    save_k = f"editable_perf_report_{selected_month}_{selected_week}_{selected_year}_{report_lang}"
+    if isinstance(saved_map, dict) and saved_map.get(save_k):
+        return str(saved_map[save_k])
+
+    db = load_weekly_monitoring_records()
+    eval_items = []
+
+    for p_name in PARISH_ORDER:
+        key = f"{p_name.upper()}__{selected_month.upper()}__{selected_week}"
+        rec = db.get(key, {})
+        has_done = is_week_record_completed(rec)
+        is_no_rep = is_record_marked_no_report(rec)
+        denoms = get_parish_member_denominators(p_name)
+
+        tot_say = (int(rec.get("total_members_say", 0)) if has_done else 0) or denoms["say"]
+        tot_y = (int(rec.get("total_members_y", 0)) if has_done else 0) or denoms["youth"]
+        tot_k = (int(rec.get("total_members_k", 0)) if has_done else 0) or denoms["kids"]
+
+        m_att = (int(rec.get("mass_a", 0)) + int(rec.get("mass_y", 0))) if has_done else 0
+        p_att = (int(rec.get("pampamilya_a", 0)) + int(rec.get("pampamilya_y", 0))) if has_done else 0
+        o_att = (int(rec.get("online_a", 0)) + int(rec.get("online_y", 0))) if has_done else 0
+        y_att = int(rec.get("youth_y", 0)) if has_done else 0
+        k_att = int(rec.get("kids_k", 0)) if has_done else 0
+        ad_att = (int(rec.get("adal_a", 0)) + int(rec.get("adal_y", 0))) if has_done else 0
+
+        def _pct_num(a_v, d_v):
+            return round((a_v / d_v) * 100) if (d_v > 0 and a_v > 0 and not is_no_rep) else 0
+
+        pcts = {
+            "Mass": _pct_num(m_att, tot_say),
+            "Pampamilya": _pct_num(p_att, tot_say),
+            "Online Ministry": _pct_num(o_att, tot_say),
+            "Youth Fellowship": _pct_num(y_att, tot_y),
+            "Kids Fellowship": _pct_num(k_att, tot_k),
+            "Adal ti Evangelio": _pct_num(ad_att, tot_say),
+        }
+
+        raw_rem = str(rec.get("remarks", "")).strip() if not is_no_rep else ""
+        p_ro = parse_remarks_into_mass_and_outreach(raw_rem) if raw_rem else {}
+
+        hv_raw = str(rec.get("house_visitation", "0")).strip() if not is_no_rep else "0"
+        hv_names = str(rec.get("hv_names", "") or p_ro.get("hv_names", "")).strip() if not is_no_rep else ""
+        hv_rem = str(rec.get("hv_remarks", "") or p_ro.get("hv_remarks", "")).strip() if not is_no_rep else ""
+        hv_cnt, _ = count_families_and_people_from_text(hv_names, hv_raw)
+
+        mw_raw = str(rec.get("missionary_work", "0")).strip() if not is_no_rep else "0"
+        if (not mw_raw or mw_raw == "0") and p_ro.get("mw_families_count", 0) > 0:
+            mw_raw = str(p_ro["mw_families_count"])
+        mw_names = str(rec.get("mw_names", "") or p_ro.get("mw_names", "")).strip() if not is_no_rep else ""
+        mw_rem = str(rec.get("mw_remarks", "") or p_ro.get("mw_remarks", "")).strip() if not is_no_rep else ""
+        mw_cnt, _ = count_families_and_people_from_text(mw_names, mw_raw)
+
+        ind_raw = str(rec.get("indoctrination", "0")).strip() if not is_no_rep else "0"
+        ind_names = str(rec.get("ind_names", "") or p_ro.get("ind_names", "")).strip() if not is_no_rep else ""
+        ind_rem = str(rec.get("ind_remarks", "") or p_ro.get("ind_remarks", "")).strip() if not is_no_rep else ""
+        ind_cnt, _ = count_families_and_people_from_text(ind_names, ind_raw)
+
+        outreach_gen_rem = str(rec.get("outreach_general_remarks", "")).strip()
+        if not outreach_gen_rem:
+            rem_parts = [x for x in [hv_rem, mw_rem, ind_rem] if x and x != "(No Report)"]
+            outreach_gen_rem = " | ".join(rem_parts)
+
+        disp_name = "Hong Kong" if "HONGKONG" in p_name.upper() else p_name.replace("PARISH", "").strip().title()
+        eval_items.append({
+            "parish_raw": p_name,
+            "name": disp_name,
+            "is_hk": "HONGKONG" in p_name.upper(),
+            "has_done": has_done,
+            "is_no_rep": is_no_rep,
+            "pcts": pcts,
+            "mass_pct": pcts["Mass"],
+            "online_pct": pcts["Online Ministry"],
+            "hv_cnt": hv_cnt,
+            "hv_names": hv_names,
+            "mw_cnt": mw_cnt,
+            "mw_names": mw_names,
+            "ind_cnt": ind_cnt,
+            "ind_names": ind_names,
+            "outreach_rem": outreach_gen_rem,
+        })
+
+    # Sort by Mass % descending, keeping NO REPORT parishes at the bottom
+    eval_items.sort(key=lambda x: (-1 if x["is_no_rep"] else x["mass_pct"], x["online_pct"]), reverse=True)
+    passed_75 = [x for x in eval_items if x["mass_pct"] >= 75 and not x["is_no_rep"]]
+    remaining_p = [x for x in eval_items if x not in passed_75]
+
+    hv_completed_10 = [x for x in eval_items if x["hv_cnt"] >= 10]
+    hv_partial = [x for x in eval_items if 0 < x["hv_cnt"] < 10]
+    hv_partial.sort(key=lambda x: x["hv_cnt"], reverse=True)
+
+    online_passed = [x for x in eval_items if x["online_pct"] >= 75 and not x["is_no_rep"]]
+    online_passed.sort(key=lambda x: x["online_pct"], reverse=True)
+    online_others = [x for x in eval_items if 0 < x["online_pct"] < 75 and not x["is_no_rep"]]
+    online_others.sort(key=lambda x: x["online_pct"], reverse=True)
+
+    num_words_en = {0: "zero (0)", 1: "one (1)", 2: "two (2)", 3: "three (3)", 4: "four (4)", 5: "five (5)", 6: "six (6)", 7: "seven (7)", 8: "eight (8)", 9: "nine (9)", 10: "ten (10)"}
+
+    if report_lang == "Ilokano":
+        lines = [
+            "Church of the Temple of God – Parish Ministry Performance Report (Ilokano)",
+            f"Panawen (Period): {selected_week} ti {selected_month} {selected_year}",
+            "",
+            "Executive Summary (Pakabuklan)",
+        ]
+        if passed_75:
+            led_str = ", ".join(f"{x['name']} ({x['mass_pct']}%)" for x in passed_75)
+            s1 = f"Adda {len(passed_75)} a parokya ti nakadanon wenno nanglabes iti 75% performance cut-off para iti Holy Mass attendance, nga idauluan ti {led_str}."
+        else:
+            s1 = "Awan pay ti parokya a nakadanon iti 75% performance cut-off para iti Holy Mass attendance ita a lawas."
+
+        if hv_completed_10:
+            hv_str = ", ".join(f"{x['name']} ({x['hv_cnt']})" for x in hv_completed_10)
+            s2 = f"Iti amin a 10 a parokya, nakompleto ti {hv_str} ti 10 weekly house visitations requirement."
+        elif hv_partial:
+            part_str = " ken ".join(f"nakailista ti {x['name']} iti {x['hv_cnt']} visitations" for x in hv_partial[:3])
+            s2 = f"Iti amin a 10 a parokya, awan ti nakakompleto iti 10 weekly house visitations requirement ita a lawas, idinto ta {part_str}."
+        else:
+            s2 = "Iti amin a 10 a parokya, awan pay ti nailista a house visitation ita a lawas."
+
+        if online_passed:
+            op_str = ", ".join(f"{x['name']} ({x['online_pct']}%)" for x in online_passed)
+            foll_str = (", a sinaruno ti " + ", ".join(f"{x['name']} ({x['online_pct']}%)" for x in online_others[:6])) if online_others else ""
+            s3 = f"Maipanggep iti attendance para iti weekly Online Ministry Preaching, ti {op_str} ti nakadanon iti passing mark a 75% wenno nangatngato{foll_str}."
+        elif online_others:
+            foll_str = ", ".join(f"{x['name']} ({x['online_pct']}%)" for x in online_others[:6])
+            s3 = f"Maipanggep iti weekly Online Ministry Preaching, dagiti nakailista iti attendance ket: {foll_str}."
+        else:
+            s3 = "Maipanggep iti weekly Online Ministry Preaching, awan pay ti nailista nga attendance ita a lawas."
+
+        lines.append(f"{s1} {s2} {s3}")
+        lines.append("")
+        lines.append("Ti naan-anay nga ebalwasyon para iti amin a 10 a parokya ket naurnos iti baba:")
+        lines.append("")
+        lines.append("Dagiti Parokya a Nakapasa iti 75% Mass Target")
+        if passed_75:
+            for item in passed_75:
+                lines.extend(_format_single_parish_perf_block(item, "Ilokano"))
+        else:
+            lines.append("- Awan ti parokya a nakadanon iti 75% Mass target ita a lawas.")
+        lines.append("")
+        lines.append("Dagiti Dadduma pay a Parokya (Nababa ngem 75% Cut-off / Special Highlights)")
+        for item in remaining_p:
+            lines.extend(_format_single_parish_perf_block(item, "Ilokano"))
+
+        lines.append("")
+        lines.append(
+            f"Iti panaggibus ti {selected_week} ti {selected_month} {selected_year}, nakailista tayo iti {len(passed_75)} a parokya a nakalabes iti 75% passing mark para iti Mass attendance. "
+            "Agkarkararag tayo met para iti kinasalun-at ken pigsa dagiti kakabsat tayo iti amin a parokya. "
+            "Ti agtultuloy a panang-monitor ken panangiruar iti daytoy a Performance Report ket agserbi a giya ken inspirasyon kadagiti Parish Priests ken workers tayo tapno mapadur-as pay ti attendance ken ministerio kadagiti sumarsaruno a lawas."
+        )
+        lines.append("Agyaman ken Apo Dios ti Mangbendisyon!")
+        return "\n".join(lines)
+
+    # English (Default)
+    lines = [
+        "Church of the Temple of God – Parish Ministry Performance Report",
+        f"Period: {selected_week} of {selected_month} {selected_year}",
+        "",
+        "Executive Summary",
+    ]
+    if passed_75:
+        cnt_w = num_words_en.get(len(passed_75), str(len(passed_75)))
+        led_str = ", ".join(f"{x['name']} ({x['mass_pct']}%)" for x in passed_75)
+        only_pfx = "Only " if len(passed_75) == 1 else ""
+        p_noun = "parish" if len(passed_75) == 1 else "parishes"
+        s1 = f"{only_pfx}{cnt_w} {p_noun} reached or exceeded the 75% performance cut-off for Holy Mass attendance, led by {led_str}."
+    else:
+        s1 = "No parish reached the 75% performance cut-off for Holy Mass attendance during this reporting period."
+
+    if hv_completed_10:
+        hv_str = ", ".join(f"{x['name']} ({x['hv_cnt']})" for x in hv_completed_10)
+        s2 = f"Looking across all 10 parishes, {hv_str} completed the full requirement of 10 weekly house visitations this week."
+    elif hv_partial:
+        part_str = " and ".join(f"{x['name']} recorded {x['hv_cnt']} visitations" for x in hv_partial[:3])
+        s2 = f"Looking across all 10 parishes, no parish completed the full requirement of 10 weekly house visitations this week, while {part_str}."
+    else:
+        s2 = "Looking across all 10 parishes, no parish recorded weekly house visitations this week."
+
+    if online_passed:
+        op_str = ", ".join(f"{x['name']} ({x['online_pct']}%)" for x in online_passed)
+        only_op = "only " if len(online_passed) == 1 else ""
+        foll_str = (", followed by " + ", ".join(f"{x['name']} ({x['online_pct']}%)" for x in online_others[:6])) if online_others else ""
+        s3 = f"Regarding attendance for the weekly Online Ministry Preaching, {only_op}{op_str} reached the passing mark of 75% or higher{foll_str}."
+    elif online_others:
+        foll_str = ", ".join(f"{x['name']} ({x['online_pct']}%)" for x in online_others[:6])
+        s3 = f"Regarding attendance for the weekly Online Ministry Preaching, no parish reached the 75% mark, led by {foll_str}."
+    else:
+        s3 = "Regarding attendance for the weekly Online Ministry Preaching, no attendance was recorded this week."
+
+    lines.append(f"{s1} {s2} {s3}")
+    lines.append("The full evaluation for all 10 parishes is organized below, sorted by those that met the 75% Mass target followed by the remaining parishes:")
+    lines.append("")
+    lines.append("Parishes That Passed the 75% Mass Target")
+    if passed_75:
+        for item in passed_75:
+            lines.extend(_format_single_parish_perf_block(item, "English"))
+    else:
+        lines.append("- None recorded for this week.")
+    lines.append("")
+    lines.append("The Remaining Parishes (Below the 75% Cut-off / Special Highlights)")
+    for item in remaining_p:
+        lines.extend(_format_single_parish_perf_block(item, "English"))
+
+    runners_up = [x for x in remaining_p if x["mass_pct"] >= 65 and not x["is_no_rep"]]
+    ru_clause = ""
+    if runners_up:
+        ru_names = " and ".join(f"{x['name']} ({x['mass_pct']}%)" for x in runners_up[:2])
+        ru_clause = f", with {ru_names} closely following"
+
+    lines.append("")
+    lines.append(
+        f"At the close of the {selected_week.lower()} of {selected_month} {selected_year}, we recorded {len(passed_75)} "
+        f"{'parish' if len(passed_75) == 1 else 'parishes'} that crossed the 75% passing mark for Mass attendance{ru_clause}. "
+        "The consistent monitoring and releasing of this Performance Report will continue to serve as a guide and inspiration for our Parish Priests and workers to further improve attendance and ministries in the coming weeks."
+    )
+    lines.append("Cheers and God Bless!")
+    return "\n".join(lines)
+
+def _format_single_parish_perf_block(item: dict, lang: str = "English") -> list[str]:
+    p_name = item["name"]
+    if item["is_no_rep"]:
+        if lang == "Ilokano":
+            main_line = f"- {p_name} – 0% iti amin a ministerio (Na-markaan kas NO REPORT ita a lawas)."
+        else:
+            main_line = f"- {p_name} – 0% across all ministries (Marked as NO REPORT for this week)."
+    else:
+        pct_sentence = _format_grouped_ministry_percentages(item["pcts"], is_hongkong=item["is_hk"], lang=lang)
+        special_parts = []
+        if item["hv_cnt"] > 0:
+            special_parts.append(f"{item['hv_cnt']} house visitations")
+        if item["mw_cnt"] > 0:
+            special_parts.append(f"{item['mw_cnt']} Missionary Work")
+        if item["ind_cnt"] > 0:
+            special_parts.append(f"{item['ind_cnt']} Indoctrinations")
+        spec_str = ""
+        if special_parts:
+            joined_sp = " and ".join(special_parts)
+            spec_str = f" Special Mention: Recorded {joined_sp} for this week." if lang == "English" else f" Special Mention: Nakailista iti {joined_sp} ita a lawas."
+        main_line = f"- {p_name} – {pct_sentence}{spec_str}"
+
+    out_lines = [main_line]
+    none_lbl = "0 (Awan nailista)" if lang == "Ilokano" else "0 (None recorded)"
+
+    if item["hv_cnt"] > 0:
+        hv_detail = item["hv_names"] if item["hv_names"] else f"{item['hv_cnt']} recorded"
+        out_lines.append(f"  - House Visitation ({item['hv_cnt']}): {hv_detail}")
+    else:
+        out_lines.append(f"  - House Visitation: {none_lbl}")
+
+    mw_ind_total = item["mw_cnt"] + item["ind_cnt"]
+    if mw_ind_total > 0:
+        comb_names = " | ".join(x for x in [item["mw_names"], item["ind_names"]] if x) or f"{mw_ind_total} recorded"
+        out_lines.append(f"  - Missionary Work / Indoctrination ({mw_ind_total}): {comb_names}")
+    else:
+        out_lines.append(f"  - Missionary Work / Indoctrination: {none_lbl}")
+
+    if item["outreach_rem"]:
+        out_lines.append(f"  - Remarks: {item['outreach_rem']}")
+    return out_lines
+
+# =====================================================================
+# 🏠 DEDICATED PAGE FOR ALL USERS: HOUSE VISITATION, MISSIONARY WORK, INDOCTRINATION & REMARKS
+# =====================================================================
+def render_outreach_visitation_missionary_page():
+    is_master = (st.session_state.user_role == "Master Admin")
+    my_parish = st.session_state.get("assigned_parish", "Lahat ng Parokya")
+    my_chat_identity = get_current_chat_identity()
+
+    render_title_with_logo(
+        "🏠 House Visitation, Missionary Work, Indoctrination & Remarks",
+        "Opisyal na Pahina sa Pag-submit at Pag-monitor ng House Visitation (10 Families Req.), Missionary Work, Indoctrination, at Remarks para sa lahat ng Parokya."
     )
 
     outreach_parish_options = (["Lahat ng Parokya"] + PARISH_ORDER) if is_master else [my_parish]
-    default_out_parish = effective_parish_filter if effective_parish_filter in outreach_parish_options else outreach_parish_options[0]
     if "outreach_sel_parish" not in st.session_state or st.session_state["outreach_sel_parish"] not in outreach_parish_options:
-        st.session_state["outreach_sel_parish"] = default_out_parish
+        st.session_state["outreach_sel_parish"] = outreach_parish_options[0]
     if "outreach_sel_month" not in st.session_state or st.session_state["outreach_sel_month"] not in MONTHS_2027:
-        st.session_state["outreach_sel_month"] = view_month
+        st.session_state["outreach_sel_month"] = st.session_state.get("mon_view_month", "January")
+        if st.session_state["outreach_sel_month"] not in MONTHS_2027:
+            st.session_state["outreach_sel_month"] = "January"
+    selected_year = st.session_state.get("mon_view_year", "2027")
 
     out_cat_options = [
         "Lahat (House Visitation, Missionary Work, Indoctrination & Remarks)",
@@ -7429,9 +7879,9 @@ def render_weekly_report_page():
             key="outreach_sel_month"
         )
     out_month_actual_weeks = get_weeks_for_month_year(out_month, int(selected_year))
-    outreach_week_options = [f"Lahat ng Weeks (1st–{out_month_actual_weeks[-1]})"] + out_month_actual_weeks
+    outreach_week_options = out_month_actual_weeks + [f"Lahat ng Weeks (1st–{out_month_actual_weeks[-1]})"]
     if "outreach_sel_week" not in st.session_state or st.session_state["outreach_sel_week"] not in outreach_week_options:
-        st.session_state["outreach_sel_week"] = outreach_week_options[0] if show_all_weeks_of_month else (view_week if view_week in out_month_actual_weeks else out_month_actual_weeks[0])
+        st.session_state["outreach_sel_week"] = out_month_actual_weeks[0]
     with oc4:
         out_week_sel = st.selectbox(
             f"🗓️ Linggo ({len(out_month_actual_weeks)} Weeks / Lahat):",
@@ -7441,7 +7891,7 @@ def render_weekly_report_page():
     with oc5:
         st.write("")
         if st.button("🔄 Sync Outreach Mula sa Notion -> Excel", use_container_width=True, type="primary"):
-            eff_w_notion = view_week if out_week_sel not in out_month_actual_weeks else out_week_sel
+            eff_w_notion = out_week_sel if out_week_sel in out_month_actual_weeks else out_month_actual_weeks[0]
             with st.spinner("Kinukuha ang House Visitation, Missionary Work, at Indoctrination tasks mula sa Notion at inilalagay sa Excel Report..."):
                 n_cnt, n_msg = sync_outreach_tasks_from_notion_to_excel_and_db(out_month, eff_w_notion, out_parish, selected_year)
                 st.cache_data.clear()
@@ -7449,9 +7899,164 @@ def render_weekly_report_page():
                     st.success(f"✅ {n_msg}")
                 else:
                     st.info(f"ℹ️ {n_msg}")
-                time.sleep(0.6)
+                time.sleep(0.5)
                 st.rerun()
 
+    # =====================================================================
+    # 📤 OUTREACH SUBMISSION & UPDATE FORM (PARA SA LAHAT NG USERS: PARISH LEADERS & MASTER ADMIN)
+    # =====================================================================
+    db_live = load_weekly_monitoring_records()
+    form_parish_choices = PARISH_ORDER if is_master else [my_parish]
+    default_form_parish = out_parish if out_parish in form_parish_choices else form_parish_choices[0]
+    default_form_week = out_week_sel if out_week_sel in out_month_actual_weeks else out_month_actual_weeks[0]
+
+    with st.expander("📤 Ipasa / I-update ang House Visitation, Missionary Work, Indoctrination & Remarks (Auto-Sync sa Performance Report & Excel)", expanded=True):
+        f_col1, f_col2, f_col3 = st.columns(3)
+        with f_col1:
+            sub_out_parish = st.selectbox("🏛️ Parokya na Nag-rereport:", form_parish_choices, index=form_parish_choices.index(default_form_parish), key="form_out_parish")
+        with f_col2:
+            sub_out_month = st.selectbox("📅 Buwan:", MONTHS_2027, index=MONTHS_2027.index(out_month), key="form_out_month")
+        sub_out_weeks = get_weeks_for_month_year(sub_out_month, int(selected_year))
+        with f_col3:
+            sub_out_week = st.selectbox("🗓️ Linggo:", sub_out_weeks, index=sub_out_weeks.index(default_form_week) if default_form_week in sub_out_weeks else 0, key="form_out_week")
+
+        cur_out_key = f"{sub_out_parish.upper()}__{sub_out_month.upper()}__{sub_out_week}"
+        cur_out_rec = db_live.get(cur_out_key, {})
+        parsed_out_ro = parse_remarks_into_mass_and_outreach(str(cur_out_rec.get("remarks", "")))
+        out_rev = f"{st.session_state.get('pwr_form_rev', 0)}_{cur_out_key}"
+
+        with st.form("outreach_dedicated_submission_form"):
+            st.markdown("##### 1️⃣ House Visitation (Requirement: 10 Families Member or Non-Member)")
+            hc1, hc2, hc3 = st.columns([0.8, 1.8, 1.2])
+            with hc1:
+                in_hv_cnt = st.text_input("Bilang ng Pamilya (House Visitation):", value=str(cur_out_rec.get("house_visitation", "0")).replace("(No Report)", "0"), key=f"ohv_c_{out_rev}")
+                in_hv_ppl = st.number_input("Total ng mga Tao (House Visitation):", min_value=0, value=int(cur_out_rec.get("hv_people_count", 0) or parsed_out_ro.get("hv_people_count", 0)), key=f"ohv_p_{out_rev}")
+            with hc2:
+                in_hv_names = st.text_area(
+                    "Family Names & Mga Pangalan (Hal. 11-14-26: Nico Q; Remedios Q; Arjon Q; Milagno R; Imee N.):",
+                    value=str(cur_out_rec.get("hv_names", "") or parsed_out_ro.get("hv_names", "")).replace("(No Report)", ""),
+                    height=75,
+                    key=f"ohv_n_{out_rev}"
+                )
+            with hc3:
+                in_hv_rem = st.text_area(
+                    "Remarks sa House Visitation:",
+                    value=str(cur_out_rec.get("hv_remarks", "") or parsed_out_ro.get("hv_remarks", "")).replace("(No Report)", ""),
+                    height=75,
+                    key=f"ohv_r_{out_rev}"
+                )
+
+            st.markdown("##### 2️⃣ Missionary Work")
+            mc1, mc2, mc3 = st.columns([0.8, 1.8, 1.2])
+            with mc1:
+                in_mw_cnt = st.text_input("Bilang ng Pamilya (Missionary Work):", value=str(cur_out_rec.get("missionary_work", "0")).replace("(No Report)", "0"), key=f"omw_c_{out_rev}")
+                in_mw_ppl = st.number_input("Total ng mga Tao (Missionary Work):", min_value=0, value=int(cur_out_rec.get("mw_people_count", 0) or parsed_out_ro.get("mw_people_count", 0)), key=f"omw_p_{out_rev}")
+            with mc2:
+                in_mw_names = st.text_area(
+                    "Missionary Work — Family Names & Mga Pangalan ng Dumalo:",
+                    value=str(cur_out_rec.get("mw_names", "") or parsed_out_ro.get("mw_names", "")).replace("(No Report)", ""),
+                    height=75,
+                    key=f"omw_n_{out_rev}"
+                )
+            with mc3:
+                in_mw_rem = st.text_area(
+                    "Remarks sa Missionary Work:",
+                    value=str(cur_out_rec.get("mw_remarks", "") or parsed_out_ro.get("mw_remarks", "")).replace("(No Report)", ""),
+                    height=75,
+                    key=f"omw_r_{out_rev}"
+                )
+
+            st.markdown("##### 3️⃣ Indoctrination (Family Name of a Family Under Indoctrination)")
+            ic1, ic2, ic3 = st.columns([0.8, 1.8, 1.2])
+            with ic1:
+                in_ind_cnt = st.text_input("Bilang ng Pamilya (Indoctrination):", value=str(cur_out_rec.get("indoctrination", "0")).replace("(No Report)", "0"), key=f"oind_c_{out_rev}")
+                in_ind_ppl = st.number_input("Total ng mga Tao (Indoctrination):", min_value=0, value=int(cur_out_rec.get("ind_people_count", 0) or parsed_out_ro.get("ind_people_count", 0)), key=f"oind_p_{out_rev}")
+            with ic2:
+                in_ind_names = st.text_area(
+                    "Indoctrination — Family Names & Mga Pangalan (Hal. Pasito L; Nathan L.):",
+                    value=str(cur_out_rec.get("ind_names", "") or parsed_out_ro.get("ind_names", "")).replace("(No Report)", ""),
+                    height=75,
+                    key=f"oind_n_{out_rev}"
+                )
+            with ic3:
+                in_ind_rem = st.text_area(
+                    "Remarks sa Indoctrination:",
+                    value=str(cur_out_rec.get("ind_remarks", "") or parsed_out_ro.get("ind_remarks", "")).replace("(No Report)", ""),
+                    height=75,
+                    key=f"oind_r_{out_rev}"
+                )
+
+            st.markdown("##### 4️⃣ Pangkalahatang Remarks para sa Performance Report (Hal. Dahilan kung walang Visitation / Sitwasyon sa Parokya)")
+            in_gen_out_rem = st.text_area(
+                "Remarks (Ito ang awtomatikong lalabas sa `Remarks:` ng Parish Ministry Performance Report ni Master Admin):",
+                value=str(cur_out_rec.get("outreach_general_remarks", "")),
+                height=75,
+                key=f"ogen_r_{out_rev}"
+            )
+
+            if st.form_submit_button("💾 I-save ang House Visitation, Missionary Work, Indoctrination & Remarks", type="primary", use_container_width=True):
+                r_date_out = resolve_display_week_date(cur_out_rec, sub_out_month, sub_out_week, int(selected_year))
+                merged_payload = dict(cur_out_rec)
+                merged_payload["parish"] = sub_out_parish
+                merged_payload["month"] = sub_out_month
+                merged_payload["week"] = sub_out_week
+                merged_payload["report_date"] = r_date_out
+                merged_payload["house_visitation"] = in_hv_cnt.strip() or "0"
+                merged_payload["hv_names"] = in_hv_names.strip()
+                merged_payload["hv_people_count"] = in_hv_ppl
+                merged_payload["hv_remarks"] = in_hv_rem.strip()
+                merged_payload["missionary_work"] = in_mw_cnt.strip() or "0"
+                merged_payload["mw_names"] = in_mw_names.strip()
+                merged_payload["mw_people_count"] = in_mw_ppl
+                merged_payload["mw_remarks"] = in_mw_rem.strip()
+                merged_payload["indoctrination"] = in_ind_cnt.strip() or "0"
+                merged_payload["ind_names"] = in_ind_names.strip()
+                merged_payload["ind_people_count"] = in_ind_ppl
+                merged_payload["ind_remarks"] = in_ind_rem.strip()
+                merged_payload["outreach_general_remarks"] = in_gen_out_rem.strip()
+
+                ok_o, msg_o = save_weekly_monitoring_record(
+                    sub_out_parish, sub_out_month, sub_out_week, r_date_out, merged_payload, drive_link=cur_out_rec.get("drive_link", "")
+                )
+                # Kung may general outreach remarks, siguraduhing naka-save sa record
+                db_after = load_weekly_monitoring_records()
+                if cur_out_key in db_after:
+                    db_after[cur_out_key]["outreach_general_remarks"] = in_gen_out_rem.strip()
+                    if cur_out_rec.get("no_report_locked") and not is_week_record_completed(cur_out_rec):
+                        db_after[cur_out_key]["no_report_locked"] = True
+                        db_after[cur_out_key]["has_data"] = False
+                    try:
+                        with open(LOCAL_WEEKLY_REPORTS_DB, "w", encoding="utf-8") as f:
+                            json.dump(db_after, f, ensure_ascii=False, indent=2)
+                    except Exception:
+                        pass
+
+                # I-reset ang cached performance report para sa buwan at linggong ito upang awtomatikong pumasok ang bagong Outreach data
+                for l_rst in ["English", "Ilokano"]:
+                    st.session_state.pop(f"editable_perf_report_{sub_out_month}_{sub_out_week}_{selected_year}_{l_rst}", None)
+                try:
+                    cfg_r = load_saved_config()
+                    if isinstance(cfg_r.get("SAVED_PERFORMANCE_REPORTS"), dict):
+                        for l_rst in ["English", "Ilokano"]:
+                            cfg_r["SAVED_PERFORMANCE_REPORTS"].pop(f"editable_perf_report_{sub_out_month}_{sub_out_week}_{selected_year}_{l_rst}", None)
+                        with open(LOCAL_CONFIG_FILE, "w", encoding="utf-8") as f:
+                            json.dump(cfg_r, f, ensure_ascii=False, indent=2)
+                except Exception:
+                    pass
+
+                dispatch_app_notification_and_messenger_alert(
+                    sender_id=my_chat_identity,
+                    recipient_id="MASTER ADMIN",
+                    title=f"Outreach Report Updated ({sub_out_parish})",
+                    details=f"Na-update ang House Visitation ({in_hv_cnt}), Missionary Work ({in_mw_cnt}), Indoctrination ({in_ind_cnt}) & Remarks ng {sub_out_parish} para sa {sub_out_month} {selected_year} ({sub_out_week}).",
+                    is_error=False
+                )
+                st.session_state["pwr_form_rev"] = st.session_state.get("pwr_form_rev", 0) + 1
+                st.success(f"✅ Matagumpay na na-save ang House Visitation, Missionary Work, Indoctrination & Remarks para sa **{sub_out_parish}** ({sub_out_month} {sub_out_week})! ({msg_o})")
+                time.sleep(0.4)
+                st.rerun()
+
+    st.divider()
     out_weeks_list = out_month_actual_weeks if out_week_sel not in out_month_actual_weeks else [out_week_sel]
     out_scope_label = f"{out_week_sel} of {out_month.upper()} {selected_year} — {out_parish}"
 
@@ -7480,7 +8085,7 @@ def render_weekly_report_page():
         for wk_o in out_weeks_list:
             for p_c in parishes_out_scan:
                 rec_c = db_live.get(f"{p_c.upper()}__{out_month.upper()}__{wk_o}", {})
-                if rec_c.get("has_data"):
+                if rec_c.get("has_data") or rec_c.get("outreach_general_remarks"):
                     r_raw = str(rec_c.get("remarks", "")).strip()
                     p_ro = parse_remarks_into_mass_and_outreach(r_raw) if r_raw else {}
                     hv_r = str(rec_c.get("hv_remarks", "") or p_ro.get("hv_remarks", "")).strip()
@@ -7489,7 +8094,8 @@ def render_weekly_report_page():
                     hv_n = str(rec_c.get("hv_names", "") or p_ro.get("hv_names", "")).strip()
                     mw_n = str(rec_c.get("mw_names", "") or p_ro.get("mw_names", "")).strip()
                     ind_n = str(rec_c.get("ind_names", "") or p_ro.get("ind_names", "")).strip()
-                    if hv_r or mw_r or ind_r or hv_n or mw_n or ind_n or parse_int_from_text(rec_c.get("house_visitation", "0")) > 0 or parse_int_from_text(rec_c.get("missionary_work", "0")) > 0 or parse_int_from_text(rec_c.get("indoctrination", "0")) > 0:
+                    gen_r = str(rec_c.get("outreach_general_remarks", "")).strip()
+                    if hv_r or mw_r or ind_r or hv_n or mw_n or ind_n or gen_r or parse_int_from_text(rec_c.get("house_visitation", "0")) > 0 or parse_int_from_text(rec_c.get("missionary_work", "0")) > 0 or parse_int_from_text(rec_c.get("indoctrination", "0")) > 0:
                         outreach_cards_list.append((p_c, wk_o, rec_c, p_ro))
 
         with st.expander(f"📝 Basahin nang Buo ang Remarks sa House Visitation, Missionary Work & Indoctrination ({len(outreach_cards_list)} Record(s) — {out_scope_label})", expanded=True):
@@ -7506,6 +8112,7 @@ def render_weekly_report_page():
                     ind_n = str(rec_c.get("ind_names", "") or p_ro.get("ind_names", "")).strip() or "Wala pang nakalistang pangalan"
                     ind_r = str(rec_c.get("ind_remarks", "") or p_ro.get("ind_remarks", "")).strip() or "-"
                     ind_ppl = int(rec_c.get("ind_people_count", 0) or p_ro.get("ind_people_count", 0))
+                    gen_r = str(rec_c.get("outreach_general_remarks", "")).strip()
 
                     wk_o_dt = resolve_display_week_date(rec_c, out_month, wk_o, int(selected_year))
                     st.markdown(
@@ -7514,21 +8121,12 @@ def render_weekly_report_page():
                         f"🏡 <b>Remarks sa House Visitation ({rec_c.get('house_visitation', '0')} Pamilya | {hv_ppl} Tao):</b> {hv_r} <i>(Mga Pangalan: {hv_n})</i><br>"
                         f"🌍 <b>Remarks sa Missionary Work ({rec_c.get('missionary_work', '0')} Pamilya | {mw_ppl} Tao):</b> {mw_r} <i>(Mga Pangalan: {mw_n})</i><br>"
                         f"📖 <b>Remarks sa Indoctrination ({rec_c.get('indoctrination', '0')} Pamilya | {ind_ppl} Tao):</b> {ind_r} <i>(Mga Pangalan: {ind_n})</i>"
-                        f"</div>",
+                        + (f"<br>📝 <b>Remarks (Performance Report):</b> {gen_r}" if gen_r else "")
+                        + f"</div>",
                         unsafe_allow_html=True
                     )
             else:
                 st.caption("Walang nakalagay na Remarks sa House Visitation, Missionary Work, o Indoctrination para sa piniling filter.")
-
-    if os.path.exists(LOCAL_PWR_MASTER_FILE):
-        with open(LOCAL_PWR_MASTER_FILE, "rb") as f:
-            pwr_bytes = f.read()
-        st.download_button(
-            label=f"📥 I-download ang Na-update na Master Excel (PWR. {view_month} {view_week}.xlsx)",
-            data=pwr_bytes,
-            file_name=f"PWR. {view_month} {view_week}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
 
 # =====================================================================
 # ⚙️ SIDEBAR CONTROL PANEL
@@ -7642,6 +8240,7 @@ with st.sidebar:
         nav_options = [
             "🧭 Parish Leader Portal (Wizard & Summary)",
             "📑 Weekly Report & Parish Monitoring",
+            "🏠 House Visitation, Missionary Work, Indoctrination & Remarks",
             "📈 Live Activity & Update Dashboard",
             "📊 Parish Census & Member Manager",
             "📊 Parish Directory & Family Search",
@@ -7658,6 +8257,7 @@ with st.sidebar:
         nav_options = [
             "🧭 Parish Leader Portal (Wizard & Summary)",
             "📑 Weekly Report & Parish Monitoring",
+            "🏠 House Visitation, Missionary Work, Indoctrination & Remarks",
             "📥 Parish Inbox & Action Hub",
             "📊 Parish Census & Member Manager",
             "🗣️ Ministry Messenger (Admin & Users Chat)",
@@ -8487,10 +9087,47 @@ def render_workflow_queue_section(df_source: pd.DataFrame, category_label: str, 
         st.info("Walang nahanap na request na tumutugma sa napiling filter.")
 
 # =====================================================================
+# ⚡ SILENT REAL-TIME LIVE SYNC WATCHER (AUTO-UPDATES ALL USERS WITHOUT MANUAL REFRESH)
+# =====================================================================
+def _compute_shared_state_signature() -> str:
+    parts = []
+    for f_path in [LOCAL_WEEKLY_REPORTS_DB, LOCAL_CONFIG_FILE, LOCAL_NOTIFICATIONS_FILE, LOCAL_CHAT_FILE]:
+        try:
+            if os.path.exists(f_path):
+                st_stat = os.stat(f_path)
+                parts.append(f"{f_path}:{st_stat.st_mtime_ns}:{st_stat.st_size}")
+            else:
+                parts.append(f"{f_path}:0")
+        except Exception:
+            parts.append(f"{f_path}:err")
+    return "|".join(parts)
+
+if "_last_live_sync_sig" not in st.session_state:
+    st.session_state["_last_live_sync_sig"] = _compute_shared_state_signature()
+
+if hasattr(st, "fragment"):
+    @st.fragment(run_every="3s")
+    def _silent_realtime_state_watcher():
+        cur_sig = _compute_shared_state_signature()
+        prev_sig = st.session_state.get("_last_live_sync_sig", "")
+        if prev_sig and cur_sig != prev_sig:
+            st.session_state["_last_live_sync_sig"] = cur_sig
+            st.cache_data.clear()
+            st.rerun()
+        else:
+            st.session_state["_last_live_sync_sig"] = cur_sig
+
+    _silent_realtime_state_watcher()
+
+# =====================================================================
 # 📑 WEEKLY REPORT & PARISH MONITORING ROUTE
 # =====================================================================
 if app_mode == "📑 Weekly Report & Parish Monitoring":
     render_weekly_report_page()
+    st.stop()
+
+elif app_mode == "🏠 House Visitation, Missionary Work, Indoctrination & Remarks":
+    render_outreach_visitation_missionary_page()
     st.stop()
 
 # =====================================================================
