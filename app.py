@@ -169,6 +169,12 @@ ALL_PARISH_DB_FOLDER_URL = get_secret(
     "ALL_PARISH_DB_FOLDER_URL",
     "https://drive.google.com/drive/folders/1RXOTB6iA0jgcsOf1kE8wn3V8DHVduvH0?usp=sharing"
 )
+DEFAULT_OUTREACH_DRIVE_SHEET_URL = get_secret(
+    "OUTREACH_DRIVE_SHEET_URL",
+    "https://docs.google.com/spreadsheets/d/1FZLr3gFvU-YXWJMTrRkOqJ2X0hTAaQ3rRerX9cdUIb8/edit?usp=sharing"
+)
+DEFAULT_OUTREACH_DRIVE_SHEET_ID = "1FZLr3gFvU-YXWJMTrRkOqJ2X0hTAaQ3rRerX9cdUIb8"
+LOCAL_OUTREACH_RESPONSES_CACHE = "ctg_outreach_drive_responses_cache.json"
 
 LOCAL_EXCEL_CACHE = "CTG_HEADS_TOTAL_UPDATED FIXED.xlsx"
 LOCAL_PWR_MASTER_FILE = "PWR. January 1st Week.xlsx"
@@ -1092,6 +1098,15 @@ def load_saved_drive_links_registry() -> list[dict]:
             "week": "All Weeks",
             "parish": "Lahat ng Parokya (Master)",
             "url": st.session_state.custom_secrets.get("PARISH_UPLOAD_FOLDER_URL", PARISH_UPLOAD_FOLDER_URL) or "https://drive.google.com/drive/folders/1WHvH81kNL3jmXItNtPl39GnhmTzpmK1X?usp=sharing",
+            "added_at": "2027-01-01"
+        },
+        {
+            "label": "Church Operations Report (Visitation, Mission, & Indoctrination) (Responses)",
+            "category": "Outreach / House Visitation / Missionary / Indoctrination",
+            "month": "All Months",
+            "week": "All Weeks",
+            "parish": "Lahat ng Parokya (Master)",
+            "url": DEFAULT_OUTREACH_DRIVE_SHEET_URL,
             "added_at": "2027-01-01"
         }
     ]
@@ -2530,7 +2545,21 @@ def load_weekly_monitoring_records() -> dict:
     for k_del in list(db.keys()):
         r_chk = db.get(k_del, {})
         if isinstance(r_chk, dict) and "__JANUARY__1ST WEEK" not in k_del:
+            has_any_outreach = bool(
+                r_chk.get("no_report_locked") or
+                str(r_chk.get("hv_names", "")).strip() or
+                str(r_chk.get("mw_names", "")).strip() or
+                str(r_chk.get("ind_names", "")).strip() or
+                str(r_chk.get("hv_remarks", "")).strip() or
+                str(r_chk.get("mw_remarks", "")).strip() or
+                str(r_chk.get("ind_remarks", "")).strip() or
+                str(r_chk.get("outreach_general_remarks", "")).strip() or
+                str(r_chk.get("house_visitation", "0")).strip() not in ("", "0") or
+                str(r_chk.get("missionary_work", "0")).strip() not in ("", "0") or
+                str(r_chk.get("indoctrination", "0")).strip() not in ("", "0")
+            )
             if (
+                not has_any_outreach and
                 int(r_chk.get("mass_a", 0)) == 0 and int(r_chk.get("pampamilya_a", 0)) == 0 and
                 int(r_chk.get("online_a", 0)) == 0 and int(r_chk.get("adal_a", 0)) == 0 and
                 not str(r_chk.get("priest", "")).strip() and not str(r_chk.get("remarks", "")).strip()
@@ -4206,12 +4235,25 @@ def auto_sync_from_any_drive_link(link_url: str, target_month: str = "January", 
     eff_w = target_week if target_week in WEEKS_2027 else "1st Week"
     if "/folders/" in clean_url:
         return sync_weekly_reports_from_google_drive_folder(clean_url, eff_m, eff_w)
+    if DEFAULT_OUTREACH_DRIVE_SHEET_ID in clean_url:
+        return sync_outreach_tasks_from_notion_to_excel_and_db(eff_m, eff_w, target_parish, "2027", custom_sheet_url=clean_url)
     service = get_google_drive_service()
     f_id = extract_id_from_url(clean_url)
-    if not service or not f_id:
-        return 0, "Na-save ang link (i-check ang Google Drive API connection kung magsi-sync)."
+    if not f_id:
+        return 0, "Na-save ang link."
     try:
-        x_bytes = service.files().get_media(fileId=f_id).execute()
+        x_bytes = _download_drive_spreadsheet_bytes_any_format(clean_url)
+        if not x_bytes and service:
+            x_bytes = service.files().get_media(fileId=f_id, supportsAllDrives=True).execute()
+        if not x_bytes:
+            return 0, "Na-save ang link sa listahan."
+        # Check if this workbook is the Outreach Responses sheet ('Form responses 1')
+        try:
+            wb_chk = openpyxl.load_workbook(io.BytesIO(x_bytes), read_only=True)
+            if "Form responses 1" in wb_chk.sheetnames:
+                return sync_outreach_tasks_from_notion_to_excel_and_db(eff_m, eff_w, target_parish, "2027", custom_sheet_url=clean_url)
+        except Exception:
+            pass
         with open(LOCAL_PWR_MASTER_FILE, "wb") as f:
             f.write(x_bytes)
         p_hint = "" if "Master" in target_parish or "Lahat" in target_parish else target_parish
@@ -5345,7 +5387,12 @@ def build_house_visitation_table_df(selected_month: str, selected_week: str, fil
             continue
         key = f"{p_name.upper()}__{selected_month.upper()}__{selected_week}"
         rec = db.get(key, {})
-        has_data = bool(rec.get("has_data", False))
+        has_data = bool(
+            rec.get("has_data", False) or
+            str(rec.get("hv_names", "")).strip() or
+            str(rec.get("hv_remarks", "")).strip() or
+            str(rec.get("house_visitation", "0")).strip() not in ("", "0")
+        )
         if has_data:
             active_parish_count += 1
 
@@ -5400,7 +5447,12 @@ def build_missionary_work_table_df(selected_month: str, selected_week: str, filt
             continue
         key = f"{p_name.upper()}__{selected_month.upper()}__{selected_week}"
         rec = db.get(key, {})
-        has_data = bool(rec.get("has_data", False))
+        has_data = bool(
+            rec.get("has_data", False) or
+            str(rec.get("mw_names", "")).strip() or
+            str(rec.get("mw_remarks", "")).strip() or
+            str(rec.get("missionary_work", "0")).strip() not in ("", "0")
+        )
         r_date = resolve_display_week_date(rec, selected_month, selected_week, 2027)
 
         raw_rem = str(rec.get("remarks", "")).strip() if has_data else ""
@@ -5459,7 +5511,12 @@ def build_indoctrination_table_df(selected_month: str, selected_week: str, filte
             continue
         key = f"{p_name.upper()}__{selected_month.upper()}__{selected_week}"
         rec = db.get(key, {})
-        has_data = bool(rec.get("has_data", False))
+        has_data = bool(
+            rec.get("has_data", False) or
+            str(rec.get("ind_names", "")).strip() or
+            str(rec.get("ind_remarks", "")).strip() or
+            str(rec.get("indoctrination", "0")).strip() not in ("", "0")
+        )
         r_date = resolve_display_week_date(rec, selected_month, selected_week, 2027)
 
         ind_raw = str(rec.get("indoctrination", "0")).strip() if has_data else "0"
@@ -6083,148 +6140,555 @@ def build_parish_member_attendance_sheet_df(parish_name: str, selected_month: st
     }
     return pd.DataFrame(rows), totals_meta
 
-def sync_outreach_tasks_from_notion_to_excel_and_db(target_month: str = "January", target_week: str = "1st Week", target_parish: str = "Lahat ng Parokya", target_year: str = "2027") -> tuple[int, str]:
-    """Kinukuha ang mga Outreach Tasks (House Visitation, Missionary Work, Indoctrination & Remarks) mula sa Notion Database
-    at awtomatikong inilalagay sa App Database at sa Google Drive Excel Report ng tamang Parokya, Buwan, at Linggo."""
-    token = st.session_state.custom_secrets.get("NOTION_TOKEN", NOTION_TOKEN)
-    if not token:
-        return 0, "Walang Notion Token na nakalagay sa App Settings."
+OUTREACH_DRIVE_SHEET_35_COLUMNS = [
+    "Timestamp",
+    "Parish / Simbahan (Church Name)",
+    "Pangalan ng Nag-uulat (Worker / Priest / Volunteer Name)",
+    "Opening Prayer",
+    "Closing Payer",
+    "Katungkulan / Ministry Unit",
+    "Petsa ng Gawain (Date of Activity)",
+    "Lokasyon / Area / Barangay",
+    "Type of Activity",
+    "Date (House Visitation)",
+    "Pangalan ng Pamilya / Indibidwal na Binisita",
+    "Tirahan at Contact Number ng Binisita",
+    "Layunin / Uri ng Pagbisita",
+    "Kalagayan ng Espirituwal / Sitwasyon ng Pamilya",
+    "Mga Kahilingan sa Panalangin (Prayer Requests)",
+    "Paksa ng Pag-aaral o Mensaheng Ibinahagi (Topic / Scripture Shared)",
+    "Reaksyon o Tugon ng Binisita sa Mensahe:",
+    "Susunod na Hakbang / Kailangan ng Follow-up?",
+    "Date (Missionary Work)",
+    "Pangalan ng Bagong Contact / Prospect (Contact Name)",
+    "Edad at Kasarian (Age & Gender)",
+    "Contact Number / Social Media Handle (Messenger Link)",
+    "Tirahan o Lokasyon kung saan nakatagpo (Address / Location met)",
+    "Reaksyon o Tugon sa Ebanghelyo (Response Status)",
+    "Anong Mensahe o Paksa ang Naibahagi? (Topic / Message Shared)",
+    "Mga Interes o Pangangailangan ng Contact (Interests & Needs)",
+    "Napagkasunduang Araw para sa Follow-up (Follow-up Date)",
+    "Pangalan ng Candidate / Estudyante (Candidate Name)",
+    "Contact Number / Social Media Link",
+    "Pangalan ng Nagtuturo (Instructor / Mentor / Priest Name)",
+    "Kasalukuyang Leksyon o Aral na Natapos (Lesson Progress)",
+    "Status ng Pagdalo (Attendance Status)",
+    "Handa na ba para sa Bautismo / Kumpirma (Ready for Baptism?)",
+    "Target Date ng Bautismo (kung handa na)",
+    "Puna o Evaluasyon ng Nagtuturo (Teacher's Notes / Assessment)"
+]
 
-    candidate_dbs = []
-    for k_db in ["NOTION_OUTREACH_DB_ID", "NOTION_CRM_DB_ID", "NOTION_COUNSELLING_DB_ID", "NOTION_QUESTIONS_DB_ID", "NOTION_PRAYER_DB_ID"]:
-        val_db = st.session_state.custom_secrets.get(k_db, "") or globals().get(k_db, "")
-        if val_db and val_db not in candidate_dbs:
-            candidate_dbs.append(val_db)
+def get_saved_outreach_drive_sheet_url() -> str:
+    """Hinahanap ang naka-save na Google Drive Spreadsheet link para sa House Visitation, Missionary Work, Indoctrination & Remarks
+    mula sa Saved Google Drive Links Directory sa App Settings (default: 1FZLr3gFvU-YXWJMTrRkOqJ2X0hTAaQ3rRerX9cdUIb8)."""
+    try:
+        for item in reversed(load_saved_drive_links_registry()):
+            u = str(item.get("url", "")).strip()
+            lbl = str(item.get("label", "")).upper()
+            cat = str(item.get("category", "")).upper()
+            if not u or "/folders/" in u:
+                continue
+            if (
+                DEFAULT_OUTREACH_DRIVE_SHEET_ID in u
+                or "VISITATION" in lbl
+                or "OPERATIONS REPORT" in lbl
+                or "OUTREACH" in lbl
+                or "INDOCTRINATION" in lbl
+                or "OUTREACH" in cat
+            ):
+                return u
+    except Exception:
+        pass
+    return DEFAULT_OUTREACH_DRIVE_SHEET_URL
 
-    if not candidate_dbs:
-        return 0, "Walang Notion Database ID na nakalagay."
+def _normalize_outreach_drive_headers(raw_headers: list[str]) -> list[str]:
+    """Inaayos ang dalawang 'Date' column headers sa Google Spreadsheet ('Form responses 1'):
+    Column J -> 'Date (House Visitation)' at Column S -> 'Date (Missionary Work)'."""
+    normalized = []
+    date_seen = 0
+    for idx, h in enumerate(raw_headers):
+        h_clean = str(h or "").strip()
+        if h_clean.lower() == "date":
+            date_seen += 1
+            if date_seen == 1 or idx <= 12:
+                normalized.append("Date (House Visitation)")
+            else:
+                normalized.append("Date (Missionary Work)")
+        elif not h_clean:
+            if idx < len(OUTREACH_DRIVE_SHEET_35_COLUMNS):
+                normalized.append(OUTREACH_DRIVE_SHEET_35_COLUMNS[idx])
+            else:
+                normalized.append(f"Column_{idx+1}")
+        else:
+            normalized.append(h_clean)
+    return normalized
 
-    db_records = load_weekly_monitoring_records()
-    grouped_updates = {}
-    matched_tasks = 0
-
-    for db_id in candidate_dbs:
+def _download_drive_spreadsheet_bytes_any_format(sheet_url_or_id: str) -> bytes | None:
+    """Kinukuha ang XLSX bytes mula sa Google Drive Spreadsheet (gumagana sa parehong Google Sheets native file at uploaded .xlsx file)."""
+    fid = extract_id_from_url(sheet_url_or_id) or DEFAULT_OUTREACH_DRIVE_SHEET_ID
+    if not fid:
+        return None
+    service = get_google_drive_service()
+    if service is not None:
         try:
-            df_n = load_notion_crm_data(token, db_id)
+            meta = service.files().get(fileId=fid, fields="mimeType", supportsAllDrives=True).execute()
+            m_type = str(meta.get("mimeType", ""))
+            if "spreadsheet" in m_type and "officedocument" not in m_type:
+                data = service.files().export_media(
+                    fileId=fid,
+                    mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                ).execute()
+            else:
+                data = service.files().get_media(fileId=fid, supportsAllDrives=True).execute()
+            if data and len(data) > 100:
+                return data
+        except Exception:
+            pass
+    for dl_url in [
+        f"https://docs.google.com/spreadsheets/d/{fid}/export?format=xlsx",
+        f"https://drive.google.com/uc?export=download&id={fid}"
+    ]:
+        try:
+            r = requests.get(dl_url, timeout=15)
+            if r.status_code == 200 and r.content and len(r.content) > 100 and not r.content.lstrip().startswith(b"<!DOCTYPE html"):
+                return r.content
         except Exception:
             continue
-        if df_n is None or df_n.empty:
+    return None
+
+def fetch_outreach_drive_spreadsheet_df(sheet_url: str = "") -> tuple[pd.DataFrame, str]:
+    """Binabasa ang lahat ng rows mula sa Google Drive Spreadsheet para sa House Visitation, Missionary Work, Indoctrination & Remarks
+    (https://docs.google.com/spreadsheets/d/1FZLr3gFvU-YXWJMTrRkOqJ2X0hTAaQ3rRerX9cdUIb8/edit?usp=sharing)."""
+    eff_url = str(sheet_url or "").strip() or get_saved_outreach_drive_sheet_url()
+    fid = extract_id_from_url(eff_url) or DEFAULT_OUTREACH_DRIVE_SHEET_ID
+    rows_dicts = []
+    status_msg = ""
+
+    # 1. Subukan kunin bilang Excel (.xlsx) mula sa Google Drive API o export link
+    x_bytes = _download_drive_spreadsheet_bytes_any_format(eff_url)
+    if x_bytes:
+        try:
+            wb = openpyxl.load_workbook(io.BytesIO(x_bytes), data_only=True)
+            ws = wb["Form responses 1"] if "Form responses 1" in wb.sheetnames else wb.active
+            all_rows = list(ws.iter_rows(values_only=True))
+            if all_rows:
+                headers = _normalize_outreach_drive_headers([str(c or "").strip() for c in all_rows[0]])
+                for r_vals in all_rows[1:]:
+                    if not r_vals or not any(str(v or "").strip() for v in r_vals):
+                        continue
+                    item = {}
+                    for c_i, col_name in enumerate(headers):
+                        val = r_vals[c_i] if c_i < len(r_vals) else ""
+                        if isinstance(val, datetime):
+                            val_s = val.strftime("%Y-%m-%d %H:%M:%S") if (val.hour or val.minute) else val.strftime("%m/%d/%y")
+                        else:
+                            val_s = str(val if val is not None else "").strip()
+                        item[col_name] = val_s
+                    rows_dicts.append(item)
+                status_msg = f"Na-load mula sa Google Drive Spreadsheet ({ws.title}: {len(rows_dicts)} row(s))."
+        except Exception as ex_x:
+            status_msg = f"Excel parse notice: {str(ex_x)}"
+
+    # 2. Fallback sa CSV export kung kailangan
+    if not rows_dicts and fid:
+        try:
+            import csv
+            csv_url = f"https://docs.google.com/spreadsheets/d/{fid}/export?format=csv"
+            resp = requests.get(csv_url, timeout=15)
+            if resp.status_code == 200 and resp.content and not resp.content.lstrip().startswith(b"<!DOCTYPE html"):
+                reader = list(csv.reader(io.StringIO(resp.content.decode("utf-8-sig", errors="replace"))))
+                if reader:
+                    headers = _normalize_outreach_drive_headers(reader[0])
+                    for r_vals in reader[1:]:
+                        if not r_vals or not any(str(v or "").strip() for v in r_vals):
+                            continue
+                        item = {}
+                        for c_i, col_name in enumerate(headers):
+                            item[col_name] = str(r_vals[c_i] if c_i < len(r_vals) else "").strip()
+                        rows_dicts.append(item)
+                    status_msg = f"Na-load mula sa Google Drive CSV Export ({len(rows_dicts)} row(s))."
+        except Exception as ex_c:
+            if not status_msg:
+                status_msg = f"CSV notice: {str(ex_c)}"
+
+    if rows_dicts:
+        try:
+            with open(LOCAL_OUTREACH_RESPONSES_CACHE, "w", encoding="utf-8") as f:
+                json.dump(rows_dicts, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+    elif os.path.exists(LOCAL_OUTREACH_RESPONSES_CACHE):
+        try:
+            with open(LOCAL_OUTREACH_RESPONSES_CACHE, "r", encoding="utf-8") as f:
+                cached = json.load(f)
+            if isinstance(cached, list) and cached:
+                rows_dicts = cached
+                status_msg = f"Na-load mula sa lokal na cache ng Google Drive Spreadsheet ({len(rows_dicts)} row(s))."
+        except Exception:
+            pass
+
+    if not rows_dicts:
+        return pd.DataFrame(columns=OUTREACH_DRIVE_SHEET_35_COLUMNS), (status_msg or "Nakakonekta na sa Google Drive Spreadsheet (Wala pang laman na response rows sa sheet).")
+
+    norm_rows = []
+    for r in rows_dicts:
+        nr = {col: str(r.get(col, "") or "").strip() for col in OUTREACH_DRIVE_SHEET_35_COLUMNS}
+        for k_ex, v_ex in r.items():
+            if k_ex not in nr:
+                nr[k_ex] = str(v_ex or "").strip()
+        norm_rows.append(nr)
+    return pd.DataFrame(norm_rows), status_msg
+
+def _match_parish_from_outreach_sheet(raw_parish_text: str, raw_loc_text: str = "", fallback_parish: str = "POBLACION PARISH") -> str:
+    combined = f"{raw_parish_text} {raw_loc_text}".upper().strip()
+    if not combined:
+        return fallback_parish if fallback_parish in PARISH_ORDER else "POBLACION PARISH"
+    if "HONG KONG" in combined or "HONGKONG" in combined or "HK" in combined.split():
+        return "HONGKONG PARISH"
+    if "LIPAY" in combined:
+        return "LIPAY NORTE PARISH"
+    for p_cand in PARISH_ORDER:
+        short_p = p_cand.replace("PARISH", "").strip().upper()
+        if short_p and short_p in combined:
+            return p_cand
+    return fallback_parish if fallback_parish in PARISH_ORDER else "POBLACION PARISH"
+
+def _resolve_month_week_year_from_outreach_date(date_str: str, fallback_month: str = "January", fallback_week: str = "1st Week", fallback_year: str = "2027") -> tuple[str, str, str, str]:
+    s = str(date_str or "").strip()
+    if not s:
+        return fallback_month, fallback_week, fallback_year, get_week_date_for_month_year(fallback_month, fallback_week, int(fallback_year) if str(fallback_year).isdigit() else 2027)
+    parsed_dt = None
+    date_part = s.split(" ")[0].strip()
+    for fmt in ["%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%d/%m/%Y", "%m-%d-%Y", "%m-%d-%y", "%Y/%m/%d", "%b %d, %Y", "%B %d, %Y"]:
+        try:
+            parsed_dt = datetime.strptime(date_part, fmt)
+            break
+        except Exception:
             continue
+    if parsed_dt is None:
+        for m_name in MONTHS_2027:
+            if m_name.upper() in s.upper():
+                fallback_month = m_name
+                break
+        for w_name in WEEKS_2027:
+            if w_name.upper() in s.upper():
+                fallback_week = w_name
+                break
+        return fallback_month, fallback_week, fallback_year, s
 
-        for _, row in df_n.iterrows():
-            row_dict = {str(k).strip(): str(v or "").strip() for k, v in row.items()}
-            joined_text = " | ".join(f"{k}: {v}" for k, v in row_dict.items() if not k.startswith("_") and v)
-            j_up = joined_text.upper()
+    m_name = MONTHS_2027[parsed_dt.month - 1]
+    y_str = str(parsed_dt.year)
+    sats = get_saturdays_for_month_year(m_name, parsed_dt.year)
+    best_wk_idx = 0
+    if sats:
+        min_diff = 999
+        for idx_s, sat_d in enumerate(sats):
+            diff_days = abs((parsed_dt.date() - sat_d.date()).days)
+            if diff_days < min_diff:
+                min_diff = diff_days
+                best_wk_idx = idx_s
+    wk_label = WEEKS_2027[min(best_wk_idx, len(WEEKS_2027) - 1)]
+    return m_name, wk_label, y_str, parsed_dt.strftime("%m/%d/%y")
 
-            # Tukuyin kung anong uri ng Outreach Task ito
-            task_cat = None
-            if any(w in j_up for w in ["HOUSE VISITATION", "VISITATION", "DALAW", "HOME VISIT"]):
-                task_cat = "HV"
-            elif any(w in j_up for w in ["MISSIONARY", "MISSION WORK", "MISYON"]):
-                task_cat = "MW"
-            elif any(w in j_up for w in ["INDOCTRINATION", "DOKTRINA", "DOCTRINE"]):
-                task_cat = "IND"
+def sync_outreach_tasks_from_notion_to_excel_and_db(target_month: str = "January", target_week: str = "1st Week", target_parish: str = "Lahat ng Parokya", target_year: str = "2027", custom_sheet_url: str = "") -> tuple[int, str]:
+    """Kinukuha nang direkta mula sa Google Drive Spreadsheet ('1FZLr3gFvU-YXWJMTrRkOqJ2X0hTAaQ3rRerX9cdUIb8')
+    ang lahat ng datos para sa House Visitation, Missionary Work, Indoctrination & Remarks at inilalagay sa App Tables, Performance Report, at Excel."""
+    sheet_url = str(custom_sheet_url or "").strip() or get_saved_outreach_drive_sheet_url()
+    df_sheet, fetch_msg = fetch_outreach_drive_spreadsheet_df(sheet_url)
+    if df_sheet is None or df_sheet.empty:
+        return 0, f"{fetch_msg} (Kapag may bagong pasok na sagot sa Google Drive Spreadsheet, awtomatiko itong kukunin at ilalagay sa mga Table rito)."
 
-            if task_cat is None:
-                continue
+    db_records = load_weekly_monitoring_records()
+    grouped = {}
+    matched_entries = 0
+    fb_parish = target_parish if target_parish in PARISH_ORDER else "POBLACION PARISH"
 
-            # Tukuyin kung aling Parokya
-            detected_parish = None
-            for p_cand in PARISH_ORDER:
-                clean_p = p_cand.replace("PARISH", "").strip()
-                if clean_p.upper() in j_up:
-                    detected_parish = p_cand
-                    break
-            if not detected_parish:
-                detected_parish = target_parish if target_parish in PARISH_ORDER else "LIPAY NORTE PARISH"
+    for _, row in df_sheet.iterrows():
+        r = {str(k).strip(): str(v or "").strip() for k, v in row.items()}
+        raw_parish = r.get("Parish / Simbahan (Church Name)", "")
+        raw_loc = r.get("Lokasyon / Area / Barangay", "")
+        parish_matched = _match_parish_from_outreach_sheet(raw_parish, raw_loc, fb_parish)
 
-            # Tukuyin ang Buwan at Linggo mula sa Notion row (o gamitin ang kasalukuyang target_month at target_week)
-            det_month = target_month if target_month in MONTHS_2027 else "January"
-            for m_c in MONTHS_2027:
-                if m_c.upper() in j_up:
-                    det_month = m_c
-                    break
-            det_week = target_week if target_week in WEEKS_2027 else "1st Week"
-            for w_c in WEEKS_2027:
-                if w_c.upper() in j_up or f"WEEK {w_c[0]}" in j_up:
-                    det_week = w_c
-                    break
+        act_type = r.get("Type of Activity", "").upper()
+        worker_name = r.get("Pangalan ng Nag-uulat (Worker / Priest / Volunteer Name)", "")
+        act_date_raw = (
+            r.get("Petsa ng Gawain (Date of Activity)", "")
+            or r.get("Date (House Visitation)", "")
+            or r.get("Date (Missionary Work)", "")
+            or r.get("Timestamp", "")
+        )
+        m_res, w_res, y_res, short_dt = _resolve_month_week_year_from_outreach_date(
+            act_date_raw, target_month, target_week, target_year
+        )
+        g_key = (parish_matched, m_res, w_res, y_res)
+        if g_key not in grouped:
+            grouped[g_key] = {
+                "hv_names": [], "hv_rems": [],
+                "mw_names": [], "mw_rems": [],
+                "ind_names": [], "ind_rems": []
+            }
 
-            fam_name = ""
-            for nk in ["Family Name", "Full Name", "Name", "Pangalan", "Visitor Name", "Family", "Title"]:
-                if row_dict.get(nk):
-                    fam_name = row_dict[nk]
-                    break
-            if not fam_name:
-                for k_col, v_col in row_dict.items():
-                    if not k_col.startswith("_") and v_col and len(v_col) < 80:
-                        fam_name = v_col
-                        break
+        # 1. House Visitation (Columns J to R)
+        hv_fam = r.get("Pangalan ng Pamilya / Indibidwal na Binisita", "")
+        hv_addr = r.get("Tirahan at Contact Number ng Binisita", "")
+        hv_purp = r.get("Layunin / Uri ng Pagbisita", "")
+        hv_cond = r.get("Kalagayan ng Espirituwal / Sitwasyon ng Pamilya", "")
+        hv_pray = r.get("Mga Kahilingan sa Panalangin (Prayer Requests)", "")
+        hv_top = r.get("Paksa ng Pag-aaral o Mensaheng Ibinahagi (Topic / Scripture Shared)", "")
+        hv_react = r.get("Reaksyon o Tugon ng Binisita sa Mensahe:", "")
+        hv_foll = r.get("Susunod na Hakbang / Kailangan ng Follow-up?", "")
+        hv_dt = r.get("Date (House Visitation)", "") or short_dt
 
-            rem_txt = ""
-            for rk in ["Remarks", "Notes", "Details", "Tala", "Message", "Status", "Description"]:
-                if row_dict.get(rk):
-                    rem_txt = row_dict[rk]
-                    break
+        if "VISIT" in act_type or "DALAW" in act_type or "HOUSE" in act_type or hv_fam or hv_purp or hv_cond or hv_top or hv_react:
+            if hv_fam or hv_purp or hv_cond or hv_top or hv_react:
+                nm_hv = f"{hv_dt}: {hv_fam}" if (hv_dt and hv_fam and hv_dt not in hv_fam) else (hv_fam or f"Visited ({hv_dt})")
+                if nm_hv not in grouped[g_key]["hv_names"]:
+                    grouped[g_key]["hv_names"].append(nm_hv)
+                bits_hv = []
+                if worker_name:
+                    bits_hv.append(f"Nag-ulat: {worker_name}")
+                if hv_addr:
+                    bits_hv.append(f"Tirahan/Contact: {hv_addr}")
+                if hv_purp:
+                    bits_hv.append(f"Layunin: {hv_purp}")
+                if hv_top:
+                    bits_hv.append(f"Paksa: {hv_top}")
+                if hv_cond:
+                    bits_hv.append(f"Sitwasyon: {hv_cond}")
+                if hv_pray:
+                    bits_hv.append(f"Prayer Req: {hv_pray}")
+                if hv_react:
+                    bits_hv.append(f"Tugon: {hv_react}")
+                if hv_foll:
+                    bits_hv.append(f"Follow-up: {hv_foll}")
+                rem_hv_line = f"{hv_fam or 'House Visit'}: {' | '.join(bits_hv)}" if bits_hv else hv_fam
+                if rem_hv_line and rem_hv_line not in grouped[g_key]["hv_rems"]:
+                    grouped[g_key]["hv_rems"].append(rem_hv_line)
+                matched_entries += 1
 
-            if not fam_name:
-                continue
+        # 2. Missionary Work (Columns S to AA)
+        mw_con = r.get("Pangalan ng Bagong Contact / Prospect (Contact Name)", "")
+        mw_ag = r.get("Edad at Kasarian (Age & Gender)", "")
+        mw_ph = r.get("Contact Number / Social Media Handle (Messenger Link)", "")
+        mw_loc = r.get("Tirahan o Lokasyon kung saan nakatagpo (Address / Location met)", "")
+        mw_resp = r.get("Reaksyon o Tugon sa Ebanghelyo (Response Status)", "")
+        mw_top = r.get("Anong Mensahe o Paksa ang Naibahagi? (Topic / Message Shared)", "")
+        mw_need = r.get("Mga Interes o Pangangailangan ng Contact (Interests & Needs)", "")
+        mw_fdt = r.get("Napagkasunduang Araw para sa Follow-up (Follow-up Date)", "")
+        mw_dt = r.get("Date (Missionary Work)", "") or short_dt
 
-            g_key = (detected_parish, det_month, det_week)
-            if g_key not in grouped_updates:
-                grouped_updates[g_key] = {"HV": [], "HV_REM": [], "MW": [], "MW_REM": [], "IND": [], "IND_REM": []}
-            if fam_name not in grouped_updates[g_key][task_cat]:
-                grouped_updates[g_key][task_cat].append(fam_name)
-                matched_tasks += 1
-            if rem_txt and rem_txt not in grouped_updates[g_key][f"{task_cat}_REM"]:
-                grouped_updates[g_key][f"{task_cat}_REM"].append(rem_txt)
+        if "MISSION" in act_type or "MISYON" in act_type or mw_con or mw_top or mw_resp or mw_loc:
+            if mw_con or mw_top or mw_resp or mw_loc:
+                nm_mw = f"{mw_dt}: {mw_con}" if (mw_dt and mw_con and mw_dt not in mw_con) else (mw_con or f"Mission ({mw_dt})")
+                if nm_mw not in grouped[g_key]["mw_names"]:
+                    grouped[g_key]["mw_names"].append(nm_mw)
+                bits_mw = []
+                if worker_name:
+                    bits_mw.append(f"Nag-ulat: {worker_name}")
+                if mw_ag:
+                    bits_mw.append(f"Edad/Kasarian: {mw_ag}")
+                if mw_ph:
+                    bits_mw.append(f"Contact: {mw_ph}")
+                if mw_loc:
+                    bits_mw.append(f"Lugar: {mw_loc}")
+                if mw_top:
+                    bits_mw.append(f"Paksa: {mw_top}")
+                if mw_resp:
+                    bits_mw.append(f"Tugon: {mw_resp}")
+                if mw_need:
+                    bits_mw.append(f"Interes/Needs: {mw_need}")
+                if mw_fdt:
+                    bits_mw.append(f"Follow-up: {mw_fdt}")
+                rem_mw_line = f"{mw_con or 'Missionary Work'}: {' | '.join(bits_mw)}" if bits_mw else mw_con
+                if rem_mw_line and rem_mw_line not in grouped[g_key]["mw_rems"]:
+                    grouped[g_key]["mw_rems"].append(rem_mw_line)
+                matched_entries += 1
 
-    for (p_u, m_u, w_u), bucket in grouped_updates.items():
+        # 3. Indoctrination (Columns AB to AI)
+        ind_cand = r.get("Pangalan ng Candidate / Estudyante (Candidate Name)", "")
+        ind_ph = r.get("Contact Number / Social Media Link", "")
+        ind_inst = r.get("Pangalan ng Nagtuturo (Instructor / Mentor / Priest Name)", "")
+        ind_less = r.get("Kasalukuyang Leksyon o Aral na Natapos (Lesson Progress)", "")
+        ind_att = r.get("Status ng Pagdalo (Attendance Status)", "")
+        ind_bap = r.get("Handa na ba para sa Bautismo / Kumpirma (Ready for Baptism?)", "")
+        ind_bdt = r.get("Target Date ng Bautismo (kung handa na)", "")
+        ind_notes = r.get("Puna o Evaluasyon ng Nagtuturo (Teacher's Notes / Assessment)", "")
+
+        if "INDOCTRIN" in act_type or "DOKTRINA" in act_type or ind_cand or ind_less or ind_notes or ind_inst:
+            if ind_cand or ind_less or ind_notes or ind_inst:
+                nm_ind = f"{short_dt}: {ind_cand}" if (short_dt and ind_cand and short_dt not in ind_cand) else (ind_cand or f"Candidate ({short_dt})")
+                if nm_ind not in grouped[g_key]["ind_names"]:
+                    grouped[g_key]["ind_names"].append(nm_ind)
+                bits_ind = []
+                if ind_inst:
+                    bits_ind.append(f"Nagtuturo: {ind_inst}")
+                if ind_ph:
+                    bits_ind.append(f"Contact: {ind_ph}")
+                if ind_less:
+                    bits_ind.append(f"Leksyon: {ind_less}")
+                if ind_att:
+                    bits_ind.append(f"Attendance: {ind_att}")
+                if ind_bap:
+                    bits_ind.append(f"Ready for Baptism: {ind_bap}")
+                if ind_bdt:
+                    bits_ind.append(f"Target Baptism: {ind_bdt}")
+                if ind_notes:
+                    bits_ind.append(f"Puna: {ind_notes}")
+                rem_ind_line = f"{ind_cand or 'Indoctrination'}: {' | '.join(bits_ind)}" if bits_ind else ind_cand
+                if rem_ind_line and rem_ind_line not in grouped[g_key]["ind_rems"]:
+                    grouped[g_key]["ind_rems"].append(rem_ind_line)
+                matched_entries += 1
+
+    for (p_u, m_u, w_u, y_u), bucket in grouped.items():
         rec_k = f"{p_u.upper()}__{m_u.upper()}__{w_u}"
         cur_r = dict(db_records.get(rec_k, {}))
-        r_date = resolve_display_week_date(cur_r, m_u, w_u, int(target_year) if str(target_year).isdigit() else 2027)
+        r_date = resolve_display_week_date(cur_r, m_u, w_u, int(y_u) if str(y_u).isdigit() else 2027)
+        cur_r["parish"] = p_u
+        cur_r["month"] = m_u
+        cur_r["week"] = w_u
+        cur_r["report_date"] = r_date
 
-        if bucket["HV"]:
-            existing_hv = [x.strip() for x in str(cur_r.get("hv_names", "")).split(";") if x.strip()]
-            for item in bucket["HV"]:
-                if item not in existing_hv:
-                    existing_hv.append(item)
-            cur_r["hv_names"] = "; ".join(existing_hv)
-            fam_c, ppl_c = count_families_and_people_from_text(cur_r["hv_names"], str(len(existing_hv)))
-            cur_r["house_visitation"] = str(max(fam_c, len(existing_hv)))
-            cur_r["hv_people_count"] = max(ppl_c, len(existing_hv))
-        if bucket["HV_REM"]:
-            cur_r["hv_remarks"] = "; ".join(bucket["HV_REM"])
+        if bucket["hv_names"]:
+            cur_r["hv_names"] = "; ".join(bucket["hv_names"])
+            fam_c, ppl_c = count_families_and_people_from_text(cur_r["hv_names"], str(len(bucket["hv_names"])))
+            cur_r["house_visitation"] = str(max(fam_c, len(bucket["hv_names"])))
+            cur_r["hv_people_count"] = max(ppl_c, len(bucket["hv_names"]))
+        if bucket["hv_rems"]:
+            cur_r["hv_remarks"] = " ; ".join(bucket["hv_rems"])
 
-        if bucket["MW"]:
-            existing_mw = [x.strip() for x in str(cur_r.get("mw_names", "")).split(";") if x.strip()]
-            for item in bucket["MW"]:
-                if item not in existing_mw:
-                    existing_mw.append(item)
-            cur_r["mw_names"] = "; ".join(existing_mw)
-            fam_c, ppl_c = count_families_and_people_from_text(cur_r["mw_names"], str(len(existing_mw)))
-            cur_r["missionary_work"] = str(max(fam_c, len(existing_mw)))
-            cur_r["mw_people_count"] = max(ppl_c, len(existing_mw))
-        if bucket["MW_REM"]:
-            cur_r["mw_remarks"] = "; ".join(bucket["MW_REM"])
+        if bucket["mw_names"]:
+            cur_r["mw_names"] = "; ".join(bucket["mw_names"])
+            fam_c, ppl_c = count_families_and_people_from_text(cur_r["mw_names"], str(len(bucket["mw_names"])))
+            cur_r["missionary_work"] = str(max(fam_c, len(bucket["mw_names"])))
+            cur_r["mw_people_count"] = max(ppl_c, len(bucket["mw_names"]))
+        if bucket["mw_rems"]:
+            cur_r["mw_remarks"] = " ; ".join(bucket["mw_rems"])
 
-        if bucket["IND"]:
-            existing_ind = [x.strip() for x in str(cur_r.get("ind_names", "")).split(";") if x.strip()]
-            for item in bucket["IND"]:
-                if item not in existing_ind:
-                    existing_ind.append(item)
-            cur_r["ind_names"] = "; ".join(existing_ind)
-            fam_c, ppl_c = count_families_and_people_from_text(cur_r["ind_names"], str(len(existing_ind)))
-            cur_r["indoctrination"] = str(max(fam_c, len(existing_ind)))
-            cur_r["ind_people_count"] = max(ppl_c, len(existing_ind))
-        if bucket["IND_REM"]:
-            cur_r["ind_remarks"] = "; ".join(bucket["IND_REM"])
+        if bucket["ind_names"]:
+            cur_r["ind_names"] = "; ".join(bucket["ind_names"])
+            fam_c, ppl_c = count_families_and_people_from_text(cur_r["ind_names"], str(len(bucket["ind_names"])))
+            cur_r["indoctrination"] = str(max(fam_c, len(bucket["ind_names"])))
+            cur_r["ind_people_count"] = max(ppl_c, len(bucket["ind_names"]))
+        if bucket["ind_rems"]:
+            cur_r["ind_remarks"] = " ; ".join(bucket["ind_rems"])
 
-        save_weekly_monitoring_record(p_u, m_u, w_u, r_date, cur_r, drive_link=cur_r.get("drive_link", ""))
+        rem_all = [x for x in [cur_r.get("hv_remarks", ""), cur_r.get("mw_remarks", ""), cur_r.get("ind_remarks", "")] if x and x != "(No Report)"]
+        if rem_all and not cur_r.get("outreach_general_remarks"):
+            cur_r["outreach_general_remarks"] = " | ".join(rem_all)
 
-    if matched_tasks == 0:
-        return 0, "Naka-ready na ang Notion Outreach Sync! Kapag naidagdag na sa Notion ang mga House Visitation, Missionary Work, at Indoctrination tasks, awtomatiko itong papasok dito at sa Excel report."
-    return matched_tasks, f"Matagumpay na nakuha ang {matched_tasks} Outreach Task(s) mula sa Notion at nai-type sa Excel Report!"
+        db_records[rec_k] = cur_r
+        for l_rst in ["English", "Ilokano"]:
+            st.session_state.pop(f"editable_perf_report_{m_u}_{w_u}_{y_u}_{l_rst}", None)
+
+    try:
+        with open(LOCAL_WEEKLY_REPORTS_DB, "w", encoding="utf-8") as f:
+            json.dump(db_records, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+    return matched_entries, f"Matagumpay na na-sync ang {matched_entries} Outreach record(s) mula sa Google Drive Spreadsheet ({fetch_msg})!"
+
+def build_google_drive_outreach_category_tables(df_raw: pd.DataFrame, filter_parish: str = "Lahat ng Parokya") -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Bumubuo ng mga Table sa App na direktang kumukuha ng datos mula sa Google Drive Spreadsheet ('1FZLr3gFvU-YXWJMTrRkOqJ2X0hTAaQ3rRerX9cdUIb8'):
+    1) Full Google Drive Responses Table (35 Columns)
+    2) House Visitation Table (Columns A–I & J–R)
+    3) Missionary Work Table (Columns A–I & S–AA)
+    4) Indoctrination & Teacher's Remarks Table (Columns A–I & AB–AI)"""
+    hv_rows, mw_rows, ind_rows, all_filtered = [], [], [], []
+    if df_raw is not None and not df_raw.empty:
+        for _, row in df_raw.iterrows():
+            r = {str(k).strip(): str(v or "").strip() for k, v in row.items()}
+            p_raw = r.get("Parish / Simbahan (Church Name)", "")
+            loc_raw = r.get("Lokasyon / Area / Barangay", "")
+            p_matched = _match_parish_from_outreach_sheet(p_raw, loc_raw, "POBLACION PARISH")
+            if filter_parish != "Lahat ng Parokya" and not normalize_parish_match(p_matched, filter_parish):
+                continue
+            all_filtered.append(r)
+            act_type = r.get("Type of Activity", "").upper()
+            base_cols = {
+                "Timestamp": r.get("Timestamp", "-"),
+                "Parish / Simbahan": p_raw or p_matched,
+                "Pangalan ng Nag-uulat": r.get("Pangalan ng Nag-uulat (Worker / Priest / Volunteer Name)", "-"),
+                "Opening & Closing Prayer": f"Open: {r.get('Opening Prayer', '-')} | Close: {r.get('Closing Payer', '-')}",
+                "Katungkulan / Ministry Unit": r.get("Katungkulan / Ministry Unit", "-"),
+                "Lokasyon / Barangay": loc_raw or "-",
+            }
+            hv_fam = r.get("Pangalan ng Pamilya / Indibidwal na Binisita", "")
+            hv_purp = r.get("Layunin / Uri ng Pagbisita", "")
+            hv_top = r.get("Paksa ng Pag-aaral o Mensaheng Ibinahagi (Topic / Scripture Shared)", "")
+            if "VISIT" in act_type or "DALAW" in act_type or "HOUSE" in act_type or hv_fam or hv_purp or hv_top:
+                hv_rows.append({
+                    **base_cols,
+                    "Petsa ng Pagbisita": r.get("Date (House Visitation)", "") or r.get("Petsa ng Gawain (Date of Activity)", "-"),
+                    "Pangalan ng Pamilya / Indibidwal na Binisita": hv_fam or "-",
+                    "Tirahan at Contact Number": r.get("Tirahan at Contact Number ng Binisita", "-"),
+                    "Layunin / Uri ng Pagbisita": hv_purp or "-",
+                    "Kalagayan ng Espirituwal / Sitwasyon": r.get("Kalagayan ng Espirituwal / Sitwasyon ng Pamilya", "-"),
+                    "Mga Kahilingan sa Panalangin": r.get("Mga Kahilingan sa Panalangin (Prayer Requests)", "-"),
+                    "Paksa / Mensaheng Ibinahagi": hv_top or "-",
+                    "Reaksyon o Tugon ng Binisita": r.get("Reaksyon o Tugon ng Binisita sa Mensahe:", "-"),
+                    "Susunod na Hakbang / Follow-up": r.get("Susunod na Hakbang / Kailangan ng Follow-up?", "-")
+                })
+            mw_con = r.get("Pangalan ng Bagong Contact / Prospect (Contact Name)", "")
+            mw_top = r.get("Anong Mensahe o Paksa ang Naibahagi? (Topic / Message Shared)", "")
+            mw_resp = r.get("Reaksyon o Tugon sa Ebanghelyo (Response Status)", "")
+            if "MISSION" in act_type or "MISYON" in act_type or mw_con or mw_top or mw_resp:
+                mw_rows.append({
+                    **base_cols,
+                    "Petsa ng Misyon": r.get("Date (Missionary Work)", "") or r.get("Petsa ng Gawain (Date of Activity)", "-"),
+                    "Pangalan ng Bagong Contact / Prospect": mw_con or "-",
+                    "Edad at Kasarian": r.get("Edad at Kasarian (Age & Gender)", "-"),
+                    "Contact Number / Messenger Link": r.get("Contact Number / Social Media Handle (Messenger Link)", "-"),
+                    "Tirahan o Lokasyon kung saan Nakatagpo": r.get("Tirahan o Lokasyon kung saan nakatagpo (Address / Location met)", "-"),
+                    "Reaksyon o Tugon sa Ebanghelyo": mw_resp or "-",
+                    "Mensahe o Paksang Naibahagi": mw_top or "-",
+                    "Mga Interes o Pangangailangan": r.get("Mga Interes o Pangangailangan ng Contact (Interests & Needs)", "-"),
+                    "Napagkasunduang Follow-up Date": r.get("Napagkasunduang Araw para sa Follow-up (Follow-up Date)", "-")
+                })
+            ind_cand = r.get("Pangalan ng Candidate / Estudyante (Candidate Name)", "")
+            ind_less = r.get("Kasalukuyang Leksyon o Aral na Natapos (Lesson Progress)", "")
+            ind_notes = r.get("Puna o Evaluasyon ng Nagtuturo (Teacher's Notes / Assessment)", "")
+            if "INDOCTRIN" in act_type or "DOKTRINA" in act_type or ind_cand or ind_less or ind_notes:
+                ind_rows.append({
+                    **base_cols,
+                    "Petsa ng Gawain": r.get("Petsa ng Gawain (Date of Activity)", "-"),
+                    "Pangalan ng Candidate / Estudyante": ind_cand or "-",
+                    "Contact Number / Social Media Link": r.get("Contact Number / Social Media Link", "-"),
+                    "Pangalan ng Nagtuturo (Instructor / Priest)": r.get("Pangalan ng Nagtuturo (Instructor / Mentor / Priest Name)", "-"),
+                    "Kasalukuyang Leksyon (Lesson Progress)": ind_less or "-",
+                    "Status ng Pagdalo": r.get("Status ng Pagdalo (Attendance Status)", "-"),
+                    "Handa na ba sa Bautismo / Kumpirma?": r.get("Handa na ba para sa Bautismo / Kumpirma (Ready for Baptism?)", "-"),
+                    "Target Date ng Bautismo": r.get("Target Date ng Bautismo (kung handa na)", "-"),
+                    "Puna o Evaluasyon ng Nagtuturo (Remarks)": ind_notes or "-"
+                })
+
+    hv_c = [
+        "Timestamp", "Parish / Simbahan", "Petsa ng Pagbisita", "Pangalan ng Nag-uulat",
+        "Opening & Closing Prayer", "Katungkulan / Ministry Unit", "Lokasyon / Barangay",
+        "Pangalan ng Pamilya / Indibidwal na Binisita", "Tirahan at Contact Number", "Layunin / Uri ng Pagbisita",
+        "Kalagayan ng Espirituwal / Sitwasyon", "Mga Kahilingan sa Panalangin",
+        "Paksa / Mensaheng Ibinahagi", "Reaksyon o Tugon ng Binisita", "Susunod na Hakbang / Follow-up"
+    ]
+    mw_c = [
+        "Timestamp", "Parish / Simbahan", "Petsa ng Misyon", "Pangalan ng Nag-uulat",
+        "Opening & Closing Prayer", "Katungkulan / Ministry Unit", "Lokasyon / Barangay",
+        "Pangalan ng Bagong Contact / Prospect", "Edad at Kasarian", "Contact Number / Messenger Link",
+        "Tirahan o Lokasyon kung saan Nakatagpo", "Reaksyon o Tugon sa Ebanghelyo",
+        "Mensahe o Paksang Naibahagi", "Mga Interes o Pangangailangan", "Napagkasunduang Follow-up Date"
+    ]
+    ind_c = [
+        "Timestamp", "Parish / Simbahan", "Petsa ng Gawain", "Pangalan ng Nag-uulat",
+        "Opening & Closing Prayer", "Katungkulan / Ministry Unit", "Lokasyon / Barangay",
+        "Pangalan ng Candidate / Estudyante", "Contact Number / Social Media Link",
+        "Pangalan ng Nagtuturo (Instructor / Priest)", "Kasalukuyang Leksyon (Lesson Progress)",
+        "Status ng Pagdalo", "Handa na ba sa Bautismo / Kumpirma?",
+        "Target Date ng Bautismo", "Puna o Evaluasyon ng Nagtuturo (Remarks)"
+    ]
+    df_all_out = pd.DataFrame(all_filtered, columns=OUTREACH_DRIVE_SHEET_35_COLUMNS) if all_filtered else pd.DataFrame(columns=OUTREACH_DRIVE_SHEET_35_COLUMNS)
+    df_hv_out = pd.DataFrame(hv_rows, columns=hv_c) if hv_rows else pd.DataFrame(columns=hv_c)
+    df_mw_out = pd.DataFrame(mw_rows, columns=mw_c) if mw_rows else pd.DataFrame(columns=mw_c)
+    df_ind_out = pd.DataFrame(ind_rows, columns=ind_c) if ind_rows else pd.DataFrame(columns=ind_c)
+    return df_all_out, df_hv_out, df_mw_out, df_ind_out
 
 def build_multi_week_house_visitation_df(selected_month: str, weeks_list: list[str], filter_parish: str = "Lahat ng Parokya") -> pd.DataFrame:
     frames = []
@@ -6310,7 +6774,16 @@ def build_multi_week_outreach_remarks_df(selected_month: str, weeks_list: list[s
         week_num_only = re.sub(r"\D", "", str(wk)) or "1"
         for p_name in parishes_to_scan:
             rec = db.get(f"{p_name.upper()}__{selected_month.upper()}__{wk}", {})
-            has_data = bool(rec.get("has_data", False))
+            has_data = bool(
+                rec.get("has_data", False) or
+                str(rec.get("hv_remarks", "")).strip() or
+                str(rec.get("mw_remarks", "")).strip() or
+                str(rec.get("ind_remarks", "")).strip() or
+                str(rec.get("outreach_general_remarks", "")).strip() or
+                str(rec.get("hv_names", "")).strip() or
+                str(rec.get("mw_names", "")).strip() or
+                str(rec.get("ind_names", "")).strip()
+            )
             is_no_rep_o = is_record_marked_no_report(rec)
             if not has_data and not is_no_rep_o and len(weeks_list) > 1 and filter_parish == "Lahat ng Parokya":
                 continue
@@ -7893,12 +8366,18 @@ def render_outreach_visitation_missionary_page():
             outreach_week_options,
             key="outreach_sel_week"
         )
+    active_outreach_drive_url = get_saved_outreach_drive_sheet_url()
+    eff_w_drive = out_week_sel if out_week_sel in out_month_actual_weeks else out_month_actual_weeks[0]
+    drive_outreach_df_raw, drive_outreach_status = fetch_outreach_drive_spreadsheet_df(active_outreach_drive_url)
+    if not drive_outreach_df_raw.empty and not st.session_state.get("_outreach_drive_autosynced_once"):
+        sync_outreach_tasks_from_notion_to_excel_and_db(out_month, eff_w_drive, out_parish, selected_year, custom_sheet_url=active_outreach_drive_url)
+        st.session_state["_outreach_drive_autosynced_once"] = True
+
     with oc5:
         st.write("")
-        if st.button("🔄 Sync Outreach Mula sa Notion -> Excel", use_container_width=True, type="primary"):
-            eff_w_notion = out_week_sel if out_week_sel in out_month_actual_weeks else out_month_actual_weeks[0]
-            with st.spinner("Kinukuha ang House Visitation, Missionary Work, at Indoctrination tasks mula sa Notion at inilalagay sa Excel Report..."):
-                n_cnt, n_msg = sync_outreach_tasks_from_notion_to_excel_and_db(out_month, eff_w_notion, out_parish, selected_year)
+        if st.button("🔄 Sync Outreach Mula sa Google Drive", use_container_width=True, type="primary"):
+            with st.spinner("Kinukuha ang House Visitation, Missionary Work, Indoctrination & Remarks mula sa Google Drive Spreadsheet..."):
+                n_cnt, n_msg = sync_outreach_tasks_from_notion_to_excel_and_db(out_month, eff_w_drive, out_parish, selected_year, custom_sheet_url=active_outreach_drive_url)
                 st.cache_data.clear()
                 if n_cnt > 0:
                     st.success(f"✅ {n_msg}")
@@ -8064,6 +8543,38 @@ def render_outreach_visitation_missionary_page():
     st.divider()
     out_weeks_list = out_month_actual_weeks if out_week_sel not in out_month_actual_weeks else [out_week_sel]
     out_scope_label = f"{out_week_sel} of {out_month.upper()} {selected_year} — {out_parish}"
+
+    # 📊 BAGONG TABLE PARA SA GOOGLE DRIVE SPREADSHEET (1FZLr3gFvU-YXWJMTrRkOqJ2X0hTAaQ3rRerX9cdUIb8)
+    st.markdown(f"#### 📊 Google Drive Spreadsheet Table: Church Operations Report — Visitation, Mission, Indoctrination & Remarks ({out_parish})")
+    st.caption(
+        f"🔗 **Active Google Drive Source Link (Mula sa Saved Links sa App):** [{active_outreach_drive_url}]({active_outreach_drive_url}) • {drive_outreach_status}"
+    )
+    gd_all_df, gd_hv_df, gd_mw_df, gd_ind_df = build_google_drive_outreach_category_tables(drive_outreach_df_raw, out_parish)
+    gd_tab1, gd_tab2, gd_tab3, gd_tab4 = st.tabs([
+        f"📋 Buong Google Drive Sheet Table ({len(gd_all_df)} Row(s))",
+        f"🏡 House Visitation (Google Drive - {len(gd_hv_df)})",
+        f"🌍 Missionary Work (Google Drive - {len(gd_mw_df)})",
+        f"📖 Indoctrination & Remarks (Google Drive - {len(gd_ind_df)})"
+    ])
+    with gd_tab1:
+        st.dataframe(gd_all_df, use_container_width=True, hide_index=True)
+    with gd_tab2:
+        if not gd_hv_df.empty:
+            render_record_style_html_table(gd_hv_df)
+        else:
+            st.dataframe(gd_hv_df, use_container_width=True, hide_index=True)
+    with gd_tab3:
+        if not gd_mw_df.empty:
+            render_record_style_html_table(gd_mw_df)
+        else:
+            st.dataframe(gd_mw_df, use_container_width=True, hide_index=True)
+    with gd_tab4:
+        if not gd_ind_df.empty:
+            render_record_style_html_table(gd_ind_df)
+        else:
+            st.dataframe(gd_ind_df, use_container_width=True, hide_index=True)
+
+    st.divider()
 
     if out_category in ("Lahat (House Visitation, Missionary Work, Indoctrination & Remarks)", "HOUSE Visitation: REQUIREMENTS 10 FAMILIES MEMBER OR NON-MEMBER"):
         st.markdown(f"#### 🏡 Unang Table: HOUSE Visitation: REQUIREMENTS 10 FAMILIES MEMBER OR NON-MEMBER ({out_scope_label})")
@@ -10091,18 +10602,30 @@ elif app_mode == "🛠️ App Settings":
                             if "/folders/" in chosen_url:
                                 cnt, msg = sync_weekly_reports_from_google_drive_folder(chosen_url, chosen_month, chosen_week)
                                 st.success(f"✅ {msg}")
-                            elif service and f_id:
+                            elif DEFAULT_OUTREACH_DRIVE_SHEET_ID in chosen_url or "Visitation" in str(chosen_link_item.get("label", "")) or "Outreach" in str(chosen_link_item.get("category", "")):
+                                cnt_o, msg_o = sync_outreach_tasks_from_notion_to_excel_and_db(chosen_month, chosen_week, chosen_parish, "2027", custom_sheet_url=chosen_url)
+                                st.cache_data.clear()
+                                st.success(f"✅ {msg_o}")
+                            elif f_id:
                                 try:
-                                    x_bytes = service.files().get_media(fileId=f_id).execute()
-                                    with open(LOCAL_PWR_MASTER_FILE, "wb") as f:
-                                        f.write(x_bytes)
-                                    cnt = parse_master_pwr_excel_into_db(x_bytes, chosen_month, chosen_week)
-                                    if cnt == 0 and chosen_parish != "Lahat ng Parokya (Master)":
-                                        ext_d = extract_weekly_report_from_excel_bytes(x_bytes, target_parish=chosen_parish)
-                                        save_weekly_monitoring_record(chosen_parish, chosen_month, chosen_week, ext_d.get("report_date", "01/02/27"), ext_d, drive_link=chosen_url)
-                                        cnt = 1
-                                    st.cache_data.clear()
-                                    st.success(f"✅ Matagumpay na nabasa at na-sync ang {cnt} parokya mula sa '{chosen_link_item.get('label')}' ({chosen_month} - {chosen_week})!")
+                                    x_bytes = _download_drive_spreadsheet_bytes_any_format(chosen_url)
+                                    if not x_bytes and service:
+                                        x_bytes = service.files().get_media(fileId=f_id, supportsAllDrives=True).execute()
+                                    wb_test = openpyxl.load_workbook(io.BytesIO(x_bytes), read_only=True)
+                                    if "Form responses 1" in wb_test.sheetnames:
+                                        cnt_o, msg_o = sync_outreach_tasks_from_notion_to_excel_and_db(chosen_month, chosen_week, chosen_parish, "2027", custom_sheet_url=chosen_url)
+                                        st.cache_data.clear()
+                                        st.success(f"✅ {msg_o}")
+                                    else:
+                                        with open(LOCAL_PWR_MASTER_FILE, "wb") as f:
+                                            f.write(x_bytes)
+                                        cnt = parse_master_pwr_excel_into_db(x_bytes, chosen_month, chosen_week)
+                                        if cnt == 0 and chosen_parish != "Lahat ng Parokya (Master)":
+                                            ext_d = extract_weekly_report_from_excel_bytes(x_bytes, target_parish=chosen_parish)
+                                            save_weekly_monitoring_record(chosen_parish, chosen_month, chosen_week, ext_d.get("report_date", "01/02/27"), ext_d, drive_link=chosen_url)
+                                            cnt = 1
+                                        st.cache_data.clear()
+                                        st.success(f"✅ Matagumpay na nabasa at na-sync ang {cnt} parokya mula sa '{chosen_link_item.get('label')}' ({chosen_month} - {chosen_week})!")
                                 except Exception as e:
                                     st.error(f"Error sa pagbasa ng link: {str(e)}")
                             else:
