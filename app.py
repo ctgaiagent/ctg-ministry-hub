@@ -1,16 +1,48 @@
+"""
+================================================================================
+⛪ CHURCH OF THE TEMPLE OF GOD (CTG) — MINISTRY OPERATIONS & MONITORING HUB
+================================================================================
+Official Streamlit Web Application for Master Admin & 10 Parish Leaders:
+  • Full-Year 2027 (2026–2028) Weekly Report & Parish Monitoring
+  • Master Admin Submission Schedule (Auto Sat–Mon Unlock/Lock) & (No Report) Controller
+  • Parish Ministry Performance Report Generator (English & Ilokano + Gmail Sender)
+  • Dedicated House Visitation, Missionary Work, Indoctrination & Remarks Hub
+    with Live Google Drive Spreadsheet Sync & Multi-Tab Tables
+  • Parish Census & Member Directory, Ministry Messenger, Notion CRM & Gabay AI
+================================================================================
+"""
+
 import os
 import io
 import re
+import csv
+import html as html_lib
 import json
 import time
 import base64
+import hashlib
+import difflib
 import importlib
+import urllib.parse
+from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
+
 import requests
 import openpyxl
-from PIL import Image
-import hashlib
+import pandas as pd
+import streamlit as st
 import streamlit.components.v1 as components
-from datetime import datetime, timedelta, timezone
+from PIL import Image
+from dotenv import load_dotenv
+from google import genai
+from google.genai import types
+from google.oauth2.credentials import Credentials
+try:
+    from google.oauth2 import service_account
+except ImportError:
+    service_account = None
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
 
 PH_TIMEZONE = timezone(timedelta(hours=8))
 
@@ -57,20 +89,7 @@ def get_philippine_now() -> datetime:
 
 def get_philippine_datetime_str() -> str:
     return get_philippine_now().strftime("%Y-%m-%d %I:%M:%S %p PHT")
-from email.message import EmailMessage
-import streamlit as st
-import pandas as pd
-from dotenv import load_dotenv
-from google import genai
-from google.genai import types
-import urllib.parse
-from google.oauth2.credentials import Credentials
-try:
-    from google.oauth2 import service_account
-except ImportError:
-    service_account = None
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
+
 
 load_dotenv()
 
@@ -102,8 +121,8 @@ def render_title_with_logo(title_text: str, subtitle_text: str = ""):
             mime_l = "image/png" if ext_l == "png" else "image/jpeg"
             sub_html = f"<div style='font-size:0.95rem;opacity:0.88;margin-top:4px;'>{subtitle_text}</div>" if subtitle_text else ""
             st.markdown(
-                f"<div class='full-text-card' style='display:flex;align-items:center;gap:14px;padding:12px 16px;margin-top:4px;margin-bottom:14px;'>"
-                f"<img src='data:{mime_l};base64,{b64_l}' style='width:68px;height:68px;min-width:68px;object-fit:contain;border-radius:50%;border:2px solid #22c55e;' />"
+                f"<div class='full-text-card' style='display:flex;align-items:center;gap:16px;padding:14px 18px;margin-top:4px;margin-bottom:16px;border-left:5px solid #22c55e;box-shadow:0 4px 14px rgba(0,0,0,0.16);'>"
+                f"<img src='data:{mime_l};base64,{b64_l}' style='width:70px;height:70px;min-width:70px;object-fit:contain;border-radius:50%;border:2.5px solid #22c55e;box-shadow:0 2px 8px rgba(0,0,0,0.25);' />"
                 f"<div style='flex:1;min-width:0;'>"
                 f"<div style='font-size:1.35rem;font-weight:800;line-height:1.25;word-wrap:break-word;'>{title_text}</div>"
                 f"{sub_html}"
@@ -651,6 +670,77 @@ def apply_dynamic_app_styles():
         .record-style-table tr:nth-child(even) {{
             background-color: {side_box_bg};
         }}
+        .record-style-table tbody tr:hover {{
+            background-color: rgba(56, 189, 248, 0.12) !important;
+            transition: background-color 0.15s ease-in-out;
+        }}
+        /* 📊 PROFESSIONAL KPI METRIC CARDS & ORGANIZED CONTAINERS */
+        [data-testid="stMetric"] {{
+            background-color: {card_bg} !important;
+            border: 1px solid {side_box_border} !important;
+            border-top: 4px solid {card_border} !important;
+            border-radius: 10px !important;
+            padding: 12px 16px !important;
+            box-shadow: 0 3px 10px rgba(0, 0, 0, 0.14) !important;
+        }}
+        [data-testid="stMetricLabel"] p, [data-testid="stMetricLabel"] span {{
+            font-weight: 700 !important;
+            color: {text_color} !important;
+            opacity: 0.9 !important;
+        }}
+        [data-testid="stMetricValue"] div {{
+            font-weight: 800 !important;
+            color: {card_border} !important;
+        }}
+        /* 🗂️ MODERN ORGANIZED TABS */
+        [data-baseweb="tab-list"] {{
+            gap: 8px !important;
+            background-color: {side_box_bg} !important;
+            padding: 6px 8px !important;
+            border-radius: 10px !important;
+            border: 1px solid {side_box_border} !important;
+            margin-bottom: 12px !important;
+        }}
+        button[data-baseweb="tab"] {{
+            border-radius: 8px !important;
+            padding: 8px 14px !important;
+            font-weight: 700 !important;
+            color: {text_color} !important;
+            background-color: transparent !important;
+            border: none !important;
+        }}
+        button[data-baseweb="tab"][aria-selected="true"] {{
+            background-color: #14532D !important;
+            color: #FFFFFF !important;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25) !important;
+        }}
+        button[data-baseweb="tab"][aria-selected="true"] p,
+        button[data-baseweb="tab"][aria-selected="true"] span {{
+            color: #FFFFFF !important;
+        }}
+        /* 🏛️ REFINED SECTION HEADERS & FORMS */
+        [data-testid="stForm"] {{
+            background-color: {card_bg} !important;
+            border: 1px solid {side_box_border} !important;
+            border-radius: 12px !important;
+            padding: 16px !important;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12) !important;
+        }}
+        .ctg-section-banner {{
+            background: linear-gradient(135deg, #14532D 0%, #0F766E 100%) !important;
+            color: #FFFFFF !important;
+            padding: 10px 16px !important;
+            border-radius: 8px !important;
+            font-weight: 800 !important;
+            font-size: 1.05rem !important;
+            margin-top: 8px !important;
+            margin-bottom: 10px !important;
+            border-left: 5px solid #4ADE80 !important;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18) !important;
+        }}
+        .ctg-section-banner * {{
+            color: #FFFFFF !important;
+        }}
         /* 📱 RESPONSIVE TABLET & PHONE MEDIA QUERIES */
         @media (max-width: 1024px) {{
             .block-container {{
@@ -760,18 +850,6 @@ def verify_account_credentials(username_in: str, password_in: str) -> dict | Non
             acc = PARISH_ACCOUNTS[candidate_key]
             if p_hash == acc.get("pw_hash") or (APP_PASSWORD and candidate_key == APP_USER.lower() and p_clean == APP_PASSWORD):
                 return acc
-    return None
-    try:
-        if "PARISH_PASSWORDS" in st.secrets and u_clean in st.secrets["PARISH_PASSWORDS"]:
-            sec_pw = str(st.secrets["PARISH_PASSWORDS"][u_clean]).strip()
-            if p_clean == sec_pw and u_clean in PARISH_ACCOUNTS:
-                return PARISH_ACCOUNTS[u_clean]
-    except Exception:
-        pass
-    if u_clean in PARISH_ACCOUNTS:
-        acc = PARISH_ACCOUNTS[u_clean]
-        if _sha256_hex(p_clean) == acc.get("pw_hash") or (APP_PASSWORD and u_clean == APP_USER.lower() and p_clean == APP_PASSWORD):
-            return acc
     return None
 
 def extract_id_from_url(url: str) -> str:
@@ -8387,9 +8465,32 @@ def render_outreach_visitation_missionary_page():
                 st.rerun()
 
     # =====================================================================
-    # 📤 OUTREACH SUBMISSION & UPDATE FORM (PARA SA LAHAT NG USERS: PARISH LEADERS & MASTER ADMIN)
+    # 📊 OUTREACH AT-A-GLANCE KPI SUMMARY CARDS (ORGANIZED OVERVIEW)
     # =====================================================================
     db_live = load_weekly_monitoring_records()
+    kpi_weeks_scan = out_month_actual_weeks if out_week_sel not in out_month_actual_weeks else [out_week_sel]
+    kpi_parishes_scan = PARISH_ORDER if out_parish == "Lahat ng Parokya" else [p for p in PARISH_ORDER if normalize_parish_match(p, out_parish)]
+    sum_hv_kpi, sum_mw_kpi, sum_ind_kpi = 0, 0, 0
+    for wk_k in kpi_weeks_scan:
+        for p_k in kpi_parishes_scan:
+            rec_k = db_live.get(f"{p_k.upper()}__{out_month.upper()}__{wk_k}", {})
+            if not is_record_marked_no_report(rec_k):
+                hc_k, _ = count_families_and_people_from_text(str(rec_k.get("hv_names", "")), str(rec_k.get("house_visitation", "0")))
+                mc_k, _ = count_families_and_people_from_text(str(rec_k.get("mw_names", "")), str(rec_k.get("missionary_work", "0")))
+                ic_k, _ = count_families_and_people_from_text(str(rec_k.get("ind_names", "")), str(rec_k.get("indoctrination", "0")))
+                sum_hv_kpi += hc_k
+                sum_mw_kpi += mc_k
+                sum_ind_kpi += ic_k
+
+    okpi1, okpi2, okpi3, okpi4 = st.columns(4)
+    okpi1.metric("🏡 House Visitation", f"{sum_hv_kpi} Pamilya", f"Req: {len(kpi_parishes_scan) * 10 * len(kpi_weeks_scan)} Families")
+    okpi2.metric("🌍 Missionary Work", f"{sum_mw_kpi} Pamilya / Contacts", f"{out_month} ({out_week_sel})")
+    okpi3.metric("📖 Indoctrination", f"{sum_ind_kpi} Candidates / Pamilya", f"{out_parish}")
+    okpi4.metric("📊 Google Drive Sheet Rows", f"{len(drive_outreach_df_raw)} Row(s)", "Live Google Drive Sync")
+
+    # =====================================================================
+    # 📤 OUTREACH SUBMISSION & UPDATE FORM (PARA SA LAHAT NG USERS: PARISH LEADERS & MASTER ADMIN)
+    # =====================================================================
     form_parish_choices = PARISH_ORDER if is_master else [my_parish]
     default_form_parish = out_parish if out_parish in form_parish_choices else form_parish_choices[0]
     default_form_week = out_week_sel if out_week_sel in out_month_actual_weeks else out_month_actual_weeks[0]
