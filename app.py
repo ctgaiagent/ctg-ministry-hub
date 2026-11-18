@@ -2530,24 +2530,7 @@ def load_weekly_monitoring_records() -> dict:
     for k_del in list(db.keys()):
         r_chk = db.get(k_del, {})
         if isinstance(r_chk, dict) and "__JANUARY__1ST WEEK" not in k_del:
-            has_any_outreach = bool(
-                r_chk.get("no_report_locked") or
-                str(r_chk.get("hv_names", "")).strip() or
-                str(r_chk.get("mw_names", "")).strip() or
-                str(r_chk.get("ind_names", "")).strip() or
-                str(r_chk.get("hv_remarks", "")).strip() or
-                str(r_chk.get("mw_remarks", "")).strip() or
-                str(r_chk.get("ind_remarks", "")).strip() or
-                str(r_chk.get("outreach_general_remarks", "")).strip() or
-                r_chk.get("hv_form_rows") or
-                r_chk.get("mw_form_rows") or
-                r_chk.get("ind_form_rows") or
-                str(r_chk.get("house_visitation", "0")).strip() not in ("", "0") or
-                str(r_chk.get("missionary_work", "0")).strip() not in ("", "0") or
-                str(r_chk.get("indoctrination", "0")).strip() not in ("", "0")
-            )
             if (
-                not has_any_outreach and
                 int(r_chk.get("mass_a", 0)) == 0 and int(r_chk.get("pampamilya_a", 0)) == 0 and
                 int(r_chk.get("online_a", 0)) == 0 and int(r_chk.get("adal_a", 0)) == 0 and
                 not str(r_chk.get("priest", "")).strip() and not str(r_chk.get("remarks", "")).strip()
@@ -5316,12 +5299,7 @@ def build_mass_attendance_remarks_df(selected_month: str, selected_week: str, fi
             continue
         key = f"{p_name.upper()}__{selected_month.upper()}__{selected_week}"
         rec = db.get(key, {})
-        has_data = bool(
-            rec.get("has_data", False) or
-            str(rec.get("mw_names", "")).strip() or
-            str(rec.get("mw_remarks", "")).strip() or
-            str(rec.get("missionary_work", "0")).strip() not in ("", "0")
-        )
+        has_data = bool(rec.get("has_data", False))
         r_date = resolve_display_week_date(rec, selected_month, selected_week, 2027)
 
         raw_rem = str(rec.get("remarks", "")).strip() if has_data else ""
@@ -5367,12 +5345,7 @@ def build_house_visitation_table_df(selected_month: str, selected_week: str, fil
             continue
         key = f"{p_name.upper()}__{selected_month.upper()}__{selected_week}"
         rec = db.get(key, {})
-        has_data = bool(
-            rec.get("has_data", False) or
-            str(rec.get("hv_names", "")).strip() or
-            str(rec.get("hv_remarks", "")).strip() or
-            str(rec.get("house_visitation", "0")).strip() not in ("", "0")
-        )
+        has_data = bool(rec.get("has_data", False))
         if has_data:
             active_parish_count += 1
 
@@ -5486,12 +5459,7 @@ def build_indoctrination_table_df(selected_month: str, selected_week: str, filte
             continue
         key = f"{p_name.upper()}__{selected_month.upper()}__{selected_week}"
         rec = db.get(key, {})
-        has_data = bool(
-            rec.get("has_data", False) or
-            str(rec.get("ind_names", "")).strip() or
-            str(rec.get("ind_remarks", "")).strip() or
-            str(rec.get("indoctrination", "0")).strip() not in ("", "0")
-        )
+        has_data = bool(rec.get("has_data", False))
         r_date = resolve_display_week_date(rec, selected_month, selected_week, 2027)
 
         ind_raw = str(rec.get("indoctrination", "0")).strip() if has_data else "0"
@@ -6342,16 +6310,7 @@ def build_multi_week_outreach_remarks_df(selected_month: str, weeks_list: list[s
         week_num_only = re.sub(r"\D", "", str(wk)) or "1"
         for p_name in parishes_to_scan:
             rec = db.get(f"{p_name.upper()}__{selected_month.upper()}__{wk}", {})
-            has_data = bool(
-                rec.get("has_data", False) or
-                str(rec.get("hv_remarks", "")).strip() or
-                str(rec.get("mw_remarks", "")).strip() or
-                str(rec.get("ind_remarks", "")).strip() or
-                str(rec.get("outreach_general_remarks", "")).strip() or
-                str(rec.get("hv_names", "")).strip() or
-                str(rec.get("mw_names", "")).strip() or
-                str(rec.get("ind_names", "")).strip()
-            )
+            has_data = bool(rec.get("has_data", False))
             is_no_rep_o = is_record_marked_no_report(rec)
             if not has_data and not is_no_rep_o and len(weeks_list) > 1 and filter_parish == "Lahat ng Parokya":
                 continue
@@ -7877,609 +7836,7 @@ def _format_single_parish_perf_block(item: dict, lang: str = "English") -> list[
 
 # =====================================================================
 # 🏠 DEDICATED PAGE FOR ALL USERS: HOUSE VISITATION, MISSIONARY WORK, INDOCTRINATION & REMARKS
-# (POWERED BY OFFICIAL GOOGLE FORM & GOOGLE SPREADSHEET LIVE SYNC)
 # =====================================================================
-DEFAULT_OUTREACH_GOOGLE_FORM_URL = "https://docs.google.com/forms/d/e/1FAIpQLScKnsFH73UI7Iyh5nftmGque7Y2jzRSexO3ImkKZx9aKEOwiA/viewform?usp=preview"
-DEFAULT_OUTREACH_GOOGLE_FORM_EMBED_URL = "https://docs.google.com/forms/d/e/1FAIpQLScKnsFH73UI7Iyh5nftmGque7Y2jzRSexO3ImkKZx9aKEOwiA/viewform?embedded=true"
-DEFAULT_OUTREACH_GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1FZLr3gFvU-YXWJMTrRkOqJ2X0hTAaQ3rRerX9cdUIb8/edit?usp=sharing"
-DEFAULT_OUTREACH_GOOGLE_SHEET_ID = "1FZLr3gFvU-YXWJMTrRkOqJ2X0hTAaQ3rRerX9cdUIb8"
-LOCAL_OUTREACH_RESPONSES_CACHE = "ctg_outreach_form_responses_cache.json"
-
-OUTREACH_FORM_35_COLUMNS = [
-    "Timestamp",
-    "Parish / Simbahan (Church Name)",
-    "Pangalan ng Nag-uulat (Worker / Priest / Volunteer Name)",
-    "Opening Prayer",
-    "Closing Payer",
-    "Katungkulan / Ministry Unit",
-    "Petsa ng Gawain (Date of Activity)",
-    "Lokasyon / Area / Barangay",
-    "Type of Activity",
-    "Date (House Visitation)",
-    "Pangalan ng Pamilya / Indibidwal na Binisita",
-    "Tirahan at Contact Number ng Binisita",
-    "Layunin / Uri ng Pagbisita",
-    "Kalagayan ng Espirituwal / Sitwasyon ng Pamilya",
-    "Mga Kahilingan sa Panalangin (Prayer Requests)",
-    "Paksa ng Pag-aaral o Mensaheng Ibinahagi (Topic / Scripture Shared)",
-    "Reaksyon o Tugon ng Binisita sa Mensahe:",
-    "Susunod na Hakbang / Kailangan ng Follow-up?",
-    "Date (Missionary Work)",
-    "Pangalan ng Bagong Contact / Prospect (Contact Name)",
-    "Edad at Kasarian (Age & Gender)",
-    "Contact Number / Social Media Handle (Messenger Link)",
-    "Tirahan o Lokasyon kung saan nakatagpo (Address / Location met)",
-    "Reaksyon o Tugon sa Ebanghelyo (Response Status)",
-    "Anong Mensahe o Paksa ang Naibahagi? (Topic / Message Shared)",
-    "Mga Interes o Pangangailangan ng Contact (Interests & Needs)",
-    "Napagkasunduang Araw para sa Follow-up (Follow-up Date)",
-    "Pangalan ng Candidate / Estudyante (Candidate Name)",
-    "Contact Number / Social Media Link",
-    "Pangalan ng Nagtuturo (Instructor / Mentor / Priest Name)",
-    "Kasalukuyang Leksyon o Aral na Natapos (Lesson Progress)",
-    "Status ng Pagdalo (Attendance Status)",
-    "Handa na ba para sa Bautismo / Kumpirma (Ready for Baptism?)",
-    "Target Date ng Bautismo (kung handa na)",
-    "Puna o Evaluasyon ng Nagtuturo (Teacher's Notes / Assessment)"
-]
-
-def _load_local_outreach_form_cache() -> list[dict]:
-    if os.path.exists(LOCAL_OUTREACH_RESPONSES_CACHE):
-        try:
-            with open(LOCAL_OUTREACH_RESPONSES_CACHE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, list):
-                return data
-        except Exception:
-            pass
-    return []
-
-def _save_local_outreach_form_cache(rows_list: list[dict]):
-    try:
-        with open(LOCAL_OUTREACH_RESPONSES_CACHE, "w", encoding="utf-8") as f:
-            json.dump(rows_list, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
-
-def _normalize_outreach_sheet_headers(raw_headers: list[str]) -> list[str]:
-    """Inaayos ang duplicate 'Date' column headers sa Google Form Responses sheet:
-    ang unang 'Date' (Column J) ay nagiging 'Date (House Visitation)' at ang pangalawang 'Date' (Column S) ay nagiging 'Date (Missionary Work)'."""
-    normalized = []
-    date_seen_cnt = 0
-    for idx, h in enumerate(raw_headers):
-        h_clean = str(h or "").strip()
-        if h_clean.lower() == "date":
-            date_seen_cnt += 1
-            if date_seen_cnt == 1 or idx <= 12:
-                normalized.append("Date (House Visitation)")
-            else:
-                normalized.append("Date (Missionary Work)")
-        elif not h_clean:
-            if idx < len(OUTREACH_FORM_35_COLUMNS):
-                normalized.append(OUTREACH_FORM_35_COLUMNS[idx])
-            else:
-                normalized.append(f"Column_{idx+1}")
-        else:
-            normalized.append(h_clean)
-    return normalized
-
-def extract_google_drive_id(url_or_id: str) -> str:
-    """Kinukuha ang Google Drive / Google Sheets File ID mula sa URL o direktang ID string."""
-    return extract_id_from_url(url_or_id)
-
-def download_google_drive_excel_bytes(sheet_url_or_id: str) -> bytes | None:
-    """Kinukuha ang XLSX bytes mula sa Google Drive / Google Spreadsheet gamit ang Service Account API o public export link."""
-    fid = extract_id_from_url(sheet_url_or_id) or DEFAULT_OUTREACH_GOOGLE_SHEET_ID
-    if not fid:
-        return None
-    drive_service, _ = get_google_drive_service()
-    if drive_service is not None:
-        try:
-            meta = drive_service.files().get(fileId=fid, fields="mimeType", supportsAllDrives=True).execute()
-            m_type = str(meta.get("mimeType", ""))
-            if "spreadsheet" in m_type:
-                data = drive_service.files().export_media(
-                    fileId=fid,
-                    mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                ).execute()
-            else:
-                data = drive_service.files().get_media(fileId=fid, supportsAllDrives=True).execute()
-            if data and len(data) > 100:
-                return data
-        except Exception:
-            pass
-    for dl_url in [
-        f"https://docs.google.com/spreadsheets/d/{fid}/export?format=xlsx",
-        f"https://drive.google.com/uc?export=download&id={fid}"
-    ]:
-        try:
-            r = requests.get(dl_url, timeout=15)
-            if r.status_code == 200 and r.content and len(r.content) > 100 and not r.content.lstrip().startswith(b"<!DOCTYPE html"):
-                return r.content
-        except Exception:
-            continue
-    return None
-
-def fetch_outreach_google_sheet_df(sheet_url: str = DEFAULT_OUTREACH_GOOGLE_SHEET_URL) -> tuple[pd.DataFrame, str]:
-    """Kinukuha ang live responses mula sa Google Spreadsheet ('1FZLr3gFvU-YXWJMTrRkOqJ2X0hTAaQ3rRerX9cdUIb8' - Form responses 1)
-    at isinasama rin ang anumang local entries para laging kumpleto ang Table sa App."""
-    file_id = extract_google_drive_id(sheet_url) or DEFAULT_OUTREACH_GOOGLE_SHEET_ID
-    rows_dicts = []
-    status_msg = ""
-
-    # 1. Subukan munang kunin bilang XLSX bytes (Google Drive API o direct export link)
-    excel_bytes = download_google_drive_excel_bytes(sheet_url)
-    if excel_bytes:
-        try:
-            wb = openpyxl.load_workbook(io.BytesIO(excel_bytes), data_only=True)
-            ws = wb["Form responses 1"] if "Form responses 1" in wb.sheetnames else wb.active
-            all_rows = list(ws.iter_rows(values_only=True))
-            if all_rows:
-                headers = _normalize_outreach_sheet_headers([str(c or "").strip() for c in all_rows[0]])
-                for r_vals in all_rows[1:]:
-                    if not r_vals or not any(str(v or "").strip() for v in r_vals):
-                        continue
-                    item = {}
-                    for c_i, col_name in enumerate(headers):
-                        val = r_vals[c_i] if c_i < len(r_vals) else ""
-                        if isinstance(val, datetime):
-                            val_s = val.strftime("%Y-%m-%d %H:%M:%S") if (val.hour or val.minute) else val.strftime("%m/%d/%y")
-                        else:
-                            val_s = str(val if val is not None else "").strip()
-                        item[col_name] = val_s
-                    rows_dicts.append(item)
-                status_msg = f"Na-load mula sa Google Spreadsheet ({ws.title}: {len(rows_dicts)} response row(s))."
-        except Exception as ex_xl:
-            status_msg = f"XLSX parse notice: {str(ex_xl)}"
-
-    # 2. Fallback sa direct CSV export kung hindi nakuha sa XLSX
-    if not rows_dicts and file_id:
-        try:
-            csv_url = f"https://docs.google.com/spreadsheets/d/{file_id}/export?format=csv"
-            resp = requests.get(csv_url, timeout=15)
-            if resp.status_code == 200 and resp.content and not resp.content.lstrip().startswith(b"<!DOCTYPE html"):
-                import csv
-                reader = list(csv.reader(io.StringIO(resp.content.decode("utf-8-sig", errors="replace"))))
-                if reader:
-                    headers = _normalize_outreach_sheet_headers(reader[0])
-                    for r_vals in reader[1:]:
-                        if not r_vals or not any(str(v or "").strip() for v in r_vals):
-                            continue
-                        item = {}
-                        for c_i, col_name in enumerate(headers):
-                            item[col_name] = str(r_vals[c_i] if c_i < len(r_vals) else "").strip()
-                        rows_dicts.append(item)
-                    status_msg = f"Na-load mula sa Google Sheet CSV Export ({len(rows_dicts)} response row(s))."
-        except Exception as ex_csv:
-            if not status_msg:
-                status_msg = f"CSV fetch notice: {str(ex_csv)}"
-
-    # 3. Isama ang local cached submissions mula sa App Form (iwas-duplicate gamit ang Timestamp + Parish + Activity + Name)
-    local_rows = _load_local_outreach_form_cache()
-    if local_rows:
-        seen_sigs = set()
-        for r in rows_dicts:
-            sig = (
-                str(r.get("Timestamp", "")).strip(),
-                str(r.get("Parish / Simbahan (Church Name)", "")).strip().upper(),
-                str(r.get("Pangalan ng Pamilya / Indibidwal na Binisita", "")).strip().upper(),
-                str(r.get("Pangalan ng Bagong Contact / Prospect (Contact Name)", "")).strip().upper(),
-                str(r.get("Pangalan ng Candidate / Estudyante (Candidate Name)", "")).strip().upper(),
-            )
-            seen_sigs.add(sig)
-        for lr in local_rows:
-            if not isinstance(lr, dict):
-                continue
-            sig_l = (
-                str(lr.get("Timestamp", "")).strip(),
-                str(lr.get("Parish / Simbahan (Church Name)", "")).strip().upper(),
-                str(lr.get("Pangalan ng Pamilya / Indibidwal na Binisita", "")).strip().upper(),
-                str(lr.get("Pangalan ng Bagong Contact / Prospect (Contact Name)", "")).strip().upper(),
-                str(lr.get("Pangalan ng Candidate / Estudyante (Candidate Name)", "")).strip().upper(),
-            )
-            if sig_l not in seen_sigs:
-                rows_dicts.append(lr)
-                seen_sigs.add(sig_l)
-
-    if not rows_dicts:
-        empty_df = pd.DataFrame(columns=OUTREACH_FORM_35_COLUMNS)
-        return empty_df, (status_msg or "Nakakonekta na sa Google Sheet (Wala pang nakalistang response rows sa Form responses 1).")
-
-    # Siguraduhing kumpleto ang 35 standard columns sa DataFrame
-    normalized_rows = []
-    for r in rows_dicts:
-        norm_r = {}
-        for col in OUTREACH_FORM_35_COLUMNS:
-            norm_r[col] = str(r.get(col, "") or "").strip()
-        # Preserve extra columns if any
-        for k_extra, v_extra in r.items():
-            if k_extra not in norm_r:
-                norm_r[k_extra] = str(v_extra or "").strip()
-        normalized_rows.append(norm_r)
-
-    return pd.DataFrame(normalized_rows), (status_msg or f"Matagumpay na nakuha ang {len(normalized_rows)} row(s) mula sa Google Sheet.")
-
-def _match_parish_from_form_text(raw_parish_text: str, raw_loc_text: str = "", fallback_parish: str = "POBLACION PARISH") -> str:
-    combined = f"{raw_parish_text} {raw_loc_text}".upper().strip()
-    if not combined:
-        return fallback_parish if fallback_parish in PARISH_ORDER else "POBLACION PARISH"
-    if "HONG KONG" in combined or "HONGKONG" in combined or "HK" in combined.split():
-        return "HONGKONG PARISH"
-    if "LIPAY" in combined:
-        return "LIPAY NORTE PARISH"
-    for p_cand in PARISH_ORDER:
-        short_p = p_cand.replace("PARISH", "").strip().upper()
-        if short_p and short_p in combined:
-            return p_cand
-    return fallback_parish if fallback_parish in PARISH_ORDER else "POBLACION PARISH"
-
-def _resolve_month_week_year_from_form_date(date_str: str, fallback_month: str = "January", fallback_week: str = "1st Week", fallback_year: str = "2027") -> tuple[str, str, str, str]:
-    """Tinutukoy ang Buwan, Linggo (1st–5th Week), Taon, at MM/DD/YY string mula sa Petsa sa Google Form."""
-    s = str(date_str or "").strip()
-    if not s:
-        return fallback_month, fallback_week, fallback_year, get_week_date_for_month_year(fallback_month, fallback_week, int(fallback_year) if str(fallback_year).isdigit() else 2027)
-
-    parsed_dt = None
-    date_part = s.split(" ")[0].strip()
-    for fmt in ["%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%d/%m/%Y", "%m-%d-%Y", "%m-%d-%y", "%Y/%m/%d", "%b %d, %Y", "%B %d, %Y"]:
-        try:
-            parsed_dt = datetime.strptime(date_part, fmt)
-            break
-        except Exception:
-            continue
-
-    if parsed_dt is None:
-        # Check if month name is mentioned in string
-        for m_name in MONTHS_2027:
-            if m_name.upper() in s.upper():
-                fallback_month = m_name
-                break
-        for w_name in WEEKS_2027:
-            if w_name.upper() in s.upper():
-                fallback_week = w_name
-                break
-        return fallback_month, fallback_week, fallback_year, s
-
-    m_name = MONTHS_2027[parsed_dt.month - 1]
-    y_str = str(parsed_dt.year)
-    sats = get_saturdays_for_month_year(m_name, parsed_dt.year)
-    best_wk_idx = 0
-    if sats:
-        # Map activity date to the reporting cycle week (Saturday through Friday/Monday)
-        min_diff = 999
-        for idx_s, sat_d in enumerate(sats):
-            diff_days = abs((parsed_dt.date() - sat_d.date()).days)
-            if diff_days < min_diff:
-                min_diff = diff_days
-                best_wk_idx = idx_s
-    wk_label = WEEKS_2027[min(best_wk_idx, len(WEEKS_2027) - 1)]
-    return m_name, wk_label, y_str, parsed_dt.strftime("%m/%d/%y")
-
-def sync_outreach_google_sheet_to_weekly_db(
-    df_sheet: pd.DataFrame,
-    default_month: str = "January",
-    default_week: str = "1st Week",
-    default_year: str = "2027",
-    default_parish: str = "Lahat ng Parokya"
-) -> tuple[int, str]:
-    """Awtomatikong kumukuha ng bawat House Visitation, Missionary Work, Indoctrination, at Remarks mula sa Google Form Responses Sheet
-    ('1FZLr3gFvU-YXWJMTrRkOqJ2X0hTAaQ3rRerX9cdUIb8') at isini-sync sa App Database at Performance Report."""
-    if df_sheet is None or df_sheet.empty:
-        return 0, "Walang nakitang response rows sa Google Spreadsheet."
-
-    db_records = load_weekly_monitoring_records()
-    grouped = {}
-    synced_entries = 0
-    fb_parish = default_parish if default_parish in PARISH_ORDER else "POBLACION PARISH"
-
-    for _, row in df_sheet.iterrows():
-        r = {str(k).strip(): str(v or "").strip() for k, v in row.items()}
-        raw_parish = r.get("Parish / Simbahan (Church Name)", "")
-        raw_loc = r.get("Lokasyon / Area / Barangay", "")
-        parish_matched = _match_parish_from_form_text(raw_parish, raw_loc, fb_parish)
-
-        act_type = r.get("Type of Activity", "").upper()
-        worker_name = r.get("Pangalan ng Nag-uulat (Worker / Priest / Volunteer Name)", "")
-        open_p = r.get("Opening Prayer", "")
-        close_p = r.get("Closing Payer", "")
-        unit_role = r.get("Katungkulan / Ministry Unit", "")
-        act_date_raw = (
-            r.get("Petsa ng Gawain (Date of Activity)", "")
-            or r.get("Date (House Visitation)", "")
-            or r.get("Date (Missionary Work)", "")
-            or r.get("Timestamp", "")
-        )
-
-        m_res, w_res, y_res, short_dt = _resolve_month_week_year_from_form_date(
-            act_date_raw, default_month, default_week, default_year
-        )
-        g_key = (parish_matched, m_res, w_res, y_res)
-        if g_key not in grouped:
-            grouped[g_key] = {
-                "hv_names": [], "hv_rems": [], "hv_rows": [],
-                "mw_names": [], "mw_rems": [], "mw_rows": [],
-                "ind_names": [], "ind_rems": [], "ind_rows": []
-            }
-
-        # 1. Check House Visitation fields (Columns J to R)
-        hv_fam = r.get("Pangalan ng Pamilya / Indibidwal na Binisita", "")
-        hv_addr = r.get("Tirahan at Contact Number ng Binisita", "")
-        hv_purp = r.get("Layunin / Uri ng Pagbisita", "")
-        hv_cond = r.get("Kalagayan ng Espirituwal / Sitwasyon ng Pamilya", "")
-        hv_pray = r.get("Mga Kahilingan sa Panalangin (Prayer Requests)", "")
-        hv_top = r.get("Paksa ng Pag-aaral o Mensaheng Ibinahagi (Topic / Scripture Shared)", "")
-        hv_react = r.get("Reaksyon o Tugon ng Binisita sa Mensahe:", "")
-        hv_foll = r.get("Susunod na Hakbang / Kailangan ng Follow-up?", "")
-        hv_dt = r.get("Date (House Visitation)", "") or short_dt
-
-        is_hv = ("VISIT" in act_type or "DALAW" in act_type or "HOUSE" in act_type or bool(hv_fam or hv_purp or hv_cond or hv_top))
-        if is_hv and (hv_fam or hv_purp or hv_cond or hv_top or hv_react):
-            name_entry = f"{hv_dt}: {hv_fam}" if (hv_dt and hv_fam and hv_dt not in hv_fam) else (hv_fam or f"Visited ({hv_dt})")
-            if name_entry not in grouped[g_key]["hv_names"]:
-                grouped[g_key]["hv_names"].append(name_entry)
-            rem_bits = []
-            if worker_name:
-                rem_bits.append(f"Nag-ulat: {worker_name}")
-            if hv_purp:
-                rem_bits.append(f"Layunin: {hv_purp}")
-            if hv_top:
-                rem_bits.append(f"Paksa: {hv_top}")
-            if hv_cond:
-                rem_bits.append(f"Sitwasyon: {hv_cond}")
-            if hv_pray:
-                rem_bits.append(f"Prayer Req: {hv_pray}")
-            if hv_react:
-                rem_bits.append(f"Tugon: {hv_react}")
-            if hv_foll:
-                rem_bits.append(f"Follow-up: {hv_foll}")
-            rem_line = f"{hv_fam or 'House Visit'} ({' | '.join(rem_bits)})" if rem_bits else hv_fam
-            if rem_line and rem_line not in grouped[g_key]["hv_rems"]:
-                grouped[g_key]["hv_rems"].append(rem_line)
-            grouped[g_key]["hv_rows"].append(r)
-            synced_entries += 1
-
-        # 2. Check Missionary Work fields (Columns S to AA)
-        mw_contact = r.get("Pangalan ng Bagong Contact / Prospect (Contact Name)", "")
-        mw_age_gen = r.get("Edad at Kasarian (Age & Gender)", "")
-        mw_phone = r.get("Contact Number / Social Media Handle (Messenger Link)", "")
-        mw_loc_met = r.get("Tirahan o Lokasyon kung saan nakatagpo (Address / Location met)", "")
-        mw_resp = r.get("Reaksyon o Tugon sa Ebanghelyo (Response Status)", "")
-        mw_topic = r.get("Anong Mensahe o Paksa ang Naibahagi? (Topic / Message Shared)", "")
-        mw_needs = r.get("Mga Interes o Pangangailangan ng Contact (Interests & Needs)", "")
-        mw_foll_dt = r.get("Napagkasunduang Araw para sa Follow-up (Follow-up Date)", "")
-        mw_dt = r.get("Date (Missionary Work)", "") or short_dt
-
-        is_mw = ("MISSION" in act_type or "MISYON" in act_type or bool(mw_contact or mw_topic or mw_resp))
-        if is_mw and (mw_contact or mw_topic or mw_resp or mw_loc_met):
-            name_entry_mw = f"{mw_dt}: {mw_contact}" if (mw_dt and mw_contact and mw_dt not in mw_contact) else (mw_contact or f"Mission Contact ({mw_dt})")
-            if name_entry_mw not in grouped[g_key]["mw_names"]:
-                grouped[g_key]["mw_names"].append(name_entry_mw)
-            mw_bits = []
-            if worker_name:
-                mw_bits.append(f"Nag-ulat: {worker_name}")
-            if mw_age_gen:
-                mw_bits.append(f"Edad/Kasarian: {mw_age_gen}")
-            if mw_loc_met:
-                mw_bits.append(f"Lugar: {mw_loc_met}")
-            if mw_topic:
-                mw_bits.append(f"Paksa: {mw_topic}")
-            if mw_resp:
-                mw_bits.append(f"Tugon: {mw_resp}")
-            if mw_needs:
-                mw_bits.append(f"Pangangailangan: {mw_needs}")
-            if mw_foll_dt:
-                mw_bits.append(f"Follow-up: {mw_foll_dt}")
-            rem_line_mw = f"{mw_contact or 'Missionary Work'} ({' | '.join(mw_bits)})" if mw_bits else mw_contact
-            if rem_line_mw and rem_line_mw not in grouped[g_key]["mw_rems"]:
-                grouped[g_key]["mw_rems"].append(rem_line_mw)
-            grouped[g_key]["mw_rows"].append(r)
-            synced_entries += 1
-
-        # 3. Check Indoctrination fields (Columns AB to AI)
-        ind_cand = r.get("Pangalan ng Candidate / Estudyante (Candidate Name)", "")
-        ind_phone = r.get("Contact Number / Social Media Link", "")
-        ind_inst = r.get("Pangalan ng Nagtuturo (Instructor / Mentor / Priest Name)", "")
-        ind_less = r.get("Kasalukuyang Leksyon o Aral na Natapos (Lesson Progress)", "")
-        ind_att = r.get("Status ng Pagdalo (Attendance Status)", "")
-        ind_bap = r.get("Handa na ba para sa Bautismo / Kumpirma (Ready for Baptism?)", "")
-        ind_bap_dt = r.get("Target Date ng Bautismo (kung handa na)", "")
-        ind_notes = r.get("Puna o Evaluasyon ng Nagtuturo (Teacher's Notes / Assessment)", "")
-
-        is_ind = ("INDOCTRIN" in act_type or "DOKTRINA" in act_type or bool(ind_cand or ind_less or ind_notes))
-        if is_ind and (ind_cand or ind_less or ind_notes or ind_inst):
-            name_entry_ind = f"{short_dt}: {ind_cand}" if (short_dt and ind_cand and short_dt not in ind_cand) else (ind_cand or f"Candidate ({short_dt})")
-            if name_entry_ind not in grouped[g_key]["ind_names"]:
-                grouped[g_key]["ind_names"].append(name_entry_ind)
-            ind_bits = []
-            if ind_inst:
-                ind_bits.append(f"Nagtuturo: {ind_inst}")
-            if ind_less:
-                ind_bits.append(f"Leksyon: {ind_less}")
-            if ind_att:
-                ind_bits.append(f"Status: {ind_att}")
-            if ind_bap:
-                ind_bits.append(f"Handa sa Bautismo: {ind_bap}")
-            if ind_bap_dt:
-                ind_bits.append(f"Target Baptism: {ind_bap_dt}")
-            if ind_notes:
-                ind_bits.append(f"Puna: {ind_notes}")
-            rem_line_ind = f"{ind_cand or 'Indoctrination'} ({' | '.join(ind_bits)})" if ind_bits else ind_cand
-            if rem_line_ind and rem_line_ind not in grouped[g_key]["ind_rems"]:
-                grouped[g_key]["ind_rems"].append(rem_line_ind)
-            grouped[g_key]["ind_rows"].append(r)
-            synced_entries += 1
-
-    if not grouped:
-        return 0, "Walang bagong Outreach entry na nakita sa Google Spreadsheet."
-
-    db_modified = False
-    for (p_u, m_u, w_u, y_u), bucket in grouped.items():
-        rec_k = f"{p_u.upper()}__{m_u.upper()}__{w_u}"
-        cur_r = dict(db_records.get(rec_k, {}))
-        r_date = resolve_display_week_date(cur_r, m_u, w_u, int(y_u) if str(y_u).isdigit() else 2027)
-        cur_r["parish"] = p_u
-        cur_r["month"] = m_u
-        cur_r["week"] = w_u
-        cur_r["report_date"] = r_date
-
-        if bucket["hv_names"]:
-            joined_hv = "; ".join(bucket["hv_names"])
-            cur_r["hv_names"] = joined_hv
-            fc_hv, pc_hv = count_families_and_people_from_text(joined_hv, str(len(bucket["hv_names"])))
-            cur_r["house_visitation"] = str(max(fc_hv, len(bucket["hv_names"])))
-            cur_r["hv_people_count"] = max(pc_hv, len(bucket["hv_names"]))
-            cur_r["hv_remarks"] = " ; ".join(bucket["hv_rems"])
-            cur_r["hv_form_rows"] = bucket["hv_rows"]
-            db_modified = True
-
-        if bucket["mw_names"]:
-            joined_mw = "; ".join(bucket["mw_names"])
-            cur_r["mw_names"] = joined_mw
-            fc_mw, pc_mw = count_families_and_people_from_text(joined_mw, str(len(bucket["mw_names"])))
-            cur_r["missionary_work"] = str(max(fc_mw, len(bucket["mw_names"])))
-            cur_r["mw_people_count"] = max(pc_mw, len(bucket["mw_names"]))
-            cur_r["mw_remarks"] = " ; ".join(bucket["mw_rems"])
-            cur_r["mw_form_rows"] = bucket["mw_rows"]
-            db_modified = True
-
-        if bucket["ind_names"]:
-            joined_ind = "; ".join(bucket["ind_names"])
-            cur_r["ind_names"] = joined_ind
-            fc_ind, pc_ind = count_families_and_people_from_text(joined_ind, str(len(bucket["ind_names"])))
-            cur_r["indoctrination"] = str(max(fc_ind, len(bucket["ind_names"])))
-            cur_r["ind_people_count"] = max(pc_ind, len(bucket["ind_names"]))
-            cur_r["ind_remarks"] = " ; ".join(bucket["ind_rems"])
-            cur_r["ind_form_rows"] = bucket["ind_rows"]
-            db_modified = True
-
-        combined_rems = [x for x in [cur_r.get("hv_remarks", ""), cur_r.get("mw_remarks", ""), cur_r.get("ind_remarks", "")] if x and x != "(No Report)"]
-        if combined_rems and not cur_r.get("outreach_general_remarks"):
-            cur_r["outreach_general_remarks"] = " | ".join(combined_rems)
-
-        db_records[rec_k] = cur_r
-        for l_rst in ["English", "Ilokano"]:
-            st.session_state.pop(f"editable_perf_report_{m_u}_{w_u}_{y_u}_{l_rst}", None)
-
-    if db_modified:
-        try:
-            with open(LOCAL_WEEKLY_REPORTS_DB, "w", encoding="utf-8") as f:
-                json.dump(db_records, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
-
-    return synced_entries, f"Matagumpay na na-sync ang {synced_entries} Outreach record(s) mula sa Google Form Spreadsheet papunta sa App Tables at Performance Report!"
-
-def build_detailed_google_form_subtables(df_raw: pd.DataFrame, filter_parish: str = "Lahat ng Parokya") -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Bumubuo ng 3 detalyadong Table na eksaktong sumusunod sa mga tanong ng Google Form:
-    1) Detailed House Visitation Table (Columns A–I + J–R)
-    2) Detailed Missionary Work Table (Columns A–I + S–AA)
-    3) Detailed Indoctrination Table (Columns A–I + AB–AI)"""
-    hv_rows = []
-    mw_rows = []
-    ind_rows = []
-
-    if df_raw is not None and not df_raw.empty:
-        for _, row in df_raw.iterrows():
-            r = {str(k).strip(): str(v or "").strip() for k, v in row.items()}
-            p_raw = r.get("Parish / Simbahan (Church Name)", "")
-            loc_raw = r.get("Lokasyon / Area / Barangay", "")
-            p_matched = _match_parish_from_form_text(p_raw, loc_raw, "POBLACION PARISH")
-            if filter_parish != "Lahat ng Parokya" and not normalize_parish_match(p_matched, filter_parish):
-                continue
-
-            act_type = r.get("Type of Activity", "").upper()
-            base_info = {
-                "Timestamp": r.get("Timestamp", "-"),
-                "Parish / Simbahan": p_raw or p_matched,
-                "Pangalan ng Nag-uulat (Worker/Priest)": r.get("Pangalan ng Nag-uulat (Worker / Priest / Volunteer Name)", "-"),
-                "Opening & Closing Prayer": f"Open: {r.get('Opening Prayer', '-')} | Close: {r.get('Closing Payer', '-')}",
-                "Katungkulan / Ministry Unit": r.get("Katungkulan / Ministry Unit", "-"),
-                "Lokasyon / Area / Barangay": loc_raw or "-",
-            }
-
-            # Check HV
-            hv_fam = r.get("Pangalan ng Pamilya / Indibidwal na Binisita", "")
-            hv_purp = r.get("Layunin / Uri ng Pagbisita", "")
-            hv_top = r.get("Paksa ng Pag-aaral o Mensaheng Ibinahagi (Topic / Scripture Shared)", "")
-            if "VISIT" in act_type or "DALAW" in act_type or "HOUSE" in act_type or hv_fam or hv_purp or hv_top:
-                hv_rows.append({
-                    **base_info,
-                    "Petsa ng Pagbisita": r.get("Date (House Visitation)", "") or r.get("Petsa ng Gawain (Date of Activity)", "-"),
-                    "Pangalan ng Pamilya / Indibidwal na Binisita": hv_fam or "-",
-                    "Tirahan at Contact Number": r.get("Tirahan at Contact Number ng Binisita", "-"),
-                    "Layunin / Uri ng Pagbisita": hv_purp or "-",
-                    "Kalagayan ng Espirituwal / Sitwasyon": r.get("Kalagayan ng Espirituwal / Sitwasyon ng Pamilya", "-"),
-                    "Mga Kahilingan sa Panalangin (Prayer Requests)": r.get("Mga Kahilingan sa Panalangin (Prayer Requests)", "-"),
-                    "Paksa / Mensaheng Ibinahagi": hv_top or "-",
-                    "Reaksyon o Tugon ng Binisita": r.get("Reaksyon o Tugon ng Binisita sa Mensahe:", "-"),
-                    "Susunod na Hakbang / Follow-up": r.get("Susunod na Hakbang / Kailangan ng Follow-up?", "-")
-                })
-
-            # Check MW
-            mw_con = r.get("Pangalan ng Bagong Contact / Prospect (Contact Name)", "")
-            mw_top = r.get("Anong Mensahe o Paksa ang Naibahagi? (Topic / Message Shared)", "")
-            mw_resp = r.get("Reaksyon o Tugon sa Ebanghelyo (Response Status)", "")
-            if "MISSION" in act_type or "MISYON" in act_type or mw_con or mw_top or mw_resp:
-                mw_rows.append({
-                    **base_info,
-                    "Petsa ng Misyon": r.get("Date (Missionary Work)", "") or r.get("Petsa ng Gawain (Date of Activity)", "-"),
-                    "Pangalan ng Bagong Contact / Prospect": mw_con or "-",
-                    "Edad at Kasarian": r.get("Edad at Kasarian (Age & Gender)", "-"),
-                    "Contact Number / Messenger Link": r.get("Contact Number / Social Media Handle (Messenger Link)", "-"),
-                    "Tirahan o Lokasyon kung saan Nakatagpo": r.get("Tirahan o Lokasyon kung saan nakatagpo (Address / Location met)", "-"),
-                    "Reaksyon o Tugon sa Ebanghelyo": mw_resp or "-",
-                    "Mensahe o Paksang Naibahagi": mw_top or "-",
-                    "Mga Interes o Pangangailangan": r.get("Mga Interes o Pangangailangan ng Contact (Interests & Needs)", "-"),
-                    "Napagkasunduang Follow-up Date": r.get("Napagkasunduang Araw para sa Follow-up (Follow-up Date)", "-")
-                })
-
-            # Check IND
-            ind_cand = r.get("Pangalan ng Candidate / Estudyante (Candidate Name)", "")
-            ind_less = r.get("Kasalukuyang Leksyon o Aral na Natapos (Lesson Progress)", "")
-            ind_notes = r.get("Puna o Evaluasyon ng Nagtuturo (Teacher's Notes / Assessment)", "")
-            if "INDOCTRIN" in act_type or "DOKTRINA" in act_type or ind_cand or ind_less or ind_notes:
-                ind_rows.append({
-                    **base_info,
-                    "Petsa ng Gawain": r.get("Petsa ng Gawain (Date of Activity)", "-"),
-                    "Pangalan ng Candidate / Estudyante": ind_cand or "-",
-                    "Contact Number / Social Media Link": r.get("Contact Number / Social Media Link", "-"),
-                    "Pangalan ng Nagtuturo (Instructor / Priest)": r.get("Pangalan ng Nagtuturo (Instructor / Mentor / Priest Name)", "-"),
-                    "Kasalukuyang Leksyon (Lesson Progress)": ind_less or "-",
-                    "Status ng Pagdalo (Attendance Status)": r.get("Status ng Pagdalo (Attendance Status)", "-"),
-                    "Handa na ba para sa Bautismo / Kumpirma?": r.get("Handa na ba para sa Bautismo / Kumpirma (Ready for Baptism?)", "-"),
-                    "Target Date ng Bautismo": r.get("Target Date ng Bautismo (kung handa na)", "-"),
-                    "Puna o Evaluasyon ng Nagtuturo (Remarks)": ind_notes or "-"
-                })
-
-    hv_cols = [
-        "Timestamp", "Parish / Simbahan", "Petsa ng Pagbisita", "Pangalan ng Nag-uulat (Worker/Priest)",
-        "Opening & Closing Prayer", "Katungkulan / Ministry Unit", "Lokasyon / Area / Barangay",
-        "Pangalan ng Pamilya / Indibidwal na Binisita", "Tirahan at Contact Number", "Layunin / Uri ng Pagbisita",
-        "Kalagayan ng Espirituwal / Sitwasyon", "Mga Kahilingan sa Panalangin (Prayer Requests)",
-        "Paksa / Mensaheng Ibinahagi", "Reaksyon o Tugon ng Binisita", "Susunod na Hakbang / Follow-up"
-    ]
-    mw_cols = [
-        "Timestamp", "Parish / Simbahan", "Petsa ng Misyon", "Pangalan ng Nag-uulat (Worker/Priest)",
-        "Opening & Closing Prayer", "Katungkulan / Ministry Unit", "Lokasyon / Area / Barangay",
-        "Pangalan ng Bagong Contact / Prospect", "Edad at Kasarian", "Contact Number / Messenger Link",
-        "Tirahan o Lokasyon kung saan Nakatagpo", "Reaksyon o Tugon sa Ebanghelyo",
-        "Mensahe o Paksang Naibahagi", "Mga Interes o Pangangailangan", "Napagkasunduang Follow-up Date"
-    ]
-    ind_cols = [
-        "Timestamp", "Parish / Simbahan", "Petsa ng Gawain", "Pangalan ng Nag-uulat (Worker/Priest)",
-        "Opening & Closing Prayer", "Katungkulan / Ministry Unit", "Lokasyon / Area / Barangay",
-        "Pangalan ng Candidate / Estudyante", "Contact Number / Social Media Link",
-        "Pangalan ng Nagtuturo (Instructor / Priest)", "Kasalukuyang Leksyon (Lesson Progress)",
-        "Status ng Pagdalo (Attendance Status)", "Handa na ba para sa Bautismo / Kumpirma?",
-        "Target Date ng Bautismo", "Puna o Evaluasyon ng Nagtuturo (Remarks)"
-    ]
-
-    return (
-        pd.DataFrame(hv_rows, columns=hv_cols) if hv_rows else pd.DataFrame(columns=hv_cols),
-        pd.DataFrame(mw_rows, columns=mw_cols) if mw_rows else pd.DataFrame(columns=mw_cols),
-        pd.DataFrame(ind_rows, columns=ind_cols) if ind_rows else pd.DataFrame(columns=ind_cols),
-    )
-
 def render_outreach_visitation_missionary_page():
     is_master = (st.session_state.user_role == "Master Admin")
     my_parish = st.session_state.get("assigned_parish", "Lahat ng Parokya")
@@ -8487,7 +7844,7 @@ def render_outreach_visitation_missionary_page():
 
     render_title_with_logo(
         "🏠 House Visitation, Missionary Work, Indoctrination & Remarks",
-        "Opisyal na Pahina at Google Form Table para sa House Visitation (10 Families Req.), Missionary Work, Indoctrination, at Remarks (Auto-Sync mula sa Google Form Spreadsheet)."
+        "Opisyal na Pahina sa Pag-submit at Pag-monitor ng House Visitation (10 Families Req.), Missionary Work, Indoctrination, at Remarks para sa lahat ng Parokya."
     )
 
     outreach_parish_options = (["Lahat ng Parokya"] + PARISH_ORDER) if is_master else [my_parish]
@@ -8507,7 +7864,7 @@ def render_outreach_visitation_missionary_page():
         "Remarks ng House Visitation, Missionary Work & Indoctrination"
     ]
 
-    oc1, oc2, oc3, oc4, oc5 = st.columns([1.15, 1.45, 0.85, 1.00, 1.30])
+    oc1, oc2, oc3, oc4, oc5 = st.columns([1.15, 1.50, 0.90, 1.05, 1.15])
     with oc1:
         out_parish = st.selectbox(
             "🏛️ Parokya (Per Parish):",
@@ -8536,118 +7893,32 @@ def render_outreach_visitation_missionary_page():
             outreach_week_options,
             key="outreach_sel_week"
         )
-
-    # Auto-fetch Google Sheet responses on initial load of this page
-    eff_w_sync = out_week_sel if out_week_sel in out_month_actual_weeks else out_month_actual_weeks[0]
-    sheet_df_live, sheet_fetch_msg = fetch_outreach_google_sheet_df(DEFAULT_OUTREACH_GOOGLE_SHEET_URL)
-    if not sheet_df_live.empty and not st.session_state.get("_outreach_sheet_autosynced_once"):
-        sync_outreach_google_sheet_to_weekly_db(sheet_df_live, out_month, eff_w_sync, selected_year, out_parish)
-        st.session_state["_outreach_sheet_autosynced_once"] = True
-
     with oc5:
         st.write("")
-        if st.button("🔄 Sync Mula sa Google Sheet & Notion", use_container_width=True, type="primary", key="btn_sync_outreach_gsheet"):
-            with st.spinner("Kinukuha ang live responses mula sa Google Form Spreadsheet (1FZLr3gFvU-YXWJMTrRkOqJ2X0hTAaQ3rRerX9cdUIb8)..."):
-                df_fresh, msg_fresh = fetch_outreach_google_sheet_df(DEFAULT_OUTREACH_GOOGLE_SHEET_URL)
-                gs_cnt, gs_msg = sync_outreach_google_sheet_to_weekly_db(df_fresh, out_month, eff_w_sync, selected_year, out_parish)
-                n_cnt, _ = sync_outreach_tasks_from_notion_to_excel_and_db(out_month, eff_w_sync, out_parish, selected_year)
+        if st.button("🔄 Sync Outreach Mula sa Notion -> Excel", use_container_width=True, type="primary"):
+            eff_w_notion = out_week_sel if out_week_sel in out_month_actual_weeks else out_month_actual_weeks[0]
+            with st.spinner("Kinukuha ang House Visitation, Missionary Work, at Indoctrination tasks mula sa Notion at inilalagay sa Excel Report..."):
+                n_cnt, n_msg = sync_outreach_tasks_from_notion_to_excel_and_db(out_month, eff_w_notion, out_parish, selected_year)
                 st.cache_data.clear()
-                if gs_cnt > 0 or n_cnt > 0:
-                    st.success(f"✅ {gs_msg} ({msg_fresh})")
+                if n_cnt > 0:
+                    st.success(f"✅ {n_msg}")
                 else:
-                    st.info(f"ℹ️ {msg_fresh} — Naka-handa na ang koneksyon; kapag nag-submit ang mga Leaders sa Google Form, awtomatiko itong papasok sa Table at Performance Report!")
-                time.sleep(0.4)
+                    st.info(f"ℹ️ {n_msg}")
+                time.sleep(0.5)
                 st.rerun()
 
     # =====================================================================
-    # 🔗 OFFICIAL GOOGLE FORM & GOOGLE SPREADSHEET BANNER + EMBEDDED FORM
-    # =====================================================================
-    st.markdown(
-        f"""
-        <div class="full-text-card" style="border-left: 5px solid #22c55e;">
-            <b>📋 Opisyal na Google Form at Responses Spreadsheet para sa House Visitation, Missionary Work, Indoctrination & Remarks:</b><br>
-            • 📝 <b>Google Form (Para sa mga Parish Leaders / Workers):</b>
-              <a href="{DEFAULT_OUTREACH_GOOGLE_FORM_URL}" target="_blank" style="color:#4ade80;font-weight:700;text-decoration:underline;">
-                Buksan ang Church Operations Report Form (Visitation, Mission, & Indoctrination) ↗
-              </a><br>
-            • 📊 <b>Google Spreadsheet (Pinagkukunan ng Info sa App Tables & Performance Report):</b>
-              <a href="{DEFAULT_OUTREACH_GOOGLE_SHEET_URL}" target="_blank" style="color:#60a5fa;font-weight:700;text-decoration:underline;">
-                Buksan ang Google Sheet Responses (1FZLr3gFvU-YXWJMTrRkOqJ2X0hTAaQ3rRerX9cdUIb8) ↗
-              </a><br>
-            <span style="font-size:0.86rem;opacity:0.9;">📡 <b>Live Connection Status:</b> {sheet_fetch_msg}</span>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-    with st.expander("📝 Sagutan nang Direkta sa App ang Opisyal na Google Form (Embedded Google Form para sa mga Parish Leaders)", expanded=False):
-        st.caption(
-            f"Maaaring sagutan ng mga Parish Leaders ang opisyal na Google Form dito mismo sa loob ng App o buksan sa bagong tab: [Buksan ang Google Form ↗]({DEFAULT_OUTREACH_GOOGLE_FORM_URL}). "
-            "Pagkatapos mag-submit sa Google Form, pindutin lamang ang **🔄 Sync Mula sa Google Sheet & Notion** button sa itaas upang agad pumasok sa mga Table sa ibaba!"
-        )
-        components.iframe(DEFAULT_OUTREACH_GOOGLE_FORM_EMBED_URL, height=680, scrolling=True)
-
-    # =====================================================================
-    # 📊 GOOGLE FORM RESPONSES TABLES (35 COLUMNS MULA SA SPREADSHEET 1FZLr3gFvU-YXWJMTrRkOqJ2X0hTAaQ3rRerX9cdUIb8)
-    # =====================================================================
-    hv_detail_df, mw_detail_df, ind_detail_df = build_detailed_google_form_subtables(sheet_df_live, out_parish)
-
-    with st.expander(f"📊 Mga Table Base sa Google Form & Spreadsheet Responses ({len(sheet_df_live)} Total Row(s) sa 'Form responses 1' — Filter: {out_parish})", expanded=True):
-        tab_gf_all, tab_gf_hv, tab_gf_mw, tab_gf_ind = st.tabs([
-            f"📋 Buong Google Form Table (35 Columns - {len(sheet_df_live)} Row(s))",
-            f"🏡 House Visitation Form Table ({len(hv_detail_df)})",
-            f"🌍 Missionary Work Form Table ({len(mw_detail_df)})",
-            f"📖 Indoctrination Form Table ({len(ind_detail_df)})"
-        ])
-        with tab_gf_all:
-            st.caption("Ito ang eksaktong 35-Column Table mula sa Google Form at Google Spreadsheet (`Form responses 1` ng `1FZLr3gFvU-YXWJMTrRkOqJ2X0hTAaQ3rRerX9cdUIb8`):")
-            if not sheet_df_live.empty:
-                if out_parish != "Lahat ng Parokya":
-                    filtered_all_df = sheet_df_live[
-                        sheet_df_live["Parish / Simbahan (Church Name)"].astype(str).apply(
-                            lambda x: normalize_parish_match(_match_parish_from_form_text(x, "", ""), out_parish)
-                        )
-                    ]
-                else:
-                    filtered_all_df = sheet_df_live
-                st.dataframe(filtered_all_df, use_container_width=True, hide_index=True)
-            else:
-                st.dataframe(pd.DataFrame(columns=OUTREACH_FORM_35_COLUMNS), use_container_width=True, hide_index=True)
-                st.caption("Wala pang nakalistang sagot sa Google Sheet (`Form responses 1`). Gamitin ang Google Form o ang Built-in Form sa ibaba upang magdagdag ng record.")
-
-        with tab_gf_hv:
-            st.caption("Detalyadong Table para sa **House Visitation** base sa mga tanong sa Google Form (Columns A–I at J–R):")
-            if not hv_detail_df.empty:
-                render_record_style_html_table(hv_detail_df)
-            else:
-                st.dataframe(hv_detail_df, use_container_width=True, hide_index=True)
-
-        with tab_gf_mw:
-            st.caption("Detalyadong Table para sa **Missionary Work** base sa mga tanong sa Google Form (Columns A–I at S–AA):")
-            if not mw_detail_df.empty:
-                render_record_style_html_table(mw_detail_df)
-            else:
-                st.dataframe(mw_detail_df, use_container_width=True, hide_index=True)
-
-        with tab_gf_ind:
-            st.caption("Detalyadong Table para sa **Indoctrination** base sa mga tanong sa Google Form (Columns A–I at AB–AI):")
-            if not ind_detail_df.empty:
-                render_record_style_html_table(ind_detail_df)
-            else:
-                st.dataframe(ind_detail_df, use_container_width=True, hide_index=True)
-
-    # =====================================================================
-    # 📤 BUILT-IN APP FORM NA Kapareho ng Google Form Fields (Auto-Sync sa Tables & Performance Report)
+    # 📤 OUTREACH SUBMISSION & UPDATE FORM (PARA SA LAHAT NG USERS: PARISH LEADERS & MASTER ADMIN)
     # =====================================================================
     db_live = load_weekly_monitoring_records()
     form_parish_choices = PARISH_ORDER if is_master else [my_parish]
     default_form_parish = out_parish if out_parish in form_parish_choices else form_parish_choices[0]
     default_form_week = out_week_sel if out_week_sel in out_month_actual_weeks else out_month_actual_weeks[0]
 
-    with st.expander("📤 Ipasa / I-update sa App Table ang House Visitation, Missionary Work, Indoctrination & Remarks (Kapareho ng Google Form + Auto-Sync sa Performance Report)", expanded=True):
+    with st.expander("📤 Ipasa / I-update ang House Visitation, Missionary Work, Indoctrination & Remarks (Auto-Sync sa Performance Report & Excel)", expanded=True):
         f_col1, f_col2, f_col3 = st.columns(3)
         with f_col1:
-            sub_out_parish = st.selectbox("🏛️ Parish / Simbahan (Church Name):", form_parish_choices, index=form_parish_choices.index(default_form_parish), key="form_out_parish")
+            sub_out_parish = st.selectbox("🏛️ Parokya na Nag-rereport:", form_parish_choices, index=form_parish_choices.index(default_form_parish), key="form_out_parish")
         with f_col2:
             sub_out_month = st.selectbox("📅 Buwan:", MONTHS_2027, index=MONTHS_2027.index(out_month), key="form_out_month")
         sub_out_weeks = get_weeks_for_month_year(sub_out_month, int(selected_year))
@@ -8658,188 +7929,101 @@ def render_outreach_visitation_missionary_page():
         cur_out_rec = db_live.get(cur_out_key, {})
         parsed_out_ro = parse_remarks_into_mass_and_outreach(str(cur_out_rec.get("remarks", "")))
         out_rev = f"{st.session_state.get('pwr_form_rev', 0)}_{cur_out_key}"
-        r_date_default = resolve_display_week_date(cur_out_rec, sub_out_month, sub_out_week, int(selected_year))
 
         with st.form("outreach_dedicated_submission_form"):
-            st.markdown("##### 📌 Bahagi I: Pangkalahatang Impormasyon ng Gawain (Google Form Columns B–I)")
-            g1, g2, g3, g4 = st.columns(4)
-            with g1:
-                in_worker_name = st.text_input("Pangalan ng Nag-uulat (Worker/Priest/Volunteer):", value=str(cur_out_rec.get("outreach_worker_name", "")), key=f"owk_{out_rev}")
-                in_ministry_unit = st.text_input("Katungkulan / Ministry Unit:", value=str(cur_out_rec.get("outreach_ministry_unit", "Parish Worker / Priest")), key=f"omu_{out_rev}")
-            with g2:
-                in_open_prayer = st.text_input("Opening Prayer:", value=str(cur_out_rec.get("outreach_open_prayer", "")), key=f"oop_{out_rev}")
-                in_close_prayer = st.text_input("Closing Prayer:", value=str(cur_out_rec.get("outreach_close_prayer", "")), key=f"ocp_{out_rev}")
-            with g3:
-                in_act_date = st.text_input("Petsa ng Gawain (Date of Activity):", value=str(cur_out_rec.get("outreach_activity_date", r_date_default)), key=f"oad_{out_rev}")
-                in_brgy_loc = st.text_input("Lokasyon / Area / Barangay:", value=str(cur_out_rec.get("outreach_location", sub_out_parish.replace("PARISH", "").strip().title())), key=f"oloc_{out_rev}")
-            with g4:
-                in_act_type = st.selectbox(
-                    "Type of Activity:",
-                    ["House Visitation, Missionary Work & Indoctrination", "House Visitation", "Missionary Work", "Indoctrination"],
-                    key=f"oat_{out_rev}"
-                )
-
-            st.markdown("##### 1️⃣ House Visitation (Google Form Columns J–R | Requirement: 10 Families Member or Non-Member)")
-            hc1, hc2, hc3 = st.columns([0.85, 1.65, 1.30])
+            st.markdown("##### 1️⃣ House Visitation (Requirement: 10 Families Member or Non-Member)")
+            hc1, hc2, hc3 = st.columns([0.8, 1.8, 1.2])
             with hc1:
                 in_hv_cnt = st.text_input("Bilang ng Pamilya (House Visitation):", value=str(cur_out_rec.get("house_visitation", "0")).replace("(No Report)", "0"), key=f"ohv_c_{out_rev}")
                 in_hv_ppl = st.number_input("Total ng mga Tao (House Visitation):", min_value=0, value=int(cur_out_rec.get("hv_people_count", 0) or parsed_out_ro.get("hv_people_count", 0)), key=f"ohv_p_{out_rev}")
-                in_hv_purpose = st.text_input("Layunin / Uri ng Pagbisita:", value=str(cur_out_rec.get("hv_purpose", "")), key=f"ohv_purp_{out_rev}")
             with hc2:
                 in_hv_names = st.text_area(
-                    "Pangalan ng Pamilya / Indibidwal na Binisita (Hal. 11-14-26: Nico Q; Remedios Q; Arjon Q; Milagno R; Imee N.):",
+                    "Family Names & Mga Pangalan (Hal. 11-14-26: Nico Q; Remedios Q; Arjon Q; Milagno R; Imee N.):",
                     value=str(cur_out_rec.get("hv_names", "") or parsed_out_ro.get("hv_names", "")).replace("(No Report)", ""),
-                    height=68,
+                    height=75,
                     key=f"ohv_n_{out_rev}"
                 )
-                in_hv_topic = st.text_input("Paksa ng Pag-aaral o Mensaheng Ibinahagi (Topic / Scripture Shared):", value=str(cur_out_rec.get("hv_topic_shared", "")), key=f"ohv_top_{out_rev}")
             with hc3:
                 in_hv_rem = st.text_area(
-                    "Kalagayan / Prayer Requests / Reaksyon / Follow-up (Remarks sa House Visitation):",
+                    "Remarks sa House Visitation:",
                     value=str(cur_out_rec.get("hv_remarks", "") or parsed_out_ro.get("hv_remarks", "")).replace("(No Report)", ""),
-                    height=68,
+                    height=75,
                     key=f"ohv_r_{out_rev}"
                 )
-                in_hv_addr = st.text_input("Tirahan at Contact Number ng Binisita:", value=str(cur_out_rec.get("hv_addr_contact", "")), key=f"ohv_ad_{out_rev}")
 
-            st.markdown("##### 2️⃣ Missionary Work (Google Form Columns S–AA)")
-            mc1, mc2, mc3 = st.columns([0.85, 1.65, 1.30])
+            st.markdown("##### 2️⃣ Missionary Work")
+            mc1, mc2, mc3 = st.columns([0.8, 1.8, 1.2])
             with mc1:
-                in_mw_cnt = st.text_input("Bilang ng Pamilya / Contact (Missionary Work):", value=str(cur_out_rec.get("missionary_work", "0")).replace("(No Report)", "0"), key=f"omw_c_{out_rev}")
+                in_mw_cnt = st.text_input("Bilang ng Pamilya (Missionary Work):", value=str(cur_out_rec.get("missionary_work", "0")).replace("(No Report)", "0"), key=f"omw_c_{out_rev}")
                 in_mw_ppl = st.number_input("Total ng mga Tao (Missionary Work):", min_value=0, value=int(cur_out_rec.get("mw_people_count", 0) or parsed_out_ro.get("mw_people_count", 0)), key=f"omw_p_{out_rev}")
-                in_mw_age_gen = st.text_input("Edad at Kasarian / Contact No.:", value=str(cur_out_rec.get("mw_age_gender", "")), key=f"omw_ag_{out_rev}")
             with mc2:
                 in_mw_names = st.text_area(
-                    "Pangalan ng Bagong Contact / Prospect (Family Names & Mga Pangalan):",
+                    "Missionary Work — Family Names & Mga Pangalan ng Dumalo:",
                     value=str(cur_out_rec.get("mw_names", "") or parsed_out_ro.get("mw_names", "")).replace("(No Report)", ""),
-                    height=68,
+                    height=75,
                     key=f"omw_n_{out_rev}"
                 )
-                in_mw_topic = st.text_input("Anong Mensahe o Paksa ang Naibahagi? (Topic Shared):", value=str(cur_out_rec.get("mw_topic_shared", "")), key=f"omw_top_{out_rev}")
             with mc3:
                 in_mw_rem = st.text_area(
-                    "Reaksyon sa Ebanghelyo / Interes / Follow-up Date (Remarks sa Missionary Work):",
+                    "Remarks sa Missionary Work:",
                     value=str(cur_out_rec.get("mw_remarks", "") or parsed_out_ro.get("mw_remarks", "")).replace("(No Report)", ""),
-                    height=68,
+                    height=75,
                     key=f"omw_r_{out_rev}"
                 )
-                in_mw_loc = st.text_input("Tirahan o Lokasyon kung saan nakatagpo:", value=str(cur_out_rec.get("mw_location_met", "")), key=f"omw_loc_{out_rev}")
 
-            st.markdown("##### 3️⃣ Indoctrination (Google Form Columns AB–AI | Family Name of a Family Under Indoctrination)")
-            ic1, ic2, ic3 = st.columns([0.85, 1.65, 1.30])
+            st.markdown("##### 3️⃣ Indoctrination (Family Name of a Family Under Indoctrination)")
+            ic1, ic2, ic3 = st.columns([0.8, 1.8, 1.2])
             with ic1:
-                in_ind_cnt = st.text_input("Bilang ng Pamilya / Candidate (Indoctrination):", value=str(cur_out_rec.get("indoctrination", "0")).replace("(No Report)", "0"), key=f"oind_c_{out_rev}")
+                in_ind_cnt = st.text_input("Bilang ng Pamilya (Indoctrination):", value=str(cur_out_rec.get("indoctrination", "0")).replace("(No Report)", "0"), key=f"oind_c_{out_rev}")
                 in_ind_ppl = st.number_input("Total ng mga Tao (Indoctrination):", min_value=0, value=int(cur_out_rec.get("ind_people_count", 0) or parsed_out_ro.get("ind_people_count", 0)), key=f"oind_p_{out_rev}")
-                in_ind_inst = st.text_input("Pangalan ng Nagtuturo (Instructor / Priest):", value=str(cur_out_rec.get("ind_instructor", "")), key=f"oind_ins_{out_rev}")
             with ic2:
                 in_ind_names = st.text_area(
-                    "Pangalan ng Candidate / Estudyante (Hal. Pasito L; Nathan L.):",
+                    "Indoctrination — Family Names & Mga Pangalan (Hal. Pasito L; Nathan L.):",
                     value=str(cur_out_rec.get("ind_names", "") or parsed_out_ro.get("ind_names", "")).replace("(No Report)", ""),
-                    height=68,
+                    height=75,
                     key=f"oind_n_{out_rev}"
                 )
-                in_ind_lesson = st.text_input("Kasalukuyang Leksyon o Aral na Natapos (Lesson Progress):", value=str(cur_out_rec.get("ind_lesson_progress", "")), key=f"oind_les_{out_rev}")
             with ic3:
                 in_ind_rem = st.text_area(
-                    "Puna o Evaluasyon ng Nagtuturo / Status ng Pagdalo (Remarks sa Indoctrination):",
+                    "Remarks sa Indoctrination:",
                     value=str(cur_out_rec.get("ind_remarks", "") or parsed_out_ro.get("ind_remarks", "")).replace("(No Report)", ""),
-                    height=68,
+                    height=75,
                     key=f"oind_r_{out_rev}"
                 )
-                in_ind_bapt = st.text_input("Handa na sa Bautismo? & Target Date:", value=str(cur_out_rec.get("ind_baptism_ready", "")), key=f"oind_bap_{out_rev}")
 
             st.markdown("##### 4️⃣ Pangkalahatang Remarks para sa Performance Report (Hal. Dahilan kung walang Visitation / Sitwasyon sa Parokya)")
             in_gen_out_rem = st.text_area(
                 "Remarks (Ito ang awtomatikong lalabas sa `Remarks:` ng Parish Ministry Performance Report ni Master Admin):",
                 value=str(cur_out_rec.get("outreach_general_remarks", "")),
-                height=68,
+                height=75,
                 key=f"ogen_r_{out_rev}"
             )
 
-            if st.form_submit_button("💾 I-save sa App Tables, Google Form Cache & Performance Report", type="primary", use_container_width=True):
-                r_date_out = in_act_date.strip() or r_date_default
+            if st.form_submit_button("💾 I-save ang House Visitation, Missionary Work, Indoctrination & Remarks", type="primary", use_container_width=True):
+                r_date_out = resolve_display_week_date(cur_out_rec, sub_out_month, sub_out_week, int(selected_year))
                 merged_payload = dict(cur_out_rec)
                 merged_payload["parish"] = sub_out_parish
                 merged_payload["month"] = sub_out_month
                 merged_payload["week"] = sub_out_week
                 merged_payload["report_date"] = r_date_out
-                merged_payload["outreach_worker_name"] = in_worker_name.strip()
-                merged_payload["outreach_ministry_unit"] = in_ministry_unit.strip()
-                merged_payload["outreach_open_prayer"] = in_open_prayer.strip()
-                merged_payload["outreach_close_prayer"] = in_close_prayer.strip()
-                merged_payload["outreach_activity_date"] = r_date_out
-                merged_payload["outreach_location"] = in_brgy_loc.strip()
-
                 merged_payload["house_visitation"] = in_hv_cnt.strip() or "0"
                 merged_payload["hv_names"] = in_hv_names.strip()
                 merged_payload["hv_people_count"] = in_hv_ppl
                 merged_payload["hv_remarks"] = in_hv_rem.strip()
-                merged_payload["hv_purpose"] = in_hv_purpose.strip()
-                merged_payload["hv_topic_shared"] = in_hv_topic.strip()
-                merged_payload["hv_addr_contact"] = in_hv_addr.strip()
-
                 merged_payload["missionary_work"] = in_mw_cnt.strip() or "0"
                 merged_payload["mw_names"] = in_mw_names.strip()
                 merged_payload["mw_people_count"] = in_mw_ppl
                 merged_payload["mw_remarks"] = in_mw_rem.strip()
-                merged_payload["mw_age_gender"] = in_mw_age_gen.strip()
-                merged_payload["mw_topic_shared"] = in_mw_topic.strip()
-                merged_payload["mw_location_met"] = in_mw_loc.strip()
-
                 merged_payload["indoctrination"] = in_ind_cnt.strip() or "0"
                 merged_payload["ind_names"] = in_ind_names.strip()
                 merged_payload["ind_people_count"] = in_ind_ppl
                 merged_payload["ind_remarks"] = in_ind_rem.strip()
-                merged_payload["ind_instructor"] = in_ind_inst.strip()
-                merged_payload["ind_lesson_progress"] = in_ind_lesson.strip()
-                merged_payload["ind_baptism_ready"] = in_ind_bapt.strip()
                 merged_payload["outreach_general_remarks"] = in_gen_out_rem.strip()
-
-                # Save also to the 35-column Google Form response table cache so it appears in the Google Form Table immediately
-                new_gf_row = {
-                    "Timestamp": get_philippine_datetime_str(),
-                    "Parish / Simbahan (Church Name)": sub_out_parish,
-                    "Pangalan ng Nag-uulat (Worker / Priest / Volunteer Name)": in_worker_name.strip() or my_chat_identity,
-                    "Opening Prayer": in_open_prayer.strip(),
-                    "Closing Payer": in_close_prayer.strip(),
-                    "Katungkulan / Ministry Unit": in_ministry_unit.strip(),
-                    "Petsa ng Gawain (Date of Activity)": r_date_out,
-                    "Lokasyon / Area / Barangay": in_brgy_loc.strip(),
-                    "Type of Activity": in_act_type,
-                    "Date (House Visitation)": r_date_out if in_hv_names.strip() else "",
-                    "Pangalan ng Pamilya / Indibidwal na Binisita": in_hv_names.strip(),
-                    "Tirahan at Contact Number ng Binisita": in_hv_addr.strip(),
-                    "Layunin / Uri ng Pagbisita": in_hv_purpose.strip(),
-                    "Kalagayan ng Espirituwal / Sitwasyon ng Pamilya": in_hv_rem.strip(),
-                    "Mga Kahilingan sa Panalangin (Prayer Requests)": "",
-                    "Paksa ng Pag-aaral o Mensaheng Ibinahagi (Topic / Scripture Shared)": in_hv_topic.strip(),
-                    "Reaksyon o Tugon ng Binisita sa Mensahe:": in_hv_rem.strip(),
-                    "Susunod na Hakbang / Kailangan ng Follow-up?": "",
-                    "Date (Missionary Work)": r_date_out if in_mw_names.strip() else "",
-                    "Pangalan ng Bagong Contact / Prospect (Contact Name)": in_mw_names.strip(),
-                    "Edad at Kasarian (Age & Gender)": in_mw_age_gen.strip(),
-                    "Contact Number / Social Media Handle (Messenger Link)": "",
-                    "Tirahan o Lokasyon kung saan nakatagpo (Address / Location met)": in_mw_loc.strip(),
-                    "Reaksyon o Tugon sa Ebanghelyo (Response Status)": in_mw_rem.strip(),
-                    "Anong Mensahe o Paksa ang Naibahagi? (Topic / Message Shared)": in_mw_topic.strip(),
-                    "Mga Interes o Pangangailangan ng Contact (Interests & Needs)": "",
-                    "Napagkasunduang Araw para sa Follow-up (Follow-up Date)": "",
-                    "Pangalan ng Candidate / Estudyante (Candidate Name)": in_ind_names.strip(),
-                    "Contact Number / Social Media Link": "",
-                    "Pangalan ng Nagtuturo (Instructor / Mentor / Priest Name)": in_ind_inst.strip(),
-                    "Kasalukuyang Leksyon o Aral na Natapos (Lesson Progress)": in_ind_lesson.strip(),
-                    "Status ng Pagdalo (Attendance Status)": "Active" if in_ind_names.strip() else "",
-                    "Handa na ba para sa Bautismo / Kumpirma (Ready for Baptism?)": in_ind_bapt.strip(),
-                    "Target Date ng Bautismo (kung handa na)": "",
-                    "Puna o Evaluasyon ng Nagtuturo (Teacher's Notes / Assessment)": in_ind_rem.strip() or in_gen_out_rem.strip()
-                }
-                cur_cache_rows = _load_local_outreach_form_cache()
-                cur_cache_rows.append(new_gf_row)
-                _save_local_outreach_form_cache(cur_cache_rows)
 
                 ok_o, msg_o = save_weekly_monitoring_record(
                     sub_out_parish, sub_out_month, sub_out_week, r_date_out, merged_payload, drive_link=cur_out_rec.get("drive_link", "")
                 )
+                # Kung may general outreach remarks, siguraduhing naka-save sa record
                 db_after = load_weekly_monitoring_records()
                 if cur_out_key in db_after:
                     db_after[cur_out_key]["outreach_general_remarks"] = in_gen_out_rem.strip()
@@ -8852,6 +8036,7 @@ def render_outreach_visitation_missionary_page():
                     except Exception:
                         pass
 
+                # I-reset ang cached performance report para sa buwan at linggong ito upang awtomatikong pumasok ang bagong Outreach data
                 for l_rst in ["English", "Ilokano"]:
                     st.session_state.pop(f"editable_perf_report_{sub_out_month}_{sub_out_week}_{selected_year}_{l_rst}", None)
                 try:
@@ -8905,17 +8090,18 @@ def render_outreach_visitation_missionary_page():
         for wk_o in out_weeks_list:
             for p_c in parishes_out_scan:
                 rec_c = db_live.get(f"{p_c.upper()}__{out_month.upper()}__{wk_o}", {})
-                r_raw = str(rec_c.get("remarks", "")).strip()
-                p_ro = parse_remarks_into_mass_and_outreach(r_raw) if r_raw else {}
-                hv_r = str(rec_c.get("hv_remarks", "") or p_ro.get("hv_remarks", "")).strip()
-                mw_r = str(rec_c.get("mw_remarks", "") or p_ro.get("mw_remarks", "")).strip()
-                ind_r = str(rec_c.get("ind_remarks", "") or p_ro.get("ind_remarks", "")).strip()
-                hv_n = str(rec_c.get("hv_names", "") or p_ro.get("hv_names", "")).strip()
-                mw_n = str(rec_c.get("mw_names", "") or p_ro.get("mw_names", "")).strip()
-                ind_n = str(rec_c.get("ind_names", "") or p_ro.get("ind_names", "")).strip()
-                gen_r = str(rec_c.get("outreach_general_remarks", "")).strip()
-                if hv_r or mw_r or ind_r or hv_n or mw_n or ind_n or gen_r or parse_int_from_text(rec_c.get("house_visitation", "0")) > 0 or parse_int_from_text(rec_c.get("missionary_work", "0")) > 0 or parse_int_from_text(rec_c.get("indoctrination", "0")) > 0:
-                    outreach_cards_list.append((p_c, wk_o, rec_c, p_ro))
+                if rec_c.get("has_data") or rec_c.get("outreach_general_remarks"):
+                    r_raw = str(rec_c.get("remarks", "")).strip()
+                    p_ro = parse_remarks_into_mass_and_outreach(r_raw) if r_raw else {}
+                    hv_r = str(rec_c.get("hv_remarks", "") or p_ro.get("hv_remarks", "")).strip()
+                    mw_r = str(rec_c.get("mw_remarks", "") or p_ro.get("mw_remarks", "")).strip()
+                    ind_r = str(rec_c.get("ind_remarks", "") or p_ro.get("ind_remarks", "")).strip()
+                    hv_n = str(rec_c.get("hv_names", "") or p_ro.get("hv_names", "")).strip()
+                    mw_n = str(rec_c.get("mw_names", "") or p_ro.get("mw_names", "")).strip()
+                    ind_n = str(rec_c.get("ind_names", "") or p_ro.get("ind_names", "")).strip()
+                    gen_r = str(rec_c.get("outreach_general_remarks", "")).strip()
+                    if hv_r or mw_r or ind_r or hv_n or mw_n or ind_n or gen_r or parse_int_from_text(rec_c.get("house_visitation", "0")) > 0 or parse_int_from_text(rec_c.get("missionary_work", "0")) > 0 or parse_int_from_text(rec_c.get("indoctrination", "0")) > 0:
+                        outreach_cards_list.append((p_c, wk_o, rec_c, p_ro))
 
         with st.expander(f"📝 Basahin nang Buo ang Remarks sa House Visitation, Missionary Work & Indoctrination ({len(outreach_cards_list)} Record(s) — {out_scope_label})", expanded=True):
             if outreach_cards_list:
