@@ -7963,20 +7963,51 @@ def _normalize_outreach_sheet_headers(raw_headers: list[str]) -> list[str]:
             normalized.append(h_clean)
     return normalized
 
+def extract_google_drive_id(url_or_id: str) -> str:
+    """Kinukuha ang Google Drive / Google Sheets File ID mula sa URL o direktang ID string."""
+    return extract_id_from_url(url_or_id)
+
+def download_google_drive_excel_bytes(sheet_url_or_id: str) -> bytes | None:
+    """Kinukuha ang XLSX bytes mula sa Google Drive / Google Spreadsheet gamit ang Service Account API o public export link."""
+    fid = extract_id_from_url(sheet_url_or_id) or DEFAULT_OUTREACH_GOOGLE_SHEET_ID
+    if not fid:
+        return None
+    drive_service, _ = get_google_drive_service()
+    if drive_service is not None:
+        try:
+            meta = drive_service.files().get(fileId=fid, fields="mimeType", supportsAllDrives=True).execute()
+            m_type = str(meta.get("mimeType", ""))
+            if "spreadsheet" in m_type:
+                data = drive_service.files().export_media(
+                    fileId=fid,
+                    mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                ).execute()
+            else:
+                data = drive_service.files().get_media(fileId=fid, supportsAllDrives=True).execute()
+            if data and len(data) > 100:
+                return data
+        except Exception:
+            pass
+    for dl_url in [
+        f"https://docs.google.com/spreadsheets/d/{fid}/export?format=xlsx",
+        f"https://drive.google.com/uc?export=download&id={fid}"
+    ]:
+        try:
+            r = requests.get(dl_url, timeout=15)
+            if r.status_code == 200 and r.content and len(r.content) > 100 and not r.content.lstrip().startswith(b"<!DOCTYPE html"):
+                return r.content
+        except Exception:
+            continue
+    return None
+
 def fetch_outreach_google_sheet_df(sheet_url: str = DEFAULT_OUTREACH_GOOGLE_SHEET_URL) -> tuple[pd.DataFrame, str]:
     """Kinukuha ang live responses mula sa Google Spreadsheet ('1FZLr3gFvU-YXWJMTrRkOqJ2X0hTAaQ3rRerX9cdUIb8' - Form responses 1)
     at isinasama rin ang anumang local entries para laging kumpleto ang Table sa App."""
-    def extract_google_drive_id(sheet_url):
-        ...
-
     file_id = extract_google_drive_id(sheet_url) or DEFAULT_OUTREACH_GOOGLE_SHEET_ID
     rows_dicts = []
     status_msg = ""
 
     # 1. Subukan munang kunin bilang XLSX bytes (Google Drive API o direct export link)
-    def download_google_drive_excel_bytes(sheet_url):
-        ...
-
     excel_bytes = download_google_drive_excel_bytes(sheet_url)
     if excel_bytes:
         try:
