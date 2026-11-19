@@ -19,6 +19,7 @@ import csv
 import html as html_lib
 import json
 import time
+import zlib
 import base64
 import hashlib
 import difflib
@@ -111,6 +112,14 @@ def find_logo_file():
     return None
 
 LOGO_PATH = find_logo_file()
+LOGO_B64 = ""
+if LOGO_PATH and os.path.exists(LOGO_PATH):
+    try:
+        with open(LOGO_PATH, "rb") as _f_logo:
+            LOGO_B64 = base64.b64encode(_f_logo.read()).decode("utf-8")
+    except Exception:
+        LOGO_B64 = ""
+
 
 def render_title_with_logo(title_text: str, subtitle_text: str = ""):
     if LOGO_PATH and os.path.exists(LOGO_PATH):
@@ -171,6 +180,7 @@ GOOGLE_SERVICE_ACCOUNT_JSON = get_secret("GOOGLE_SERVICE_ACCOUNT_JSON")
 APP_USER = get_secret("APP_USER", "ctg.ministry.master.admin")
 APP_PASSWORD = get_secret("APP_PASSWORD", "")
 BACKUP_ADMIN_EMAIL = "clarojerald16@gmail.com"
+BACKUP_DISPLAY_NAME = "CTG Ministry Official Cloud"
 
 APP_STORAGE_FOLDER_ID = "1MDIZBfdIGgM9gBZvG04xj2m3zJ5TCfJg"
 APP_STORAGE_FOLDER_URL = get_secret(
@@ -864,26 +874,442 @@ PARISH_ACCOUNTS = {
     "hongkongparish": {"pw_hash": "3c8d89e094f6fdac11af6eddf1c6315697e38ec220b83f08a9a6280fb30d4607", "parish": "HONGKONG PARISH", "role": "Parish Leader"},
 }
 
-def verify_account_credentials(username_in: str, password_in: str) -> dict | None:
-    u_clean = str(username_in or "").strip().lower()
-    u_alnum = re.sub(r"[^a-z0-9.]", "", u_clean)
-    p_clean = str(password_in or "").strip()
-    if not u_clean or not p_clean:
-        return None
-    p_hash = _sha256_hex(p_clean)
+LOCAL_ENCRYPTED_ACCOUNTS_FILE = "ctg_encrypted_user_accounts.json"
+LOCAL_LEADERSHIP_PROFILES_FILE = "ctg_leadership_and_priests_profiles.json"
+
+def encrypt_password_pbkdf2(plain_password: str, salt_hex: str = "") -> str:
+    """Encrypts a password using PBKDF2-HMAC-SHA256 (120,000 iterations) with a cryptographic random salt."""
+    if not salt_hex:
+        salt_hex = hashlib.sha256(f"{time.time()}_{os.urandom(16).hex()}".encode("utf-8")).hexdigest()[:32]
+    dk = hashlib.pbkdf2_hmac(
+        "sha256",
+        str(plain_password or "").encode("utf-8"),
+        bytes.fromhex(salt_hex),
+        120000
+    )
+    return f"pbkdf2_sha256${salt_hex}${dk.hex()}"
+
+def verify_encrypted_password(plain_password: str, stored_hash: str) -> bool:
+    if not plain_password or not stored_hash:
+        return False
+    if stored_hash.startswith("pbkdf2_sha256$"):
+        parts = stored_hash.split("$")
+        if len(parts) == 3:
+            _, salt_hex, _ = parts
+            return encrypt_password_pbkdf2(plain_password, salt_hex) == stored_hash
+        return False
+    return _sha256_hex(plain_password) == stored_hash
+
+def get_default_encrypted_accounts_registry() -> dict:
+    reg = {
+        "MASTER ADMIN": {
+            "account_key": "MASTER ADMIN",
+            "username": "ctg.ministry.master.admin",
+            "pw_hash": PARISH_ACCOUNTS["ctg.ministry.master.admin"]["pw_hash"],
+            "parish": "Lahat ng Parokya",
+            "role": "Master Admin",
+            "is_active": True,
+            "one_time_changed": False,
+            "updated_at": "Default (SHA-256 Encrypted)"
+        }
+    }
+    for p_name in PARISH_ORDER:
+        p_low = p_name.lower()
+        base_info = PARISH_ACCOUNTS.get(p_low, {})
+        reg[p_name] = {
+            "account_key": p_name,
+            "username": p_low,
+            "pw_hash": base_info.get("pw_hash", ""),
+            "parish": p_name,
+            "role": "Parish Leader",
+            "is_active": True,
+            "one_time_changed": False,
+            "updated_at": "Default (SHA-256 Encrypted)"
+        }
+    return reg
+
+def load_encrypted_accounts_registry() -> dict:
+    reg = get_default_encrypted_accounts_registry()
+    if os.path.exists(LOCAL_ENCRYPTED_ACCOUNTS_FILE):
+        try:
+            with open(LOCAL_ENCRYPTED_ACCOUNTS_FILE, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            if isinstance(saved, dict):
+                for k, v in saved.items():
+                    if k in reg and isinstance(v, dict):
+                        reg[k].update(v)
+        except Exception:
+            pass
+    return reg
+
+def save_encrypted_accounts_registry(reg: dict):
     try:
-        if "PARISH_PASSWORDS" in st.secrets:
-            for k_sec, v_sec in st.secrets["PARISH_PASSWORDS"].items():
-                if k_sec.strip().lower() in (u_clean, u_alnum) and p_clean == str(v_sec).strip():
-                    return PARISH_ACCOUNTS.get(u_clean) or PARISH_ACCOUNTS.get(u_alnum)
+        with open(LOCAL_ENCRYPTED_ACCOUNTS_FILE, "w", encoding="utf-8") as f:
+            json.dump(reg, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
-    for candidate_key in (u_clean, u_alnum, f"{u_clean} parish", f"{u_alnum}parish"):
-        if candidate_key in PARISH_ACCOUNTS:
-            acc = PARISH_ACCOUNTS[candidate_key]
-            if p_hash == acc.get("pw_hash") or (APP_PASSWORD and candidate_key == APP_USER.lower() and p_clean == APP_PASSWORD):
-                return acc
-    return None
+
+def verify_account_credentials_detailed(username_in: str, password_in: str) -> tuple[dict | None, str]:
+    u_clean = str(username_in or "").strip().lower()
+    u_alnum = re.sub(r"[^a-z0-9._-]", "", u_clean)
+    p_clean = str(password_in or "")
+    if not u_clean or not p_clean.strip():
+        return None, "⚠️ Pakilagay ang iyong Username at Password."
+
+    reg = load_encrypted_accounts_registry()
+
+    # 1. Check custom/managed accounts in encrypted registry first
+    matched_acc_slot = None
+    for slot_key, acc_obj in reg.items():
+        custom_u = str(acc_obj.get("username", "") or "").strip().lower()
+        custom_u_alnum = re.sub(r"[^a-z0-9._-]", "", custom_u)
+        slot_low = slot_key.lower()
+        slot_alnum = re.sub(r"[^a-z0-9._-]", "", slot_low)
+        # Match against custom username, or default parish username if user hasn't changed username
+        if u_clean in (custom_u, custom_u_alnum) or (not acc_obj.get("one_time_changed") and u_clean in (slot_low, slot_alnum, slot_low.replace(" parish", ""), f"{u_clean} parish")):
+            matched_acc_slot = acc_obj
+            break
+
+    # Also check if u_clean matches a default parish account key when custom username wasn't matched
+    if matched_acc_slot is None:
+        for candidate_key in (u_clean, u_alnum, f"{u_clean} parish", f"{u_alnum}parish"):
+            if candidate_key in PARISH_ACCOUNTS:
+                p_target = PARISH_ACCOUNTS[candidate_key]["parish"]
+                slot_k = "MASTER ADMIN" if PARISH_ACCOUNTS[candidate_key]["role"] == "Master Admin" else p_target
+                cand_slot = reg.get(slot_k)
+                if cand_slot:
+                    # If the user already changed their custom username, tell them to use their new username
+                    if cand_slot.get("one_time_changed") and str(cand_slot.get("username", "")).strip().lower() not in (u_clean, u_alnum):
+                        return None, f"⚠️ Ang default username para sa {slot_k} ay napalitan na ng bagong custom username. Gamitin ang iyong bagong Username o magpa-reset sa Master Admin."
+                    matched_acc_slot = cand_slot
+                    break
+
+    if matched_acc_slot is None:
+        return None, f"❌ Babala sa Pag-login: Hindi nahanap ang Username na '{username_in}'. Pakisuri ang spelling ng iyong Username."
+
+    if not matched_acc_slot.get("is_active", True) and matched_acc_slot.get("role") != "Master Admin":
+        return None, f"🔒 Babala: Naka-lock o disabled sa kasalukuyan ang access ng '{matched_acc_slot.get('parish')}'. Makipag-ugnayan sa Master Admin upang buksan ang access."
+
+    # Verify password against encrypted hash (PBKDF2-SHA256 or SHA-256)
+    if verify_encrypted_password(p_clean.strip(), matched_acc_slot.get("pw_hash", "")):
+        return matched_acc_slot, "OK"
+
+    # Fallback check against st.secrets or default hash if not yet changed
+    if not matched_acc_slot.get("one_time_changed"):
+        p_hash = _sha256_hex(p_clean.strip())
+        for candidate_key in (u_clean, u_alnum, f"{u_clean} parish", f"{u_alnum}parish"):
+            if candidate_key in PARISH_ACCOUNTS:
+                base_acc = PARISH_ACCOUNTS[candidate_key]
+                if p_hash == base_acc.get("pw_hash") or (APP_PASSWORD and candidate_key == APP_USER.lower() and p_clean.strip() == APP_PASSWORD):
+                    return matched_acc_slot, "OK"
+
+    return None, "❌ Babala sa Pag-login: Maling Password! Pakisuri nang mabuti ang iyong Password (Case-Sensitive) at subukang muli."
+
+def verify_account_credentials(username_in: str, password_in: str) -> dict | None:
+    acc, _ = verify_account_credentials_detailed(username_in, password_in)
+    return acc
+
+# ==========================================
+# 🏛️ LEADERSHIP HIERARCHY & PARISH PRIESTS PROFILES ENGINE
+# ==========================================
+def get_default_leadership_and_priests_profiles() -> dict:
+    default_avatar_svg = ""
+    profiles = {
+        "supreme_head": {
+            "key": "supreme_head",
+            "name": "Supreme Head",
+            "position": "Supreme Head — Church of the Temple of God",
+            "parish": "CTG Supreme Leadership",
+            "photo_b64": default_avatar_svg,
+            "drive_link": ""
+        },
+        "supreme_head_spouse": {
+            "key": "supreme_head_spouse",
+            "name": "Spouse of the Supreme Head",
+            "position": "Spouse of the Supreme Head — Ministry Leadership",
+            "parish": "CTG Supreme Leadership",
+            "photo_b64": default_avatar_svg,
+            "drive_link": ""
+        },
+        "diocese_head_1": {
+            "key": "diocese_head_1",
+            "name": "Diocese Head I",
+            "position": "Diocese Head — Diocese I",
+            "parish": "CTG Diocese I Oversight",
+            "photo_b64": default_avatar_svg,
+            "drive_link": ""
+        },
+        "diocese_head_2": {
+            "key": "diocese_head_2",
+            "name": "Diocese Head II",
+            "position": "Diocese Head — Diocese II",
+            "parish": "CTG Diocese II Oversight",
+            "photo_b64": default_avatar_svg,
+            "drive_link": ""
+        },
+        "parish_priests": {}
+    }
+    for p_name in PARISH_ORDER:
+        profiles["parish_priests"][p_name] = {
+            "key": p_name,
+            "name": f"Parish Priest ({p_name.title()})",
+            "position": "Parish Priest",
+            "parish": p_name,
+            "photo_b64": "",
+            "drive_link": ""
+        }
+    return profiles
+
+def load_leadership_and_priests_profiles() -> dict:
+    profiles = get_default_leadership_and_priests_profiles()
+    if os.path.exists(LOCAL_LEADERSHIP_PROFILES_FILE):
+        try:
+            with open(LOCAL_LEADERSHIP_PROFILES_FILE, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            if isinstance(saved, dict):
+                for top_k in ["supreme_head", "supreme_head_spouse", "diocese_head_1", "diocese_head_2"]:
+                    if isinstance(saved.get(top_k), dict):
+                        profiles[top_k].update(saved[top_k])
+                if isinstance(saved.get("parish_priests"), dict):
+                    for p_k, p_v in saved["parish_priests"].items():
+                        if p_k in profiles["parish_priests"] and isinstance(p_v, dict):
+                            profiles["parish_priests"][p_k].update(p_v)
+        except Exception:
+            pass
+    return profiles
+
+def save_leadership_and_priests_profiles(profiles: dict):
+    try:
+        with open(LOCAL_LEADERSHIP_PROFILES_FILE, "w", encoding="utf-8") as f:
+            json.dump(profiles, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+def compress_profile_image_to_data_uri(file_bytes: bytes) -> str:
+    """Compresses an uploaded profile image to a crisp 220x220 center-cropped square JPEG data URI for instant rendering."""
+    try:
+        im = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+        w, h = im.size
+        min_dim = min(w, h)
+        left = (w - min_dim) // 2
+        top = (h - min_dim) // 2
+        im_sq = im.crop((left, top, left + min_dim, top + min_dim)).resize((220, 220), Image.Resampling.LANCZOS)
+        buf = io.BytesIO()
+        im_sq.save(buf, format="JPEG", quality=86)
+        return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+    except Exception:
+        return ""
+
+def _build_profile_avatar_html(photo_b64: str, border_color: str = "#38BDF8", size_px: int = 86, icon_fallback: str = "⛪") -> str:
+    if photo_b64 and photo_b64.startswith("data:image"):
+        return (
+            f"<img src='{photo_b64}' style='width:{size_px}px;height:{size_px}px;border-radius:50%;"
+            f"object-fit:cover;border:3px solid {border_color};box-shadow:0 4px 12px rgba(0,0,0,0.35);margin-bottom:8px;'>"
+        )
+    if LOGO_B64:
+        return (
+            f"<img src='data:image/png;base64,{LOGO_B64}' style='width:{size_px}px;height:{size_px}px;border-radius:50%;"
+            f"object-fit:cover;border:3px solid {border_color};opacity:0.88;box-shadow:0 4px 12px rgba(0,0,0,0.3);margin-bottom:8px;'>"
+        )
+    return (
+        f"<div style='width:{size_px}px;height:{size_px}px;border-radius:50%;background:rgba(15,23,42,0.8);"
+        f"border:3px solid {border_color};display:inline-flex;align-items:center;justify-content:center;"
+        f"font-size:{int(size_px*0.42)}px;margin-bottom:8px;'>{icon_fallback}</div>"
+    )
+
+def render_church_leadership_and_priests_directory(context_key: str = "home"):
+    """
+    Renders the Church of the Temple of God Leadership Hierarchy & Parish Priests Directory on the Home Dashboard:
+    - Tier 1: Supreme Head & Spouse of the Supreme Head
+    - Tier 2: Two Diocese Heads (Diocese Head I & Diocese Head II)
+    - Tier 3: 10 Parish Priests (Lipay Norte to Hongkong) with Picture, Name, Position ('Parish Priest'), and Parish Name.
+    Includes role-based editor so Master Admin can edit all leaders/priests and each Parish Admin/Priest can upload their own picture & type their name.
+    """
+    profiles = load_leadership_and_priests_profiles()
+    is_master = (st.session_state.user_role == "Master Admin")
+    my_parish = st.session_state.get("assigned_parish", PARISH_ORDER[0])
+
+    st.markdown(
+        "<div style='background:linear-gradient(135deg, #064E3B 0%, #0F172A 100%);"
+        "border:1px solid rgba(16,185,129,0.45);border-radius:14px;padding:16px 20px;margin-bottom:14px;text-align:center;'>"
+        "<div style='font-size:1.25rem;font-weight:800;color:#F8FAFC;letter-spacing:0.5px;'>"
+        "🏛️ CHURCH OF THE TEMPLE OF GOD — SUPREME LEADERSHIP, DIOCESE HEADS & PARISH PRIESTS"
+        "</div>"
+        "<div style='font-size:0.86rem;color:#A7F3D0;margin-top:4px;'>"
+        "Opisyal na Direktoryo ng Supreme Head, Diocese Heads, at mga Parish Priests ng 10 Parokya"
+        "</div></div>",
+        unsafe_allow_html=True
+    )
+
+    # TIER 1: SUPREME HEAD & SPOUSE
+    sup1 = profiles["supreme_head"]
+    sup2 = profiles["supreme_head_spouse"]
+    sp_L, col_sup1, col_sup2, sp_R = st.columns([0.4, 1.6, 1.6, 0.4])
+    with col_sup1:
+        av1 = _build_profile_avatar_html(sup1.get("photo_b64", ""), "#F59E0B", 98, "👑")
+        st.markdown(
+            f"<div style='background:linear-gradient(145deg, rgba(30,41,59,0.95), rgba(15,23,42,0.95));"
+            f"border:2px solid #F59E0B;border-radius:14px;padding:16px 12px;text-align:center;"
+            f"box-shadow:0 6px 18px rgba(245,158,11,0.15);margin-bottom:10px;'>"
+            f"{av1}<br>"
+            f"<span style='background:#F59E0B;color:#0F172A;font-weight:800;font-size:0.74rem;padding:2px 10px;border-radius:12px;'>SUPREME LEADERSHIP</span>"
+            f"<div style='font-size:1.12rem;font-weight:800;color:#FEF3C7;margin-top:6px;'>{sup1.get('name')}</div>"
+            f"<div style='font-size:0.86rem;color:#FDE68A;font-weight:600;'>{sup1.get('position')}</div>"
+            f"<div style='font-size:0.78rem;color:#94A3B8;margin-top:2px;'>{sup1.get('parish')}</div>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+    with col_sup2:
+        av2 = _build_profile_avatar_html(sup2.get("photo_b64", ""), "#F59E0B", 98, "🌟")
+        st.markdown(
+            f"<div style='background:linear-gradient(145deg, rgba(30,41,59,0.95), rgba(15,23,42,0.95));"
+            f"border:2px solid #F59E0B;border-radius:14px;padding:16px 12px;text-align:center;"
+            f"box-shadow:0 6px 18px rgba(245,158,11,0.15);margin-bottom:10px;'>"
+            f"{av2}<br>"
+            f"<span style='background:#F59E0B;color:#0F172A;font-weight:800;font-size:0.74rem;padding:2px 10px;border-radius:12px;'>SUPREME LEADERSHIP</span>"
+            f"<div style='font-size:1.12rem;font-weight:800;color:#FEF3C7;margin-top:6px;'>{sup2.get('name')}</div>"
+            f"<div style='font-size:0.86rem;color:#FDE68A;font-weight:600;'>{sup2.get('position')}</div>"
+            f"<div style='font-size:0.78rem;color:#94A3B8;margin-top:2px;'>{sup2.get('parish')}</div>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+
+    # TIER 2: TWO DIOCESE HEADS
+    dio1 = profiles["diocese_head_1"]
+    dio2 = profiles["diocese_head_2"]
+    dsp_L, col_dio1, col_dio2, dsp_R = st.columns([0.55, 1.45, 1.45, 0.55])
+    with col_dio1:
+        av_d1 = _build_profile_avatar_html(dio1.get("photo_b64", ""), "#10B981", 86, "🏛️")
+        st.markdown(
+            f"<div style='background:rgba(15,23,42,0.92);border:1.5px solid #10B981;border-radius:12px;"
+            f"padding:14px 10px;text-align:center;margin-bottom:12px;'>"
+            f"{av_d1}<br>"
+            f"<span style='background:#065F46;color:#D1FAE5;font-weight:700;font-size:0.72rem;padding:2px 9px;border-radius:10px;'>DIOCESE HEAD</span>"
+            f"<div style='font-size:1.02rem;font-weight:800;color:#ECFDF5;margin-top:6px;'>{dio1.get('name')}</div>"
+            f"<div style='font-size:0.83rem;color:#6EE7B7;font-weight:600;'>{dio1.get('position')}</div>"
+            f"<div style='font-size:0.76rem;color:#94A3B8;margin-top:2px;'>{dio1.get('parish')}</div>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+    with col_dio2:
+        av_d2 = _build_profile_avatar_html(dio2.get("photo_b64", ""), "#10B981", 86, "🏛️")
+        st.markdown(
+            f"<div style='background:rgba(15,23,42,0.92);border:1.5px solid #10B981;border-radius:12px;"
+            f"padding:14px 10px;text-align:center;margin-bottom:12px;'>"
+            f"{av_d2}<br>"
+            f"<span style='background:#065F46;color:#D1FAE5;font-weight:700;font-size:0.72rem;padding:2px 9px;border-radius:10px;'>DIOCESE HEAD</span>"
+            f"<div style='font-size:1.02rem;font-weight:800;color:#ECFDF5;margin-top:6px;'>{dio2.get('name')}</div>"
+            f"<div style='font-size:0.83rem;color:#6EE7B7;font-weight:600;'>{dio2.get('position')}</div>"
+            f"<div style='font-size:0.76rem;color:#94A3B8;margin-top:2px;'>{dio2.get('parish')}</div>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+
+    # TIER 3: 10 PARISH PRIESTS (2 Rows of 5 Cards)
+    st.markdown("##### ⛪ Mga Parish Priest ng 10 Parokya (Lipay Norte hanggang Hongkong)")
+    priests_dict = profiles.get("parish_priests", {})
+    for row_start in range(0, len(PARISH_ORDER), 5):
+        row_parishes = PARISH_ORDER[row_start:row_start + 5]
+        p_cols = st.columns(5)
+        for c_i, p_name in enumerate(row_parishes):
+            p_info = priests_dict.get(p_name, {"name": f"Parish Priest ({p_name.title()})", "position": "Parish Priest", "parish": p_name, "photo_b64": ""})
+            is_my_card = (not is_master and p_name == my_parish)
+            border_c = "#38BDF8" if not is_my_card else "#F59E0B"
+            with p_cols[c_i]:
+                av_p = _build_profile_avatar_html(p_info.get("photo_b64", ""), border_c, 76, "⛪")
+                st.markdown(
+                    f"<div style='background:rgba(30,41,59,0.88);border:1.5px solid {border_c};border-radius:12px;"
+                    f"padding:12px 8px;text-align:center;margin-bottom:10px;min-height:185px;'>"
+                    f"{av_p}<br>"
+                    f"<span style='background:rgba(56,189,248,0.18);color:#7DD3FC;font-weight:700;font-size:0.68rem;padding:2px 8px;border-radius:8px;'>"
+                    f"{p_info.get('position', 'Parish Priest')}</span>"
+                    f"<div style='font-size:0.92rem;font-weight:800;color:#F8FAFC;margin-top:6px;line-height:1.25;'>{p_info.get('name')}</div>"
+                    f"<div style='font-size:0.75rem;color:#38BDF8;font-weight:700;margin-top:4px;'>{p_name}</div>"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+
+    # Editor Expander: Master Admin can edit Supreme Head, Spouse, 2 Diocese Heads, and all 10 Parish Priests;
+    # Parish Leader / Priest can edit their own Parish Priest profile & picture.
+    editor_label = (
+        "✏️ I-edit ang Pangalan, Position at Picture (Supreme Head, Asawa, 2 Diocese Heads, at 10 Parish Priests)"
+        if is_master
+        else f"✏️ I-update ang Iyong Parish Priest Profile & Picture ({my_parish})"
+    )
+    with st.expander(editor_label, expanded=False):
+        if is_master:
+            target_choices = [
+                ("supreme_head", "👑 Supreme Head"),
+                ("supreme_head_spouse", "🌟 Asawa ng Supreme Head (Spouse)"),
+                ("diocese_head_1", "🏛️ Diocese Head I"),
+                ("diocese_head_2", "🏛️ Diocese Head II"),
+            ] + [(f"priest::{p}", f"⛪ Parish Priest — {p}") for p in PARISH_ORDER]
+        else:
+            target_choices = [(f"priest::{my_parish}", f"⛪ Parish Priest — {my_parish}")]
+
+        sel_target_idx = st.selectbox(
+            "Piliin ang Profile na I-e-edit / Lalagyan ng Picture:",
+            range(len(target_choices)),
+            format_func=lambda i: target_choices[i][1],
+            key=f"ldr_edit_sel_{context_key}"
+        )
+        sel_key_code, sel_disp_lbl = target_choices[sel_target_idx]
+        if sel_key_code.startswith("priest::"):
+            target_p_name = sel_key_code.split("priest::", 1)[1]
+            cur_prof = profiles["parish_priests"].get(target_p_name, {})
+        else:
+            target_p_name = ""
+            cur_prof = profiles.get(sel_key_code, {})
+
+        with st.form(f"ldr_profile_form_{context_key}"):
+            fc1, fc2, fc3 = st.columns([1.3, 1.2, 1.5])
+            with fc1:
+                in_name = st.text_input("👤 Buong Pangalan (Name):", value=str(cur_prof.get("name", ""))).strip()
+            with fc2:
+                in_pos = st.text_input("🏷️ Position / Title (Hal. Parish Priest / Supreme Head / Diocese Head):", value=str(cur_prof.get("position", "Parish Priest"))).strip()
+            with fc3:
+                in_parish_lbl = st.text_input(
+                    "⛪ Parokya / Diocese / Scope:",
+                    value=str(target_p_name if target_p_name else cur_prof.get("parish", "")),
+                    disabled=bool(target_p_name)
+                ).strip()
+            in_photo = st.file_uploader("📸 Mag-upload ng Litrato / Profile Picture (.jpg, .png):", type=["jpg", "jpeg", "png"], key=f"ldr_pic_up_{context_key}")
+
+            if st.form_submit_button("💾 I-save ang Profile at Picture", type="primary", use_container_width=True):
+                new_b64 = cur_prof.get("photo_b64", "")
+                new_drive_link = cur_prof.get("drive_link", "")
+                if in_photo is not None:
+                    raw_img_b = in_photo.read()
+                    comp_uri = compress_profile_image_to_data_uri(raw_img_b)
+                    if comp_uri:
+                        new_b64 = comp_uri
+                    upload_p_scope = target_p_name if target_p_name else (my_parish if my_parish in PARISH_ORDER else PARISH_ORDER[0])
+                    d_link, _ = upload_member_image_to_parish_database_folder(
+                        raw_img_b,
+                        f"CTG_Leader_Profile_{sel_key_code.replace(':', '_')}_{in_name.replace(' ', '_')}.jpg",
+                        in_photo.type or "image/jpeg",
+                        upload_p_scope
+                    )
+                    if d_link:
+                        new_drive_link = d_link
+
+                updated_entry = {
+                    "key": sel_key_code,
+                    "name": in_name or cur_prof.get("name", ""),
+                    "position": in_pos or cur_prof.get("position", "Parish Priest"),
+                    "parish": target_p_name if target_p_name else (in_parish_lbl or cur_prof.get("parish", "")),
+                    "photo_b64": new_b64,
+                    "drive_link": new_drive_link
+                }
+                if sel_key_code.startswith("priest::"):
+                    profiles["parish_priests"][target_p_name] = updated_entry
+                else:
+                    profiles[sel_key_code] = updated_entry
+                save_leadership_and_priests_profiles(profiles)
+                st.success(f"✅ Matagumpay na na-update ang profile para sa **{sel_disp_lbl}**!")
+                time.sleep(0.4)
+                st.rerun()
+
 
 def extract_id_from_url(url: str) -> str:
     if not url:
@@ -3071,13 +3497,14 @@ if not st.session_state.authenticated:
             password_input = st.text_input("🔑 Password:", type="password").strip()
             submit = st.form_submit_button("🔓 Buksan ang Parish Leader Portal (Login)", type="primary", use_container_width=True)
             if submit:
-                acc_info = verify_account_credentials(username_input, password_input)
+                acc_info, auth_warn_msg = verify_account_credentials_detailed(username_input, password_input)
                 if acc_info is not None:
                     st.session_state.authenticated = True
                     st.session_state.user_role = acc_info["role"]
                     st.session_state.assigned_parish = acc_info["parish"]
                     st.session_state.login_role = acc_info["role"]
                     st.session_state.login_parish = acc_info["parish"]
+                    st.session_state.logged_in_username = acc_info.get("username", username_input)
                     st.session_state.app_mode_override = "🧭 Parish Leader Portal (Wizard & Summary)"
                     dispatch_app_notification_and_messenger_alert(
                         sender_id=acc_info["parish"] if acc_info["role"] != "Master Admin" else "MASTER ADMIN",
@@ -3093,10 +3520,11 @@ if not st.session_state.authenticated:
                             sender_id=username_input.upper(),
                             recipient_id="MASTER ADMIN",
                             title="Failed Login Attempt sa Parish Leader Portal",
-                            details=f"Sinubukang mag-login gamit ang username '{username_input}' ngunit mali ang password.",
+                            details=f"Sinubukang mag-login gamit ang username '{username_input}': {auth_warn_msg}",
                             is_error=True
                         )
-                    st.error("Maling Username o Password. Na-log na ang attempt para sa seguridad.")
+                    st.error(auth_warn_msg)
+                    st.warning("💡 Tip: Siguraduhing tama ang spelling ng iyong Username at Password. Kung nakalimutan ang iyong bagong Password, makipag-ugnayan sa Master Admin upang ma-reset ito sa App Settings.")
         st.caption(t_ui("security_badge"))
     st.stop()
 
@@ -8031,6 +8459,45 @@ def render_weekly_report_page():
 
     cur_page_idx = int(st.session_state["pwr_active_subpage_idx"])
 
+    # Side-by-Side Horizontal Section Tabs (Tulad ng sa Parish Census & Member Manager)
+    if is_master:
+        pwr_short_tab_labels = [
+            "🏠 1. Home & Control Hub",
+            "⛪ 2. Liturgical Officers & Preachers",
+            "📝 3. Remarks (Mass/Adal/Visitors)",
+            "📊 4. Weekly Attendance Data",
+            "📅 5. Monthly Monitoring & Summary",
+            "🏆 6. Ministry Performance Report",
+        ]
+    else:
+        pwr_short_tab_labels = [
+            "🏠 1. Home & Upload / Editor",
+            "⛪ 2. Liturgical Officers & Preachers",
+            "📝 3. Remarks (Mass/Adal/Visitors)",
+            "📊 4. Weekly Attendance Data",
+            "📅 5. Monthly Monitoring & Summary",
+        ]
+
+    st.markdown(
+        "<div style='font-size:0.84rem;font-weight:700;color:#93C5FD;margin:4px 0 6px 0;'>"
+        "🗂️ Pumili ng Pahina / Section ng Weekly Report (Magkakatabi tulad ng Parish Census & Member Manager):"
+        "</div>",
+        unsafe_allow_html=True
+    )
+    pwr_tab_cols = st.columns(len(pwr_short_tab_labels))
+    for t_i, t_lbl in enumerate(pwr_short_tab_labels):
+        with pwr_tab_cols[t_i]:
+            if st.button(
+                t_lbl,
+                key=f"pwr_top_side_tab_{t_i}",
+                type="primary" if cur_page_idx == t_i else "secondary",
+                use_container_width=True
+            ):
+                st.session_state["pwr_active_subpage_idx"] = t_i
+                st.rerun()
+
+    cur_page_idx = int(st.session_state["pwr_active_subpage_idx"])
+
     def _render_pwr_page_navigator(pos_suffix: str):
         """Nagre-render sa ibaba ng pahina ng magkakatabing [⬅️ Back] [🏠 Home] [Next ➡️] at [📂 Pumili ng Pahina / Section na Bubuksan]
         na naka-optimize para sa Desktop, Tablet, at Smartphone."""
@@ -9762,11 +10229,73 @@ def render_outreach_visitation_missionary_page():
 # ⚙️ SIDEBAR CONTROL PANEL
 # =====================================================================
 with st.sidebar:
-    if LOGO_PATH and os.path.exists(LOGO_PATH):
-        st.image(LOGO_PATH, width=85)
-    st.header("⚙️ Ministry Control Panel")
-    st.write(f"👤 Role: **{st.session_state.user_role}**")
-    st.info(f"📍 Parish Access:\n**{st.session_state.assigned_parish}**")
+    _ldr_profiles_sb = load_leadership_and_priests_profiles()
+    if st.session_state.user_role == "Master Admin":
+        _my_sb_prof = _ldr_profiles_sb.get("supreme_head", {})
+        _my_sb_title = _my_sb_prof.get("position", "Master Admin")
+        _my_sb_name = _my_sb_prof.get("name", "CTG Master Admin")
+    else:
+        _my_sb_prof = _ldr_profiles_sb.get("parish_priests", {}).get(st.session_state.assigned_parish, {})
+        _my_sb_title = _my_sb_prof.get("position", "Parish Priest")
+        _my_sb_name = _my_sb_prof.get("name", f"Parish Priest ({st.session_state.assigned_parish})")
+
+    _sb_av_html = _build_profile_avatar_html(_my_sb_prof.get("photo_b64", ""), "#10B981", 78, "⛪")
+    st.markdown(
+        f"<div style='background:linear-gradient(145deg, rgba(15,23,42,0.96), rgba(30,41,59,0.92));"
+        f"border:1.5px solid #10B981;border-radius:14px;padding:14px 10px;text-align:center;margin-bottom:10px;'>"
+        f"{_sb_av_html}<br>"
+        f"<span style='background:#065F46;color:#D1FAE5;font-size:0.70rem;font-weight:700;padding:2px 9px;border-radius:10px;'>"
+        f"{_my_sb_title}</span>"
+        f"<div style='font-size:0.98rem;font-weight:800;color:#F8FAFC;margin-top:6px;'>{_my_sb_name}</div>"
+        f"<div style='font-size:0.78rem;color:#38BDF8;font-weight:700;margin-top:2px;'>📍 {st.session_state.assigned_parish}</div>"
+        f"<div style='font-size:0.72rem;color:#94A3B8;margin-top:2px;'>Role: {st.session_state.user_role}</div>"
+        f"</div>",
+        unsafe_allow_html=True
+    )
+
+    with st.expander("👤 I-edit ang Aking Profile & Picture", expanded=False):
+        with st.form("sidebar_my_profile_form"):
+            sb_in_name = st.text_input("Pangalan (Parish Priest / Leader):", value=str(_my_sb_name)).strip()
+            sb_in_pos = st.text_input("Position:", value=str(_my_sb_title)).strip()
+            sb_in_pic = st.file_uploader("Palitan ang Picture (.jpg, .png):", type=["jpg", "jpeg", "png"], key="sb_prof_pic_up")
+            if st.form_submit_button("💾 I-save ang Aking Profile", type="primary", use_container_width=True):
+                new_sb_b64 = _my_sb_prof.get("photo_b64", "")
+                new_sb_link = _my_sb_prof.get("drive_link", "")
+                if sb_in_pic is not None:
+                    raw_sb_b = sb_in_pic.read()
+                    comp_sb = compress_profile_image_to_data_uri(raw_sb_b)
+                    if comp_sb:
+                        new_sb_b64 = comp_sb
+                    p_scope_sb = st.session_state.assigned_parish if st.session_state.assigned_parish in PARISH_ORDER else PARISH_ORDER[0]
+                    d_lnk, _ = upload_member_image_to_parish_database_folder(
+                        raw_sb_b,
+                        f"CTG_Priest_Profile_{p_scope_sb.replace(' ', '_')}_{sb_in_name.replace(' ', '_')}.jpg",
+                        sb_in_pic.type or "image/jpeg",
+                        p_scope_sb
+                    )
+                    if d_lnk:
+                        new_sb_link = d_lnk
+                if st.session_state.user_role == "Master Admin":
+                    _ldr_profiles_sb["supreme_head"].update({
+                        "name": sb_in_name or _my_sb_name,
+                        "position": sb_in_pos or _my_sb_title,
+                        "photo_b64": new_sb_b64,
+                        "drive_link": new_sb_link
+                    })
+                else:
+                    p_k_sb = st.session_state.assigned_parish
+                    if p_k_sb in _ldr_profiles_sb["parish_priests"]:
+                        _ldr_profiles_sb["parish_priests"][p_k_sb].update({
+                            "name": sb_in_name or _my_sb_name,
+                            "position": sb_in_pos or "Parish Priest",
+                            "parish": p_k_sb,
+                            "photo_b64": new_sb_b64,
+                            "drive_link": new_sb_link
+                        })
+                save_leadership_and_priests_profiles(_ldr_profiles_sb)
+                st.success("✅ Na-update na ang iyong Profile!")
+                time.sleep(0.4)
+                st.rerun()
 
     if st.button("🔄 Sync Live Excel & Notion Data", use_container_width=True):
         st.cache_data.clear()
@@ -9794,7 +10323,7 @@ with st.sidebar:
             else:
                 st.caption("Wala pang aktibong rekord.")
 
-        with st.expander(f"☁️ Cloud Backup ({BACKUP_ADMIN_EMAIL})", expanded=False):
+        with st.expander(f"☁️ Cloud Backup ({BACKUP_DISPLAY_NAME})", expanded=False):
             st.session_state.auto_cloud_backup = st.checkbox(
                 "Auto-save bawat update sa Gmail Cloud",
                 value=st.session_state.auto_cloud_backup
@@ -9809,7 +10338,7 @@ with st.sidebar:
                     use_container_width=True
                 )
                 if st.button("📧 I-email ang Buong Backup sa Gmail Ko", use_container_width=True):
-                    with st.spinner("Ipinapadala sa clarojerald16@gmail.com..."):
+                    with st.spinner(f"Ipinapadala sa {BACKUP_DISPLAY_NAME}..."):
                         res_b = send_email_via_gmail(
                             BACKUP_ADMIN_EMAIL,
                             f"CTG Full Database Backup — {datetime.now().strftime('%Y-%m-%d %H:%M')}",
@@ -9818,7 +10347,7 @@ with st.sidebar:
                             attachment_filename=f"CTG_Full_Backup_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"
                         )
                         if "Matagumpay" in res_b:
-                            st.success("Naipadala sa clarojerald16@gmail.com!")
+                            st.success(f"Naipadala sa {BACKUP_DISPLAY_NAME}!")
                         else:
                             st.error(res_b)
 
@@ -9871,14 +10400,13 @@ with st.sidebar:
             "🧭 Parish Leader Portal (Wizard & Summary)",
             "📑 Weekly Report & Parish Monitoring",
             "🏠 House Visitation, Missionary Work, Indoctrination & Remarks",
-            "📈 Live Activity & Update Dashboard",
             "📊 Parish Census & Member Manager",
-            "📊 Parish Directory & Family Search",
+            "➕ Magdagdag ng Miyembro & Litrato",
+            "📈 Live Activity & Update Dashboard",
             "🛡️ Master Admin Controller & Approval Queue",
             "🗣️ Ministry Messenger (Admin & Users Chat)",
             "🤝 Notion CRM (Visitors & Members)",
             "💬 AI Chat Assistant",
-            "➕ Magdagdag ng Miyembro & Litrato",
             "🙏 Prayer Wall & Categorizer",
             "📢 Announcement Broadcaster",
             "🛠️ App Settings"
@@ -9888,23 +10416,42 @@ with st.sidebar:
             "🧭 Parish Leader Portal (Wizard & Summary)",
             "📑 Weekly Report & Parish Monitoring",
             "🏠 House Visitation, Missionary Work, Indoctrination & Remarks",
-            "📥 Parish Inbox & Action Hub",
             "📊 Parish Census & Member Manager",
+            "➕ Magdagdag ng Miyembro & Litrato",
+            "📥 Parish Inbox & Action Hub",
             "🗣️ Ministry Messenger (Admin & Users Chat)",
             "💬 AI Chat Assistant",
-            "➕ Magdagdag ng Miyembro & Litrato",
             "🙏 Prayer Wall & Categorizer",
             "🛠️ App Settings"
         ]
+
+    nav_label_map = {
+        "🧭 Parish Leader Portal (Wizard & Summary)": "🏠 Home & Leadership Directory (Portal)",
+        "📑 Weekly Report & Parish Monitoring": "📑 Weekly Report & Parish Monitoring",
+        "🏠 House Visitation, Missionary Work, Indoctrination & Remarks": "🏠 Visitation, Mission, Indoctrination & Remarks",
+        "📊 Parish Census & Member Manager": "📊 Parish Census, Directory & Family Search",
+        "➕ Magdagdag ng Miyembro & Litrato": "➕ Magdagdag ng Miyembro & Litrato (2-Step Sync)",
+        "📈 Live Activity & Update Dashboard": "📈 Live Activity & Update Monitor",
+        "🛡️ Master Admin Controller & Approval Queue": "🛡️ Master Admin Approval Queue",
+        "📥 Parish Inbox & Action Hub": "📥 Parish Inbox & Action Hub",
+        "🗣️ Ministry Messenger (Admin & Users Chat)": "🗣️ Ministry Messenger (Chat)",
+        "🤝 Notion CRM (Visitors & Members)": "🤝 Visitors & Members CRM",
+        "💬 AI Chat Assistant": "💬 CTG Gabay AI Assistant",
+        "🙏 Prayer Wall & Categorizer": "🙏 Prayer Wall & Categorizer",
+        "📢 Announcement Broadcaster": "📢 Announcement Broadcaster",
+        "🛠️ App Settings": "🛠️ App Settings & Security"
+    }
 
     if "current_nav_page" not in st.session_state or st.session_state["current_nav_page"] not in nav_options:
         st.session_state["current_nav_page"] = "🧭 Parish Leader Portal (Wizard & Summary)"
     if "app_mode_override" in st.session_state:
         target_nav = st.session_state.pop("app_mode_override")
+        if target_nav == "📊 Parish Directory & Family Search":
+            target_nav = "📊 Parish Census & Member Manager"
         if target_nav in nav_options:
             st.session_state["current_nav_page"] = target_nav
 
-    app_mode = st.radio("Pumili ng Pahina:", nav_options, key="current_nav_page")
+    app_mode = st.radio("📂 Pumili ng Pahina:", nav_options, format_func=lambda x: nav_label_map.get(x, x), key="current_nav_page")
     st.caption(f"💬 Ministry Messenger: **{len(visible_chats_for_me)}** mensahe sa iyong inbox")
     selected_model = st.selectbox(
         "Gemini Model (Fastest):",
@@ -10928,9 +11475,11 @@ elif app_mode == "🏠 House Visitation, Missionary Work, Indoctrination & Remar
 # =====================================================================
 elif app_mode == "🧭 Parish Leader Portal (Wizard & Summary)":
     render_title_with_logo(
-        f"📍 Parish Workspace: {st.session_state.assigned_parish}",
-        "Maligayang pagdating sa iyong pang-araw-araw na gabay at ministry portal ng Church of the Temple of God."
+        f"🏠 CTG Ministry Home & Leadership Portal — {st.session_state.assigned_parish}",
+        "Opisyal na Home Dashboard ng Supreme Head, Diocese Heads, at mga Parish Priests ng Church of the Temple of God."
     )
+    render_church_leadership_and_priests_directory(context_key="home_portal")
+    st.divider()
 
     records_master_df = global_records_df
     p_records = records_master_df[records_master_df["Parokya"].apply(lambda x: normalize_parish_match(x, st.session_state.assigned_parish))] if not records_master_df.empty else pd.DataFrame()
@@ -11025,7 +11574,7 @@ elif app_mode == "📈 Live Activity & Update Dashboard":
 
     render_title_with_logo(
         "📈 CTG Live Activity, Parish Updates & Cloud Backup Dashboard",
-        f"Real-time monitoring ng lahat ng galaw ng bawat parokya at direktang backup para sa {BACKUP_ADMIN_EMAIL}."
+        f"Real-time monitoring ng lahat ng galaw ng bawat parokya at direktang backup para sa {BACKUP_DISPLAY_NAME}."
     )
 
     top_b1, top_b2, top_b3, top_b4 = st.columns([1.2, 1.4, 1.4, 1.5])
@@ -11057,8 +11606,8 @@ elif app_mode == "📈 Live Activity & Update Dashboard":
                 use_container_width=True
             )
         with top_b4:
-            if st.button(f"☁️ I-email ang Backup sa {BACKUP_ADMIN_EMAIL}", type="primary", use_container_width=True):
-                with st.spinner(f"Ipinapadala sa {BACKUP_ADMIN_EMAIL}..."):
+            if st.button(f"☁️ I-email ang Backup sa {BACKUP_DISPLAY_NAME}", type="primary", use_container_width=True):
+                with st.spinner(f"Ipinapadala sa {BACKUP_DISPLAY_NAME}..."):
                     res_cloud = send_email_via_gmail(
                         BACKUP_ADMIN_EMAIL,
                         f"CTG Ministry Hub Cloud Backup — {datetime.now().strftime('%Y-%m-%d %H:%M')}",
@@ -11067,7 +11616,7 @@ elif app_mode == "📈 Live Activity & Update Dashboard":
                         attachment_filename=f"CTG_Ministry_Backup_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"
                     )
                     if "Matagumpay" in res_cloud:
-                        st.success(f"Ligtas nang naipadala sa {BACKUP_ADMIN_EMAIL}!")
+                        st.success(f"Ligtas nang naipadala sa {BACKUP_DISPLAY_NAME}!")
                     else:
                         st.error(res_cloud)
 
@@ -11827,9 +12376,10 @@ elif app_mode == "📢 Announcement Broadcaster":
 elif app_mode == "🛠️ App Settings":
     render_title_with_logo("🛠️ App Controller, Theme, Excel Sync & Configuration Settings", "I-customize ang hitsura ng app, i-manage ang Google Drive Excel File, at i-update ang API settings.")
 
-    tab_ui, tab_excel, tab_api = st.tabs([
+    tab_ui, tab_security, tab_excel, tab_api = st.tabs([
         "🎨 Theme, Display & App Controller",
-        "📊 Google Drive Excel File & Weekly Folder Manager",
+        "🔐 Account Security, Username/Password & Access Control",
+        "📊 Google Drive Links & Separate Upload Center",
         "🔑 API & Google Drive / Gmail Credentials (Fix 403 Scope)"
     ])
 
@@ -11886,6 +12436,119 @@ elif app_mode == "🛠️ App Settings":
                 st.success("Na-clear na ang cache at na-refresh ang data!")
                 time.sleep(0.5)
                 st.rerun()
+
+    with tab_security:
+        st.subheader("🔐 Account Security, Encrypted Passwords (PBKDF2-SHA256) & User Access Control")
+        st.caption("Ang lahat ng passwords ay naka-encrypt gamit ang **PBKDF2-HMAC-SHA256 (120,000 iterations + cryptographic salt)** upang maging ligtas ang buong database.")
+
+        acc_reg = load_encrypted_accounts_registry()
+        is_master_sec = (st.session_state.user_role == "Master Admin" or st.session_state.get("login_role") == "Master Admin")
+        my_slot_key = "MASTER ADMIN" if is_master_sec else st.session_state.get("assigned_parish", PARISH_ORDER[0])
+        my_acc_obj = acc_reg.get(my_slot_key, {})
+
+        if not is_master_sec:
+            st.markdown(f"#### 👤 Aking Account Security — `{my_slot_key}`")
+            st.info(
+                f"📌 **Kasalukuyang Username:** `{my_acc_obj.get('username', my_slot_key.lower())}` | "
+                f"**Encryption:** `PBKDF2-HMAC-SHA256` | "
+                f"**1-Time Self-Setup Status:** `{'✅ Nakapagpalit Na (Locked)' if my_acc_obj.get('one_time_changed') else '🟢 Maaari Pang Magpalit (1 Beses)'}`"
+            )
+            if my_acc_obj.get("one_time_changed"):
+                st.warning(
+                    "🔒 **Tapos na ang iyong 1-Time Username & Password Setup.** "
+                    "Para sa seguridad ng parokya, isang beses lamang maaaring magpalit ang Parish User nang mag-isa. "
+                    "Kung kailangan mong magpa-reset ng Username o Password, makipag-ugnayan sa **Master Admin**."
+                )
+            else:
+                with st.form("parish_user_one_time_cred_form"):
+                    st.markdown("##### ✍️ Gumawa ng Iyong Sariling Username at Encrypted Password (1-Time Only)")
+                    st.caption("Babala: Isang beses mo lamang itong mababago nang mag-isa. Tandaang mabuti ang iyong ilalagay na Username at Password.")
+                    new_u_self = st.text_input("👤 Bagong Username:", value=str(my_acc_obj.get("username", ""))).strip().lower()
+                    new_p_self = st.text_input("🔑 Bagong Password (Case-Sensitive):", type="password").strip()
+                    conf_p_self = st.text_input("🔑 Kumpirmahin ang Bagong Password:", type="password").strip()
+                    if st.form_submit_button("💾 I-encrypt at I-save ang Aking Bagong Username & Password (1-Time Setup)", type="primary", use_container_width=True):
+                        if not new_u_self or len(new_u_self) < 3:
+                            st.error("⚠️ Ang Username ay dapat may kahit 3 characters.")
+                        elif not new_p_self or len(new_p_self) < 4:
+                            st.error("⚠️ Ang Password ay dapat may kahit 4 characters.")
+                        elif new_p_self != conf_p_self:
+                            st.error("❌ Hindi magkatugma ang Bagong Password at Kumpirmasyon ng Password.")
+                        else:
+                            # Ensure username doesn't collide with another parish
+                            collision = False
+                            for k_o, v_o in acc_reg.items():
+                                if k_o != my_slot_key and str(v_o.get("username", "")).strip().lower() == new_u_self:
+                                    collision = True
+                                    break
+                            if collision:
+                                st.error("⚠️ Ginagamit na ng ibang Parokya ang Username na iyan. Pumili ng ibang Username.")
+                            else:
+                                acc_reg[my_slot_key]["username"] = new_u_self
+                                acc_reg[my_slot_key]["pw_hash"] = encrypt_password_pbkdf2(new_p_self)
+                                acc_reg[my_slot_key]["one_time_changed"] = True
+                                acc_reg[my_slot_key]["updated_at"] = get_philippine_datetime_str()
+                                save_encrypted_accounts_registry(acc_reg)
+                                st.session_state.logged_in_username = new_u_self
+                                st.success(f"✅ Matagumpay na na-save at na-encrypt ang iyong bagong Username (`{new_u_self}`) at Password!")
+                                time.sleep(0.7)
+                                st.rerun()
+        else:
+            st.markdown("#### 🛡️ Master Admin Control: Lahat ng User Accounts, Access Lock & Encrypted Password Manager")
+            st.caption("Bilang Master Admin, kontrolado mo ang access ng lahat ng 10 Parokya. Maaari mong i-lock/i-unlock ang access ng kahit sinong user, buksan muli ang kanilang 1-Time Password Setup, o direktang palitan ang kanilang Username at Encrypted Password.")
+
+            acc_rows_disp = []
+            for slot_k in ["MASTER ADMIN"] + PARISH_ORDER:
+                ao = acc_reg.get(slot_k, {})
+                h_str = str(ao.get("pw_hash", ""))
+                enc_badge = "PBKDF2-HMAC-SHA256 (Salted)" if h_str.startswith("pbkdf2_sha256$") else "SHA-256 Digest"
+                acc_rows_disp.append({
+                    "Account / Parokya": slot_k,
+                    "Role": ao.get("role", "Parish Leader"),
+                    "Active Username": ao.get("username", ""),
+                    "Access Status": "🟢 Active (Allowed)" if ao.get("is_active", True) else "🔴 Locked (Disabled)",
+                    "1-Time Self-Change": "✅ Used (Locked)" if ao.get("one_time_changed") else "🟢 Available (1x)",
+                    "Password Encryption": enc_badge,
+                    "Last Updated": ao.get("updated_at", ""),
+                })
+            st.dataframe(pd.DataFrame(acc_rows_disp), use_container_width=True, hide_index=True)
+
+            st.markdown("##### ⚙️ I-manage ang Account, Access, o Mag-create ng Username & Encrypted Password")
+            target_slots_all = ["MASTER ADMIN"] + PARISH_ORDER
+            sel_acc_slot = st.selectbox("🎯 Piliin ang Account / Parokya na I-ma-manage:", target_slots_all, key="admin_sec_slot_sel")
+            sel_ao = acc_reg.get(sel_acc_slot, {})
+
+            with st.form("master_admin_manage_account_form"):
+                mc1, mc2, mc3 = st.columns([1.3, 1.3, 1.4])
+                with mc1:
+                    adm_new_u = st.text_input("👤 Username:", value=str(sel_ao.get("username", ""))).strip().lower()
+                with mc2:
+                    adm_new_p = st.text_input("🔑 Bagong Password (Mag-type lang kung papalitan):", type="password", placeholder="Leave blank to keep current password").strip()
+                with mc3:
+                    adm_is_act = st.checkbox(
+                        "🟢 Active Access (Pinapayagang Mag-login)",
+                        value=bool(sel_ao.get("is_active", True)),
+                        disabled=(sel_acc_slot == "MASTER ADMIN")
+                    )
+                    adm_reset_1x = st.checkbox(
+                        "🔓 I-reset ang 1-Time Change Limit (Payagan ang user na magpalit muli ng 1 beses)",
+                        value=not bool(sel_ao.get("one_time_changed", False))
+                    )
+
+                if st.form_submit_button(f"💾 I-save ang Security Settings para sa '{sel_acc_slot}'", type="primary", use_container_width=True):
+                    if not adm_new_u:
+                        st.warning("Pakilagay ang Username.")
+                    else:
+                        acc_reg[sel_acc_slot]["username"] = adm_new_u
+                        if adm_new_p:
+                            acc_reg[sel_acc_slot]["pw_hash"] = encrypt_password_pbkdf2(adm_new_p)
+                        if sel_acc_slot != "MASTER ADMIN":
+                            acc_reg[sel_acc_slot]["is_active"] = bool(adm_is_act)
+                        acc_reg[sel_acc_slot]["one_time_changed"] = (not bool(adm_reset_1x))
+                        acc_reg[sel_acc_slot]["updated_at"] = f"{get_philippine_datetime_str()} (by Master Admin)"
+                        save_encrypted_accounts_registry(acc_reg)
+                        st.success(f"✅ Matagumpay na na-update ang Account at Security Settings para sa **{sel_acc_slot}**!")
+                        time.sleep(0.5)
+                        st.rerun()
 
     with tab_excel:
         if st.session_state.user_role != "Master Admin":
