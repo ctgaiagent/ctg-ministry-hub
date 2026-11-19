@@ -7094,229 +7094,121 @@ def render_weekly_report_page():
     if "editor_sel_parish" not in st.session_state or (not is_master and st.session_state["editor_sel_parish"] != my_parish):
         st.session_state["editor_sel_parish"] = st.session_state["up_sel_parish"]
 
-    st.markdown("<div class='pmr-banner'>CHURCH OF THE TEMPLE OF GOD</div>", unsafe_allow_html=True)
-    st.markdown(
-        f"<div class='pmr-subbanner'>Parish Monitoring Report — Full Year 2027 (January–December, Dynamic Weeks per Month) & Google Drive Auto-Sync "
-        f"<br><span class='ph-time-badge'>🇵🇭 Oras at Petsa sa Pilipinas: {get_philippine_datetime_str()}</span></div>",
-        unsafe_allow_html=True
-    )
-
-    if is_master:
-        st.info(
-            "🏛️ **Master Admin Monitoring Dashboard:** Ang pag-upload ng Weekly Reports ay para sa mga **Parish Admins (Lipay Norte hanggang Hongkong)**. "
-            "Bilang **Master Admin**, dito mo mamo-monitor ang **Performance Report** at lahat ng **Records** ng bawat Parokya mula sa Google Drive files."
-        )
-
-    # =====================================================================
-    # 🎛️ TOP MASTER CONTROL BAR (BUWAN, LINGGO/ALL WEEKS, PAROKYA, YEAR, AUTO-SYNC & REFRESH)
-    # =====================================================================
+    # Kunin ang kasalukuyang filter state mula sa session_state (upang gumana sa lahat ng subpages kahit nakatago ang Home header sa Pages 2..6)
     top_month_options = MONTHS_2027 + ["Lahat ng Buwan (Jan–Dec)"]
-    top_f1, top_f2, top_f3, top_f4, top_f5, top_f6 = st.columns([1.0, 1.15, 1.35, 0.70, 1.05, 0.85])
-    with top_f1:
-        view_month_sel = st.selectbox(
-            "📅 Buwan:",
-            top_month_options,
-            key="mon_view_month",
-            on_change=_sync_from_top_bar
-        )
-        view_month = view_month_sel if view_month_sel in MONTHS_2027 else st.session_state.get("editor_sel_month", "January")
-        show_all_months = (view_month_sel not in MONTHS_2027)
-    with top_f4:
-        selected_year = st.selectbox(
-            "📆 Year:",
-            YEARS_SUPPORTED,
-            key="mon_view_year"
-        )
+    view_month_sel = st.session_state.get("mon_view_month", "January")
+    if view_month_sel not in top_month_options:
+        view_month_sel = "January"
+        st.session_state["mon_view_month"] = "January"
+    view_month = view_month_sel if view_month_sel in MONTHS_2027 else st.session_state.get("editor_sel_month", "January")
+    show_all_months = (view_month_sel not in MONTHS_2027)
+
+    selected_year = st.session_state.get("mon_view_year", "2027")
+    if selected_year not in YEARS_SUPPORTED:
+        selected_year = "2027"
+        st.session_state["mon_view_year"] = "2027"
+
     active_month_weeks = get_weeks_for_month_year(view_month, int(selected_year))
     dynamic_top_week_opts = active_month_weeks + [f"Lahat ng Weeks sa Buwan (1st–{active_month_weeks[-1]})"]
     if st.session_state.get("mon_view_week") not in dynamic_top_week_opts:
         st.session_state["mon_view_week"] = active_month_weeks[0]
-    with top_f2:
-        view_week_selection = st.selectbox(
-            f"🗓️ Linggo ({len(active_month_weeks)} Weeks sa {view_month}):",
-            dynamic_top_week_opts,
-            key="mon_view_week",
-            on_change=_sync_from_top_bar
-        )
-        view_week = view_week_selection if view_week_selection in active_month_weeks else active_month_weeks[0]
-        show_all_weeks_of_month = (view_week_selection not in active_month_weeks)
-    with top_f3:
-        if is_master:
-            master_parish_opts = PARISH_ORDER + ["Lahat ng Parokya (Master Admin Full View)"]
-            if "mon_view_parish" not in st.session_state or st.session_state["mon_view_parish"] not in master_parish_opts:
-                st.session_state["mon_view_parish"] = PARISH_ORDER[0]
-            view_parish_scope = st.selectbox(
-                "🏛️ Lahat ng Parokya (Master Admin Full View):",
-                master_parish_opts,
-                key="mon_view_parish",
-                on_change=_sync_from_top_bar
+    view_week_selection = st.session_state.get("mon_view_week", active_month_weeks[0])
+    view_week = view_week_selection if view_week_selection in active_month_weeks else active_month_weeks[0]
+    show_all_weeks_of_month = (view_week_selection not in active_month_weeks)
+
+    if is_master:
+        master_parish_opts = PARISH_ORDER + ["Lahat ng Parokya (Master Admin Full View)"]
+        if "mon_view_parish" not in st.session_state or st.session_state["mon_view_parish"] not in master_parish_opts:
+            st.session_state["mon_view_parish"] = PARISH_ORDER[0]
+        view_parish_scope = st.session_state.get("mon_view_parish", PARISH_ORDER[0])
+        effective_parish_filter = "Lahat ng Parokya" if "Lahat ng Parokya" in view_parish_scope else view_parish_scope
+        focused_parish_for_sheets = effective_parish_filter if effective_parish_filter in PARISH_ORDER else st.session_state.get("editor_sel_parish", PARISH_ORDER[0])
+    else:
+        effective_parish_filter = my_parish
+        focused_parish_for_sheets = my_parish
+
+    # =====================================================================
+    # 🧭 MULTI-PAGE NAVIGATION CONTROLLER (BACK - HOME - NEXT + DROPDOWN SA RIGHT SIDE)
+    # =====================================================================
+    if is_master:
+        pwr_subpages = [
+            f"🏠 Home: Master Admin Monitoring & Control Hub ({focused_parish_for_sheets})",
+            f"⛪ Liturgical Officers & Preachers (Para sa PARISH WEEKLY REPORT Sheet) — {focused_parish_for_sheets} ({view_month.upper()} {selected_year} — {len(active_month_weeks)} Weeks)",
+            f"📝 Remarks para sa Nag-attend ng Mass / Pampamilya / Adal / House Church / Online Mass / Visitors (Galing sa Image/Excel Report) — {focused_parish_for_sheets} ({view_month.upper()} {selected_year})",
+            f"📊 Parish Weekly Report Data (Adults/Youths/Kids Attendance) — {focused_parish_for_sheets} ({view_month.upper()} {selected_year})",
+            f"📅 Buong Buwan ng {view_month.upper()} {selected_year} — Parish Monitoring Report & Summary for Posting (1st Week hanggang {active_month_weeks[-1]})",
+            "🏆 Church of the Temple of God – Parish Ministry Performance Report (Master Admin Exclusive)",
+        ]
+    else:
+        pwr_subpages = [
+            f"🏠 Home: Upload the Image / Excel File Here! & Parish Weekly Report Data Editor ({my_parish})",
+            f"⛪ Liturgical Officers & Preachers (Para sa PARISH WEEKLY REPORT Sheet) — {my_parish} ({view_month.upper()} {selected_year} — {len(active_month_weeks)} Weeks)",
+            f"📝 Remarks para sa Nag-attend ng Mass / Pampamilya / Adal / House Church / Online Mass / Visitors (Galing sa Image/Excel Report) — {my_parish} ({view_month.upper()} {selected_year})",
+            f"📊 Parish Weekly Report Data (Adults/Youths/Kids Attendance) — {my_parish} ({view_month.upper()} {selected_year})",
+            f"📅 Buong Buwan ng {view_month.upper()} {selected_year} — Parish Monitoring Report & Summary for Posting (1st Week hanggang {active_month_weeks[-1]})",
+        ]
+
+    max_subpage_idx = len(pwr_subpages) - 1
+    if "pwr_active_subpage_idx" not in st.session_state:
+        st.session_state["pwr_active_subpage_idx"] = 0
+    if st.session_state["pwr_active_subpage_idx"] < 0 or st.session_state["pwr_active_subpage_idx"] > max_subpage_idx:
+        st.session_state["pwr_active_subpage_idx"] = 0
+
+    cur_page_idx = int(st.session_state["pwr_active_subpage_idx"])
+
+    def _render_pwr_page_navigator(pos_suffix: str):
+        """Nagre-render ng magkakatabing [⬅️ Back] [🏠 Home] [Next ➡️] at [📂 Pumili ng Pahina / Section na Bubuksan] sa right side."""
+        c_idx = int(st.session_state.get("pwr_active_subpage_idx", 0))
+        nav_c1, nav_c2, nav_c3, nav_c4 = st.columns([0.72, 0.72, 0.72, 2.84])
+        with nav_c1:
+            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+            if st.button(
+                "⬅️ Back",
+                key=f"pwr_btn_back_{pos_suffix}",
+                use_container_width=True,
+                disabled=(c_idx <= 0),
+                help=f"Bumalik sa: {pwr_subpages[c_idx - 1]}" if c_idx > 0 else "Nasa unang pahina (Home) ka na"
+            ):
+                st.session_state["pwr_active_subpage_idx"] = max(0, c_idx - 1)
+                st.rerun()
+        with nav_c2:
+            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+            if st.button(
+                "🏠 Home",
+                key=f"pwr_btn_home_{pos_suffix}",
+                use_container_width=True,
+                type="primary" if c_idx == 0 else "secondary",
+                disabled=(c_idx == 0),
+                help="Bumalik sa Home Page"
+            ):
+                st.session_state["pwr_active_subpage_idx"] = 0
+                st.rerun()
+        with nav_c3:
+            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+            if st.button(
+                "Next ➡️",
+                key=f"pwr_btn_next_{pos_suffix}",
+                use_container_width=True,
+                type="primary" if c_idx < max_subpage_idx else "secondary",
+                disabled=(c_idx >= max_subpage_idx),
+                help=f"Susunod: {pwr_subpages[c_idx + 1]}" if c_idx < max_subpage_idx else "Nasa huling pahina ka na"
+            ):
+                st.session_state["pwr_active_subpage_idx"] = min(max_subpage_idx, c_idx + 1)
+                st.rerun()
+        with nav_c4:
+            sel_key = f"pwr_subpage_select_{pos_suffix}"
+            st.session_state[sel_key] = c_idx
+
+            def _on_subpage_dropdown_change(k=sel_key):
+                st.session_state["pwr_active_subpage_idx"] = int(st.session_state.get(k, 0))
+
+            st.selectbox(
+                "📂 Pumili ng Pahina / Section na Bubuksan:",
+                options=list(range(len(pwr_subpages))),
+                format_func=lambda i: pwr_subpages[i],
+                key=sel_key,
+                on_change=_on_subpage_dropdown_change
             )
-            effective_parish_filter = "Lahat ng Parokya" if "Lahat ng Parokya" in view_parish_scope else view_parish_scope
-            focused_parish_for_sheets = effective_parish_filter if effective_parish_filter in PARISH_ORDER else st.session_state.get("editor_sel_parish", PARISH_ORDER[0])
-        else:
-            st.info(f"📍 Parish View: **{my_parish}**")
-            effective_parish_filter = my_parish
-            focused_parish_for_sheets = my_parish
-    with top_f5:
-        st.write("")
-        if st.button("🔄 Auto-Sync Data Mula sa Google Drive", use_container_width=True, type="primary"):
-            with st.spinner(f"Binabasa ang mga Excel files mula sa Google Drive Folder para sa {view_month} {selected_year} ({view_week})..."):
-                folder_url = st.session_state.custom_secrets.get("WEEKLY_REPORT_FOLDER_URL", ACTIVE_WEEKLY_FOLDER_URL)
-                cnt, msg = sync_weekly_reports_from_google_drive_folder(folder_url, view_month, view_week)
-                st.session_state["pwr_form_rev"] = st.session_state.get("pwr_form_rev", 0) + 1
-                st.cache_data.clear()
-                st.success(msg)
-                time.sleep(0.5)
-                st.rerun()
-    with top_f6:
-        st.write("")
-        if st.button(t_ui("refresh_app"), use_container_width=True, key="top_bar_refresh_btn"):
-            st.cache_data.clear()
-            st.cache_resource.clear()
-            st.rerun()
-
-    db_all_init = load_weekly_monitoring_records()
-
-    # DYNAMIC QUICK WEEK BUTTONS (Displays ONLY the actual weeks in the selected month, e.g. 4 weeks or 5 weeks)
-    wk_cols = st.columns(len(active_month_weeks) + 1)
-    parishes_for_badge = PARISH_ORDER if effective_parish_filter == "Lahat ng Parokya" else [p for p in PARISH_ORDER if normalize_parish_match(p, effective_parish_filter)]
-    for idx_w, wk_opt in enumerate(active_month_weeks):
-        done_cnt_wk = sum(
-            1 for p_b in parishes_for_badge
-            if is_week_record_completed(db_all_init.get(f"{p_b.upper()}__{view_month.upper()}__{wk_opt}", {}))
-        )
-        wk_sat_date = get_week_date_for_month_year(view_month, wk_opt, int(selected_year))
-        no_rep_cnt_wk = sum(
-            1 for p_b in parishes_for_badge
-            if is_record_marked_no_report(db_all_init.get(f"{p_b.upper()}__{view_month.upper()}__{wk_opt}", {}))
-        )
-        badge_icon = "✅" if done_cnt_wk > 0 else ("❌" if no_rep_cnt_wk > 0 else "⏳")
-        is_active_wk = (not show_all_weeks_of_month and view_week == wk_opt)
-        btn_lbl = f"{'👉 ' if is_active_wk else ''}{badge_icon} {wk_opt} ({wk_sat_date})"
-        with wk_cols[idx_w]:
-            if st.button(btn_lbl, key=f"qwk_btn_{view_month}_{wk_opt}", use_container_width=True, type="primary" if is_active_wk else "secondary"):
-                st.session_state["_next_mon_view_month"] = view_month
-                st.session_state["_next_mon_view_week"] = wk_opt
-                st.rerun()
-    with wk_cols[-1]:
-        all_wk_active = show_all_weeks_of_month
-        if st.button(f"{'👉 ' if all_wk_active else ''}📚 Lahat (W1–W{len(active_month_weeks)})", key=f"qwk_all_{view_month}", use_container_width=True, type="primary" if all_wk_active else "secondary"):
-            st.session_state["_next_mon_view_month"] = view_month
-            st.session_state["_next_mon_view_week"] = dynamic_top_week_opts[-1]
-            st.rerun()
-
-    # 🗑️ CLICKABLE OPTION TO CLEAR / DELETE POPULATED DATA & MASTER ADMIN DEADLINE / OVERRIDE CONTROLLER
-    ctrl_bar_1, ctrl_bar_2 = st.columns([1.85, 1.15]) if is_master else ([None, st.container()])
-    if is_master and ctrl_bar_1 is not None:
-        with ctrl_bar_1:
-            with st.expander("🛡️ Master Admin Submission Schedule & Deadline Controller (Auto Sat–Mon Unlock/Lock & No Report Control)", expanded=False):
-                cur_auto_sched = is_auto_schedule_lock_enabled()
-                cur_dl_enabled = is_deadline_enforcement_enabled()
-                st.session_state["master_deadline_lock_toggle"] = cur_dl_enabled
-                st.session_state["master_auto_sched_toggle"] = cur_auto_sched
-
-                dl_col_a, dl_col_b = st.columns([1.45, 1.35])
-                with dl_col_a:
-                    lock_submission_on = st.toggle(
-                        "🔒 Manual Lock / Unlock ng Pasahan (ON = Naka-LOCK ang Upload | OFF = UNLOCKED / Pwedeng Mag-upload ang mga Leaders)",
-                        key="master_deadline_lock_toggle",
-                        on_change=_on_master_lock_toggle_clicked
-                    )
-                with dl_col_b:
-                    auto_sched_on = st.toggle(
-                        "⏰ Auto Unlock/Lock Schedule (Sabado 12:00 AM Auto-Unlock hanggang Lunes 11:59 PM Midnight Auto-Lock)",
-                        key="master_auto_sched_toggle",
-                        on_change=_on_master_auto_sched_clicked
-                    )
-
-                if lock_submission_on:
-                    p_ov_currently_allowed = is_parish_week_allowed_by_admin(focused_parish_for_sheets, view_month, view_week)
-                    ov_btn_lbl = (
-                        f"🔒 I-lock Muli ang Upload ({focused_parish_for_sheets})"
-                        if p_ov_currently_allowed
-                        else f"🔓 I-unlock Lang para sa {focused_parish_for_sheets}"
-                    )
-                    if st.button(ov_btn_lbl, use_container_width=True, key="btn_parish_wk_override"):
-                        set_admin_allowed_submission_override(focused_parish_for_sheets, view_month, view_week, not p_ov_currently_allowed)
-                        st.rerun()
-                    st.caption("🔒 **Status: NAKA-LOCK ANG PASAHAN** — Hindi makakapag-upload ang mga Parish Leaders sa `Upload the Image / Excel File Here!` (Auto-unlock tuwing Sabado o kapag in-OFF mo ang Lock).")
-                else:
-                    st.caption("🔓 **Status: UNLOCKED (Bukas ang Pasahan)** — Maaaring mag-upload ang mga Parish Leaders sa `Upload the Image / Excel File Here!` (Auto-lock pagsapit ng Lunes 11:59 PM Midnight).")
-
-                st.markdown("---")
-                st.markdown("##### 📌 Master Admin `(No Report)` Controller (Piliin kung aling Parokya, Buwan, at Linggo ang Lalagyan ng `No Report`)")
-                nr_c1, nr_c2, nr_c3 = st.columns([1.35, 1.0, 1.0])
-                nr_parish_opts = PARISH_ORDER + ["LAHAT NG PAROKYA NA WALANG PASA (All Unsubmitted)"]
-                if "nr_ctrl_parish" not in st.session_state or st.session_state["nr_ctrl_parish"] not in nr_parish_opts:
-                    st.session_state["nr_ctrl_parish"] = focused_parish_for_sheets if focused_parish_for_sheets in PARISH_ORDER else PARISH_ORDER[0]
-                if "nr_ctrl_month" not in st.session_state or st.session_state["nr_ctrl_month"] not in MONTHS_2027:
-                    st.session_state["nr_ctrl_month"] = view_month
-                with nr_c1:
-                    nr_target_parish = st.selectbox("🏛️ Parokya na Lalagyan ng No Report:", nr_parish_opts, key="nr_ctrl_parish")
-                with nr_c2:
-                    nr_target_month = st.selectbox("📅 Buwan:", MONTHS_2027, key="nr_ctrl_month")
-                nr_valid_weeks = get_weeks_for_month_year(nr_target_month, int(selected_year))
-                if "nr_ctrl_week" not in st.session_state or st.session_state["nr_ctrl_week"] not in nr_valid_weeks:
-                    st.session_state["nr_ctrl_week"] = view_week if view_week in nr_valid_weeks else nr_valid_weeks[0]
-                with nr_c3:
-                    nr_target_week = st.selectbox("🗓️ Linggo (Week):", nr_valid_weeks, key="nr_ctrl_week")
-
-                nr_btn_1, nr_btn_2 = st.columns(2)
-                with nr_btn_1:
-                    if st.button(f"❌ Lagyan ng '(No Report)' ({nr_target_parish} • {nr_target_month} {nr_target_week})", type="primary", use_container_width=True, key="btn_apply_no_report"):
-                        if "LAHAT NG PAROKYA" in nr_target_parish:
-                            for p_item_nr in PARISH_ORDER:
-                                set_parish_no_report_status(p_item_nr, nr_target_month, nr_target_week, int(selected_year), mark_no_report=True, force_overwrite=False)
-                        else:
-                            set_parish_no_report_status(nr_target_parish, nr_target_month, nr_target_week, int(selected_year), mark_no_report=True, force_overwrite=True)
-                            st.session_state["_next_editor_parish"] = nr_target_parish
-                        st.session_state["_next_mon_view_month"] = nr_target_month
-                        st.session_state["_next_mon_view_week"] = nr_target_week
-                        st.success(f"✅ Nalagyan na ng '(No Report)' ang {nr_target_parish} para sa {nr_target_month} {selected_year} ({nr_target_week})!")
-                        time.sleep(0.4)
-                        st.rerun()
-                with nr_btn_2:
-                    if st.button(f"♻️ Alisin ang '(No Report)' ({nr_target_parish} • {nr_target_month} {nr_target_week})", use_container_width=True, key="btn_clear_no_report"):
-                        if "LAHAT NG PAROKYA" in nr_target_parish:
-                            for p_item_nr in PARISH_ORDER:
-                                set_parish_no_report_status(p_item_nr, nr_target_month, nr_target_week, int(selected_year), mark_no_report=False)
-                        else:
-                            set_parish_no_report_status(nr_target_parish, nr_target_month, nr_target_week, int(selected_year), mark_no_report=False)
-                            st.session_state["_next_editor_parish"] = nr_target_parish
-                        st.session_state["_next_mon_view_month"] = nr_target_month
-                        st.session_state["_next_mon_view_week"] = nr_target_week
-                        st.success(f"♻️ Inalis na ang '(No Report)' sa {nr_target_parish} para sa {nr_target_month} {selected_year} ({nr_target_week})!")
-                        time.sleep(0.4)
-                        st.rerun()
-
-                marked_nr_parishes = [
-                    p_m.replace("PARISH", "").strip()
-                    for p_m in PARISH_ORDER
-                    if is_record_marked_no_report(db_all_init.get(f"{p_m.upper()}__{nr_target_month.upper()}__{nr_target_week}", {}))
-                ]
-                if marked_nr_parishes:
-                    joined_nr_p = ", ".join(marked_nr_parishes)
-                    st.caption(f"📋 **Kasalukuyang may `(No Report)` sa {nr_target_month} ({nr_target_week}):** `{joined_nr_p}`")
-    with ctrl_bar_2:
-        with st.expander(f"🗑️ {t_ui('delete_populated')}", expanded=False):
-            st.caption("Ang na-populate na data mula sa Image o Excel ay **mananatiling naka-save** at mabubura lamang kung pipindutin mo ang Delete button dito:")
-            del_target_p = focused_parish_for_sheets if is_master else my_parish
-            st.write(f"🎯 Target: **{del_target_p}** — `{view_month} {selected_year} ({view_week})`")
-            confirm_del_chk = st.checkbox("Kumpirmahin ang pagbura (Delete Record)", key=f"conf_del_{del_target_p}_{view_month}_{view_week}")
-            if st.button("🗑️ Burahin Ngayon ang Record na Ito", type="primary", use_container_width=True, disabled=not confirm_del_chk):
-                delete_populated_weekly_record(del_target_p, view_month, view_week)
-                dispatch_app_notification_and_messenger_alert(
-                    sender_id=my_chat_identity,
-                    recipient_id="MASTER ADMIN",
-                    title=f"Deleted Populated Weekly Data ({del_target_p})",
-                    details=f"Binura ni {my_chat_identity} ang na-populate na data para sa {del_target_p} ({view_month} {selected_year} - {view_week}).",
-                    is_error=False
-                )
-                st.success(f"Binura na ang na-populate na data para sa {del_target_p} ({view_month} - {view_week})!")
-                time.sleep(0.5)
-                st.rerun()
-
-    st.divider()
 
     # =====================================================================
     # 📤 FOR ALL PARISH ADMINS: 1. UPLOAD THE IMAGE / EXCEL FILE HERE! & 2. MANUAL VERIFICATION EDITOR
@@ -7524,105 +7416,235 @@ def render_weekly_report_page():
                         st.error(f"Nagkaroon ng error at na-report na kay Master Admin sa Ministry Messenger: {str(ex_ed)}")
         return v_parish
 
-    # =====================================================================
-    # 🧭 MULTI-PAGE NAVIGATION CONTROLLER (HOME, BACK, NEXT & DROPDOWN SELECTION)
-    # =====================================================================
-    if is_master:
-        pwr_subpages = [
-            f"🏠 Page 1 (Home): Master Admin Control & Verification Hub ({focused_parish_for_sheets})",
-            f"⛪ Page 2: Liturgical Officers & Preachers (Para sa PARISH WEEKLY REPORT Sheet) — {focused_parish_for_sheets} ({view_month.upper()} {selected_year} — {len(active_month_weeks)} Weeks)",
-            f"📝 Page 3: Remarks para sa Nag-attend ng Mass / Pampamilya / Adal / House Church / Online Mass / Visitors (Galing sa Image/Excel Report) — {focused_parish_for_sheets} ({view_month.upper()} {selected_year})",
-            f"📊 Page 4: Parish Weekly Report Data (Adults/Youths/Kids Attendance) — {focused_parish_for_sheets} ({view_month.upper()} {selected_year})",
-            f"📅 Page 5: Buong Buwan ng {view_month.upper()} {selected_year} — Parish Monitoring Report & Summary for Posting (1st Week hanggang {active_month_weeks[-1]})",
-            "🏆 Page 6: Church of the Temple of God – Parish Ministry Performance Report (Master Admin Exclusive)",
-        ]
-    else:
-        pwr_subpages = [
-            f"🏠 Page 1 (Home): Upload the Image / Excel File Here! & Parish Weekly Report Data Editor ({my_parish})",
-            f"⛪ Page 2: Liturgical Officers & Preachers (Para sa PARISH WEEKLY REPORT Sheet) — {my_parish} ({view_month.upper()} {selected_year} — {len(active_month_weeks)} Weeks)",
-            f"📝 Page 3: Remarks para sa Nag-attend ng Mass / Pampamilya / Adal / House Church / Online Mass / Visitors (Galing sa Image/Excel Report) — {my_parish} ({view_month.upper()} {selected_year})",
-            f"📊 Page 4: Parish Weekly Report Data (Adults/Youths/Kids Attendance) — {my_parish} ({view_month.upper()} {selected_year})",
-            f"📅 Page 5: Buong Buwan ng {view_month.upper()} {selected_year} — Parish Monitoring Report & Summary for Posting (1st Week hanggang {active_month_weeks[-1]})",
-        ]
-
-    max_subpage_idx = len(pwr_subpages) - 1
-    if "pwr_active_subpage_idx" not in st.session_state:
-        st.session_state["pwr_active_subpage_idx"] = 0
-    if st.session_state["pwr_active_subpage_idx"] < 0 or st.session_state["pwr_active_subpage_idx"] > max_subpage_idx:
-        st.session_state["pwr_active_subpage_idx"] = 0
-
-    cur_page_idx = int(st.session_state["pwr_active_subpage_idx"])
-
-    def _render_pwr_page_navigator(pos_suffix: str):
-        c_idx = int(st.session_state.get("pwr_active_subpage_idx", 0))
-        prev_title = pwr_subpages[c_idx - 1].split(":")[0] if c_idx > 0 else "Home"
-        next_title = pwr_subpages[c_idx + 1].split(":")[0] if c_idx < max_subpage_idx else "End"
-
-        st.markdown(
-            f"<div class='full-text-card' style='padding:10px 14px;margin-top:6px;margin-bottom:10px;border-left:5px solid #38bdf8;'>"
-            f"<b>🧭 Page {c_idx + 1} of {len(pwr_subpages)}:</b> <code>{pwr_subpages[c_idx]}</code>"
-            f"</div>",
-            unsafe_allow_html=True
-        )
-        nav_c1, nav_c2, nav_c3, nav_c4 = st.columns([0.95, 0.75, 2.50, 0.95])
-        with nav_c1:
-            st.write("")
-            if st.button(
-                f"⬅️ Back ({prev_title})" if c_idx > 0 else "⬅️ Back",
-                key=f"pwr_btn_back_{pos_suffix}",
-                use_container_width=True,
-                disabled=(c_idx <= 0)
-            ):
-                st.session_state["pwr_active_subpage_idx"] = max(0, c_idx - 1)
-                st.rerun()
-        with nav_c2:
-            st.write("")
-            if st.button(
-                "🏠 Home",
-                key=f"pwr_btn_home_{pos_suffix}",
-                use_container_width=True,
-                type="primary" if c_idx == 0 else "secondary",
-                disabled=(c_idx == 0)
-            ):
-                st.session_state["pwr_active_subpage_idx"] = 0
-                st.rerun()
-        with nav_c3:
-            sel_key = f"pwr_subpage_select_{pos_suffix}"
-            st.session_state[sel_key] = c_idx
-
-            def _on_subpage_dropdown_change(k=sel_key):
-                st.session_state["pwr_active_subpage_idx"] = int(st.session_state.get(k, 0))
-
-            st.selectbox(
-                "📂 Pumili ng Pahina / Section na Bubuksan:",
-                options=list(range(len(pwr_subpages))),
-                format_func=lambda i: pwr_subpages[i],
-                key=sel_key,
-                on_change=_on_subpage_dropdown_change
-            )
-        with nav_c4:
-            st.write("")
-            if st.button(
-                f"Next ({next_title}) ➡️" if c_idx < max_subpage_idx else "Next ➡️",
-                key=f"pwr_btn_next_{pos_suffix}",
-                use_container_width=True,
-                type="primary" if c_idx < max_subpage_idx else "secondary",
-                disabled=(c_idx >= max_subpage_idx)
-            ):
-                st.session_state["pwr_active_subpage_idx"] = min(max_subpage_idx, c_idx + 1)
-                st.rerun()
-
-    # Kung nasa Page 2..6, magpakita rin ng Top Navigator Bar para madaling bumalik sa Home o lumipat ng pahina
-    if cur_page_idx > 0:
-        _render_pwr_page_navigator("top")
-        st.divider()
 
     # =====================================================================
-    # 🏠 PAGE 1 (HOME PAGE):
-    #   • Master Admin: Control Hub + Optional Admin Editor + Quick Page Selector
-    #   • Parish Leaders: Upload the Image / Excel File Here! + Manual Verification Editor
+    # 🏠 PAGE 1 (HOME PAGE LAMANG ANG MAGPAPAKITA NG TOP BANNER, FILTER BAR, WEEK BUTTONS & CONTROLLERS)
     # =====================================================================
     if cur_page_idx == 0:
+        st.markdown("<div class='pmr-banner'>CHURCH OF THE TEMPLE OF GOD</div>", unsafe_allow_html=True)
+        st.markdown(
+            f"<div class='pmr-subbanner'>Parish Monitoring Report — Full Year 2027 (January–December, Dynamic Weeks per Month) & Google Drive Auto-Sync "
+            f"<br><span class='ph-time-badge'>🇵🇭 Oras at Petsa sa Pilipinas: {get_philippine_datetime_str()}</span></div>",
+            unsafe_allow_html=True
+        )
+
+        if is_master:
+            st.info(
+                "🏛️ **Master Admin Monitoring Dashboard:** Ang pag-upload ng Weekly Reports ay para sa mga **Parish Admins (Lipay Norte hanggang Hongkong)**. "
+                "Bilang **Master Admin**, dito mo mamo-monitor ang **Performance Report** at lahat ng **Records** ng bawat Parokya mula sa Google Drive files."
+            )
+
+        # =====================================================================
+        # 🎛️ TOP MASTER CONTROL BAR (BUWAN, LINGGO/ALL WEEKS, PAROKYA, YEAR, AUTO-SYNC & REFRESH)
+        # =====================================================================
+        top_month_options = MONTHS_2027 + ["Lahat ng Buwan (Jan–Dec)"]
+        top_f1, top_f2, top_f3, top_f4, top_f5, top_f6 = st.columns([1.0, 1.15, 1.35, 0.70, 1.05, 0.85])
+        with top_f1:
+            view_month_sel = st.selectbox(
+                "📅 Buwan:",
+                top_month_options,
+                key="mon_view_month",
+                on_change=_sync_from_top_bar
+            )
+            view_month = view_month_sel if view_month_sel in MONTHS_2027 else st.session_state.get("editor_sel_month", "January")
+            show_all_months = (view_month_sel not in MONTHS_2027)
+        with top_f4:
+            selected_year = st.selectbox(
+                "📆 Year:",
+                YEARS_SUPPORTED,
+                key="mon_view_year"
+            )
+        active_month_weeks = get_weeks_for_month_year(view_month, int(selected_year))
+        dynamic_top_week_opts = active_month_weeks + [f"Lahat ng Weeks sa Buwan (1st–{active_month_weeks[-1]})"]
+        if st.session_state.get("mon_view_week") not in dynamic_top_week_opts:
+            st.session_state["mon_view_week"] = active_month_weeks[0]
+        with top_f2:
+            view_week_selection = st.selectbox(
+                f"🗓️ Linggo ({len(active_month_weeks)} Weeks sa {view_month}):",
+                dynamic_top_week_opts,
+                key="mon_view_week",
+                on_change=_sync_from_top_bar
+            )
+            view_week = view_week_selection if view_week_selection in active_month_weeks else active_month_weeks[0]
+            show_all_weeks_of_month = (view_week_selection not in active_month_weeks)
+        with top_f3:
+            if is_master:
+                master_parish_opts = PARISH_ORDER + ["Lahat ng Parokya (Master Admin Full View)"]
+                if "mon_view_parish" not in st.session_state or st.session_state["mon_view_parish"] not in master_parish_opts:
+                    st.session_state["mon_view_parish"] = PARISH_ORDER[0]
+                view_parish_scope = st.selectbox(
+                    "🏛️ Lahat ng Parokya (Master Admin Full View):",
+                    master_parish_opts,
+                    key="mon_view_parish",
+                    on_change=_sync_from_top_bar
+                )
+                effective_parish_filter = "Lahat ng Parokya" if "Lahat ng Parokya" in view_parish_scope else view_parish_scope
+                focused_parish_for_sheets = effective_parish_filter if effective_parish_filter in PARISH_ORDER else st.session_state.get("editor_sel_parish", PARISH_ORDER[0])
+            else:
+                st.info(f"📍 Parish View: **{my_parish}**")
+                effective_parish_filter = my_parish
+                focused_parish_for_sheets = my_parish
+        with top_f5:
+            st.write("")
+            if st.button("🔄 Auto-Sync Data Mula sa Google Drive", use_container_width=True, type="primary"):
+                with st.spinner(f"Binabasa ang mga Excel files mula sa Google Drive Folder para sa {view_month} {selected_year} ({view_week})..."):
+                    folder_url = st.session_state.custom_secrets.get("WEEKLY_REPORT_FOLDER_URL", ACTIVE_WEEKLY_FOLDER_URL)
+                    cnt, msg = sync_weekly_reports_from_google_drive_folder(folder_url, view_month, view_week)
+                    st.session_state["pwr_form_rev"] = st.session_state.get("pwr_form_rev", 0) + 1
+                    st.cache_data.clear()
+                    st.success(msg)
+                    time.sleep(0.5)
+                    st.rerun()
+        with top_f6:
+            st.write("")
+            if st.button(t_ui("refresh_app"), use_container_width=True, key="top_bar_refresh_btn"):
+                st.cache_data.clear()
+                st.cache_resource.clear()
+                st.rerun()
+
+        db_all_init = load_weekly_monitoring_records()
+
+        # DYNAMIC QUICK WEEK BUTTONS (Displays ONLY the actual weeks in the selected month, e.g. 4 weeks or 5 weeks)
+        wk_cols = st.columns(len(active_month_weeks) + 1)
+        parishes_for_badge = PARISH_ORDER if effective_parish_filter == "Lahat ng Parokya" else [p for p in PARISH_ORDER if normalize_parish_match(p, effective_parish_filter)]
+        for idx_w, wk_opt in enumerate(active_month_weeks):
+            done_cnt_wk = sum(
+                1 for p_b in parishes_for_badge
+                if is_week_record_completed(db_all_init.get(f"{p_b.upper()}__{view_month.upper()}__{wk_opt}", {}))
+            )
+            wk_sat_date = get_week_date_for_month_year(view_month, wk_opt, int(selected_year))
+            no_rep_cnt_wk = sum(
+                1 for p_b in parishes_for_badge
+                if is_record_marked_no_report(db_all_init.get(f"{p_b.upper()}__{view_month.upper()}__{wk_opt}", {}))
+            )
+            badge_icon = "✅" if done_cnt_wk > 0 else ("❌" if no_rep_cnt_wk > 0 else "⏳")
+            is_active_wk = (not show_all_weeks_of_month and view_week == wk_opt)
+            btn_lbl = f"{'👉 ' if is_active_wk else ''}{badge_icon} {wk_opt} ({wk_sat_date})"
+            with wk_cols[idx_w]:
+                if st.button(btn_lbl, key=f"qwk_btn_{view_month}_{wk_opt}", use_container_width=True, type="primary" if is_active_wk else "secondary"):
+                    st.session_state["_next_mon_view_month"] = view_month
+                    st.session_state["_next_mon_view_week"] = wk_opt
+                    st.rerun()
+        with wk_cols[-1]:
+            all_wk_active = show_all_weeks_of_month
+            if st.button(f"{'👉 ' if all_wk_active else ''}📚 Lahat (W1–W{len(active_month_weeks)})", key=f"qwk_all_{view_month}", use_container_width=True, type="primary" if all_wk_active else "secondary"):
+                st.session_state["_next_mon_view_month"] = view_month
+                st.session_state["_next_mon_view_week"] = dynamic_top_week_opts[-1]
+                st.rerun()
+
+        # 🗑️ CLICKABLE OPTION TO CLEAR / DELETE POPULATED DATA & MASTER ADMIN DEADLINE / OVERRIDE CONTROLLER
+        ctrl_bar_1, ctrl_bar_2 = st.columns([1.85, 1.15]) if is_master else ([None, st.container()])
+        if is_master and ctrl_bar_1 is not None:
+            with ctrl_bar_1:
+                with st.expander("🛡️ Master Admin Submission Schedule & Deadline Controller (Auto Sat–Mon Unlock/Lock & No Report Control)", expanded=False):
+                    cur_auto_sched = is_auto_schedule_lock_enabled()
+                    cur_dl_enabled = is_deadline_enforcement_enabled()
+                    st.session_state["master_deadline_lock_toggle"] = cur_dl_enabled
+                    st.session_state["master_auto_sched_toggle"] = cur_auto_sched
+
+                    dl_col_a, dl_col_b = st.columns([1.45, 1.35])
+                    with dl_col_a:
+                        lock_submission_on = st.toggle(
+                            "🔒 Manual Lock / Unlock ng Pasahan (ON = Naka-LOCK ang Upload | OFF = UNLOCKED / Pwedeng Mag-upload ang mga Leaders)",
+                            key="master_deadline_lock_toggle",
+                            on_change=_on_master_lock_toggle_clicked
+                        )
+                    with dl_col_b:
+                        auto_sched_on = st.toggle(
+                            "⏰ Auto Unlock/Lock Schedule (Sabado 12:00 AM Auto-Unlock hanggang Lunes 11:59 PM Midnight Auto-Lock)",
+                            key="master_auto_sched_toggle",
+                            on_change=_on_master_auto_sched_clicked
+                        )
+
+                    if lock_submission_on:
+                        p_ov_currently_allowed = is_parish_week_allowed_by_admin(focused_parish_for_sheets, view_month, view_week)
+                        ov_btn_lbl = (
+                            f"🔒 I-lock Muli ang Upload ({focused_parish_for_sheets})"
+                            if p_ov_currently_allowed
+                            else f"🔓 I-unlock Lang para sa {focused_parish_for_sheets}"
+                        )
+                        if st.button(ov_btn_lbl, use_container_width=True, key="btn_parish_wk_override"):
+                            set_admin_allowed_submission_override(focused_parish_for_sheets, view_month, view_week, not p_ov_currently_allowed)
+                            st.rerun()
+                        st.caption("🔒 **Status: NAKA-LOCK ANG PASAHAN** — Hindi makakapag-upload ang mga Parish Leaders sa `Upload the Image / Excel File Here!` (Auto-unlock tuwing Sabado o kapag in-OFF mo ang Lock).")
+                    else:
+                        st.caption("🔓 **Status: UNLOCKED (Bukas ang Pasahan)** — Maaaring mag-upload ang mga Parish Leaders sa `Upload the Image / Excel File Here!` (Auto-lock pagsapit ng Lunes 11:59 PM Midnight).")
+
+                    st.markdown("---")
+                    st.markdown("##### 📌 Master Admin `(No Report)` Controller (Piliin kung aling Parokya, Buwan, at Linggo ang Lalagyan ng `No Report`)")
+                    nr_c1, nr_c2, nr_c3 = st.columns([1.35, 1.0, 1.0])
+                    nr_parish_opts = PARISH_ORDER + ["LAHAT NG PAROKYA NA WALANG PASA (All Unsubmitted)"]
+                    if "nr_ctrl_parish" not in st.session_state or st.session_state["nr_ctrl_parish"] not in nr_parish_opts:
+                        st.session_state["nr_ctrl_parish"] = focused_parish_for_sheets if focused_parish_for_sheets in PARISH_ORDER else PARISH_ORDER[0]
+                    if "nr_ctrl_month" not in st.session_state or st.session_state["nr_ctrl_month"] not in MONTHS_2027:
+                        st.session_state["nr_ctrl_month"] = view_month
+                    with nr_c1:
+                        nr_target_parish = st.selectbox("🏛️ Parokya na Lalagyan ng No Report:", nr_parish_opts, key="nr_ctrl_parish")
+                    with nr_c2:
+                        nr_target_month = st.selectbox("📅 Buwan:", MONTHS_2027, key="nr_ctrl_month")
+                    nr_valid_weeks = get_weeks_for_month_year(nr_target_month, int(selected_year))
+                    if "nr_ctrl_week" not in st.session_state or st.session_state["nr_ctrl_week"] not in nr_valid_weeks:
+                        st.session_state["nr_ctrl_week"] = view_week if view_week in nr_valid_weeks else nr_valid_weeks[0]
+                    with nr_c3:
+                        nr_target_week = st.selectbox("🗓️ Linggo (Week):", nr_valid_weeks, key="nr_ctrl_week")
+
+                    nr_btn_1, nr_btn_2 = st.columns(2)
+                    with nr_btn_1:
+                        if st.button(f"❌ Lagyan ng '(No Report)' ({nr_target_parish} • {nr_target_month} {nr_target_week})", type="primary", use_container_width=True, key="btn_apply_no_report"):
+                            if "LAHAT NG PAROKYA" in nr_target_parish:
+                                for p_item_nr in PARISH_ORDER:
+                                    set_parish_no_report_status(p_item_nr, nr_target_month, nr_target_week, int(selected_year), mark_no_report=True, force_overwrite=False)
+                            else:
+                                set_parish_no_report_status(nr_target_parish, nr_target_month, nr_target_week, int(selected_year), mark_no_report=True, force_overwrite=True)
+                                st.session_state["_next_editor_parish"] = nr_target_parish
+                            st.session_state["_next_mon_view_month"] = nr_target_month
+                            st.session_state["_next_mon_view_week"] = nr_target_week
+                            st.success(f"✅ Nalagyan na ng '(No Report)' ang {nr_target_parish} para sa {nr_target_month} {selected_year} ({nr_target_week})!")
+                            time.sleep(0.4)
+                            st.rerun()
+                    with nr_btn_2:
+                        if st.button(f"♻️ Alisin ang '(No Report)' ({nr_target_parish} • {nr_target_month} {nr_target_week})", use_container_width=True, key="btn_clear_no_report"):
+                            if "LAHAT NG PAROKYA" in nr_target_parish:
+                                for p_item_nr in PARISH_ORDER:
+                                    set_parish_no_report_status(p_item_nr, nr_target_month, nr_target_week, int(selected_year), mark_no_report=False)
+                            else:
+                                set_parish_no_report_status(nr_target_parish, nr_target_month, nr_target_week, int(selected_year), mark_no_report=False)
+                                st.session_state["_next_editor_parish"] = nr_target_parish
+                            st.session_state["_next_mon_view_month"] = nr_target_month
+                            st.session_state["_next_mon_view_week"] = nr_target_week
+                            st.success(f"♻️ Inalis na ang '(No Report)' sa {nr_target_parish} para sa {nr_target_month} {selected_year} ({nr_target_week})!")
+                            time.sleep(0.4)
+                            st.rerun()
+
+                    marked_nr_parishes = [
+                        p_m.replace("PARISH", "").strip()
+                        for p_m in PARISH_ORDER
+                        if is_record_marked_no_report(db_all_init.get(f"{p_m.upper()}__{nr_target_month.upper()}__{nr_target_week}", {}))
+                    ]
+                    if marked_nr_parishes:
+                        joined_nr_p = ", ".join(marked_nr_parishes)
+                        st.caption(f"📋 **Kasalukuyang may `(No Report)` sa {nr_target_month} ({nr_target_week}):** `{joined_nr_p}`")
+        with ctrl_bar_2:
+            with st.expander(f"🗑️ {t_ui('delete_populated')}", expanded=False):
+                st.caption("Ang na-populate na data mula sa Image o Excel ay **mananatiling naka-save** at mabubura lamang kung pipindutin mo ang Delete button dito:")
+                del_target_p = focused_parish_for_sheets if is_master else my_parish
+                st.write(f"🎯 Target: **{del_target_p}** — `{view_month} {selected_year} ({view_week})`")
+                confirm_del_chk = st.checkbox("Kumpirmahin ang pagbura (Delete Record)", key=f"conf_del_{del_target_p}_{view_month}_{view_week}")
+                if st.button("🗑️ Burahin Ngayon ang Record na Ito", type="primary", use_container_width=True, disabled=not confirm_del_chk):
+                    delete_populated_weekly_record(del_target_p, view_month, view_week)
+                    dispatch_app_notification_and_messenger_alert(
+                        sender_id=my_chat_identity,
+                        recipient_id="MASTER ADMIN",
+                        title=f"Deleted Populated Weekly Data ({del_target_p})",
+                        details=f"Binura ni {my_chat_identity} ang na-populate na data para sa {del_target_p} ({view_month} {selected_year} - {view_week}).",
+                        is_error=False
+                    )
+                    st.success(f"Binura na ang na-populate na data para sa {del_target_p} ({view_month} - {view_week})!")
+                    time.sleep(0.5)
+                    st.rerun()
+
+        st.divider()
+
         if not is_master:
             col_up_left, col_up_right = st.columns([1.15, 1.55])
             with col_up_left:
@@ -7877,13 +7899,13 @@ def render_weekly_report_page():
             with st.expander("✏️ Buksan ang Parish Weekly Report Manual Verification Editor (Optional Admin Editor)", expanded=False):
                 _render_verification_editor_panel()
 
-        st.markdown("#### 📂 Pumili ng Pahina sa Ibaba o Pindutin ang `Next ➡️` upang Buksan ang mga Tables & Performance Report:")
-        q_cols = st.columns(2)
-        for p_i in range(1, len(pwr_subpages)):
-            with q_cols[(p_i - 1) % 2]:
-                if st.button(f"👉 Buksan: {pwr_subpages[p_i]}", key=f"pwr_quick_jump_{p_i}", use_container_width=True):
-                    st.session_state["pwr_active_subpage_idx"] = p_i
-                    st.rerun()
+
+    # =====================================================================
+    # 📄 NEXT PAGES (PAGES 2..6): WALANG HOME HEADER SA ITAAS; DIREKTANG NAVIGATION BAR + TABLE / SECTION
+    # =====================================================================
+    else:
+        _render_pwr_page_navigator("top")
+        st.divider()
 
     db_live = load_weekly_monitoring_records()
     months_to_display = MONTHS_2027 if show_all_months else [view_month]
@@ -8158,10 +8180,10 @@ def render_weekly_report_page():
                             st.error(" | ".join(err_list))
         st.divider()
 
-    # Bottom Page Navigator Bar (Back, Home, Dropdown Selection, Next)
+    # Bottom Page Navigator Bar (Back - Home - Next + Pumili ng Pahina / Section na Bubuksan sa Right Side)
     _render_pwr_page_navigator("bottom")
 
-    if os.path.exists(LOCAL_PWR_MASTER_FILE):
+    if cur_page_idx == 0 and os.path.exists(LOCAL_PWR_MASTER_FILE):
         with open(LOCAL_PWR_MASTER_FILE, "rb") as f:
             pwr_bytes = f.read()
         st.download_button(
