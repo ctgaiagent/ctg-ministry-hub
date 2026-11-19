@@ -1012,6 +1012,14 @@ def verify_account_credentials(username_in: str, password_in: str) -> dict | Non
 # ==========================================
 # 🏛️ LEADERSHIP HIERARCHY & PARISH PRIESTS PROFILES ENGINE
 # ==========================================
+def get_default_parish_leader_role_title(parish_name: str) -> str:
+    p_up = str(parish_name or "").upper().strip()
+    if "HONGKONG" in p_up:
+        return "Leader"
+    if "MALANAS" in p_up:
+        return "House Church"
+    return "Parish Priest"
+
 def get_default_leadership_and_priests_profiles() -> dict:
     default_avatar_svg = ""
     profiles = {
@@ -1050,10 +1058,11 @@ def get_default_leadership_and_priests_profiles() -> dict:
         "parish_priests": {}
     }
     for p_name in PARISH_ORDER:
+        role_lbl = get_default_parish_leader_role_title(p_name)
         profiles["parish_priests"][p_name] = {
             "key": p_name,
-            "name": f"Parish Priest ({p_name.title()})",
-            "position": "Parish Priest",
+            "name": f"{role_lbl} ({p_name.title()})",
+            "position": role_lbl,
             "parish": p_name,
             "photo_b64": "",
             "drive_link": ""
@@ -1069,11 +1078,26 @@ def load_leadership_and_priests_profiles() -> dict:
             if isinstance(saved, dict):
                 for top_k in ["supreme_head", "supreme_head_spouse", "diocese_head_1", "diocese_head_2"]:
                     if isinstance(saved.get(top_k), dict):
-                        profiles[top_k].update(saved[top_k])
+                        s_item = saved[top_k]
+                        # Restore default if supreme_head was accidentally overwritten with CTG Ministries Database
+                        if top_k == "supreme_head" and str(s_item.get("name", "")).strip() == "CTG Ministries Database":
+                            continue
+                        profiles[top_k].update(s_item)
                 if isinstance(saved.get("parish_priests"), dict):
                     for p_k, p_v in saved["parish_priests"].items():
                         if p_k in profiles["parish_priests"] and isinstance(p_v, dict):
                             profiles["parish_priests"][p_k].update(p_v)
+                            # Enforce "Leader" for HONGKONG PARISH and "House Church" for MALANAS PARISH if still default Parish Priest
+                            if p_k == "HONGKONG PARISH":
+                                if str(profiles["parish_priests"][p_k].get("position", "")).strip().upper() == "PARISH PRIEST":
+                                    profiles["parish_priests"][p_k]["position"] = "Leader"
+                                if "Parish Priest (Hongkong Parish)" in str(profiles["parish_priests"][p_k].get("name", "")):
+                                    profiles["parish_priests"][p_k]["name"] = "Leader (Hongkong Parish)"
+                            elif p_k == "MALANAS PARISH":
+                                if str(profiles["parish_priests"][p_k].get("position", "")).strip().upper() == "PARISH PRIEST":
+                                    profiles["parish_priests"][p_k]["position"] = "House Church"
+                                if "Parish Priest (Malanas Parish)" in str(profiles["parish_priests"][p_k].get("name", "")):
+                                    profiles["parish_priests"][p_k]["name"] = "House Church (Malanas Parish)"
         except Exception:
             pass
     return profiles
@@ -1120,10 +1144,10 @@ def _build_profile_avatar_html(photo_b64: str, border_color: str = "#38BDF8", si
 def render_church_leadership_and_priests_directory(context_key: str = "home"):
     """
     Renders the Church of the Temple of God Leadership Hierarchy & Parish Priests Directory on the Home Dashboard:
-    - Tier 1: Supreme Head & Spouse of the Supreme Head
-    - Tier 2: Two Diocese Heads (Diocese Head I & Diocese Head II)
-    - Tier 3: 10 Parish Priests (Lipay Norte to Hongkong) with Picture, Name, Position ('Parish Priest'), and Parish Name.
-    Includes role-based editor so Master Admin can edit all leaders/priests and each Parish Admin/Priest can upload their own picture & type their name.
+    - Tier 1: Supreme Head & Spouse of the Supreme Head (Editable ONLY by Master Admin)
+    - Tier 2: Two Diocese Heads — Diocese Head I & Diocese Head II (Editable ONLY by Master Admin)
+    - Tier 3: 10 Parishes (Parish Priest for 8 parishes, House Church for Malanas Parish, Leader for Hongkong Parish)
+      — Editable by each Parish's own Admin User!
     """
     profiles = load_leadership_and_priests_profiles()
     is_master = (st.session_state.user_role == "Master Admin")
@@ -1133,10 +1157,10 @@ def render_church_leadership_and_priests_directory(context_key: str = "home"):
         "<div style='background:linear-gradient(135deg, #064E3B 0%, #0F172A 100%);"
         "border:1px solid rgba(16,185,129,0.45);border-radius:14px;padding:16px 20px;margin-bottom:14px;text-align:center;'>"
         "<div style='font-size:1.25rem;font-weight:800;color:#F8FAFC;letter-spacing:0.5px;'>"
-        "🏛️ CHURCH OF THE TEMPLE OF GOD — SUPREME LEADERSHIP, DIOCESE HEADS & PARISH PRIESTS"
+        "🏛️ CHURCH OF THE TEMPLE OF GOD — SUPREME LEADERSHIP, DIOCESE HEADS & PARISH PRIESTS / LEADERS"
         "</div>"
         "<div style='font-size:0.86rem;color:#A7F3D0;margin-top:4px;'>"
-        "Opisyal na Direktoryo ng Supreme Head, Diocese Heads, at mga Parish Priests ng 10 Parokya"
+        "Opisyal na Direktoryo ng Supreme Head, Asawa ng Supreme Head, 2 Diocese Heads, at 10 Parishes (Parish Priests • Malanas House Church • Hongkong Leader)"
         "</div></div>",
         unsafe_allow_html=True
     )
@@ -1152,7 +1176,7 @@ def render_church_leadership_and_priests_directory(context_key: str = "home"):
             f"border:2px solid #F59E0B;border-radius:14px;padding:16px 12px;text-align:center;"
             f"box-shadow:0 6px 18px rgba(245,158,11,0.15);margin-bottom:10px;'>"
             f"{av1}<br>"
-            f"<span style='background:#F59E0B;color:#0F172A;font-weight:800;font-size:0.74rem;padding:2px 10px;border-radius:12px;'>SUPREME LEADERSHIP</span>"
+            f"<span style='background:#F59E0B;color:#0F172A;font-weight:800;font-size:0.74rem;padding:2px 10px;border-radius:12px;'>SUPREME HEAD</span>"
             f"<div style='font-size:1.12rem;font-weight:800;color:#FEF3C7;margin-top:6px;'>{sup1.get('name')}</div>"
             f"<div style='font-size:0.86rem;color:#FDE68A;font-weight:600;'>{sup1.get('position')}</div>"
             f"<div style='font-size:0.78rem;color:#94A3B8;margin-top:2px;'>{sup1.get('parish')}</div>"
@@ -1184,7 +1208,7 @@ def render_church_leadership_and_priests_directory(context_key: str = "home"):
             f"<div style='background:rgba(15,23,42,0.92);border:1.5px solid #10B981;border-radius:12px;"
             f"padding:14px 10px;text-align:center;margin-bottom:12px;'>"
             f"{av_d1}<br>"
-            f"<span style='background:#065F46;color:#D1FAE5;font-weight:700;font-size:0.72rem;padding:2px 9px;border-radius:10px;'>DIOCESE HEAD</span>"
+            f"<span style='background:#065F46;color:#D1FAE5;font-weight:700;font-size:0.72rem;padding:2px 9px;border-radius:10px;'>DIOCESE HEAD I</span>"
             f"<div style='font-size:1.02rem;font-weight:800;color:#ECFDF5;margin-top:6px;'>{dio1.get('name')}</div>"
             f"<div style='font-size:0.83rem;color:#6EE7B7;font-weight:600;'>{dio1.get('position')}</div>"
             f"<div style='font-size:0.76rem;color:#94A3B8;margin-top:2px;'>{dio1.get('parish')}</div>"
@@ -1197,7 +1221,7 @@ def render_church_leadership_and_priests_directory(context_key: str = "home"):
             f"<div style='background:rgba(15,23,42,0.92);border:1.5px solid #10B981;border-radius:12px;"
             f"padding:14px 10px;text-align:center;margin-bottom:12px;'>"
             f"{av_d2}<br>"
-            f"<span style='background:#065F46;color:#D1FAE5;font-weight:700;font-size:0.72rem;padding:2px 9px;border-radius:10px;'>DIOCESE HEAD</span>"
+            f"<span style='background:#065F46;color:#D1FAE5;font-weight:700;font-size:0.72rem;padding:2px 9px;border-radius:10px;'>DIOCESE HEAD II</span>"
             f"<div style='font-size:1.02rem;font-weight:800;color:#ECFDF5;margin-top:6px;'>{dio2.get('name')}</div>"
             f"<div style='font-size:0.83rem;color:#6EE7B7;font-weight:600;'>{dio2.get('position')}</div>"
             f"<div style='font-size:0.76rem;color:#94A3B8;margin-top:2px;'>{dio2.get('parish')}</div>"
@@ -1205,111 +1229,138 @@ def render_church_leadership_and_priests_directory(context_key: str = "home"):
             unsafe_allow_html=True
         )
 
-    # TIER 3: 10 PARISH PRIESTS (2 Rows of 5 Cards)
-    st.markdown("##### ⛪ Mga Parish Priest ng 10 Parokya (Lipay Norte hanggang Hongkong)")
+    # TIER 3: 10 PARISHES (Parish Priests, Malanas House Church, Hongkong Leader)
+    st.markdown("##### ⛪ Mga Parish Priests, Malanas House Church & Hongkong Leader (10 Parishes)")
     priests_dict = profiles.get("parish_priests", {})
     for row_start in range(0, len(PARISH_ORDER), 5):
         row_parishes = PARISH_ORDER[row_start:row_start + 5]
         p_cols = st.columns(5)
         for c_i, p_name in enumerate(row_parishes):
-            p_info = priests_dict.get(p_name, {"name": f"Parish Priest ({p_name.title()})", "position": "Parish Priest", "parish": p_name, "photo_b64": ""})
+            def_role_p = get_default_parish_leader_role_title(p_name)
+            p_info = priests_dict.get(p_name, {"name": f"{def_role_p} ({p_name.title()})", "position": def_role_p, "parish": p_name, "photo_b64": ""})
+            pos_badge = p_info.get("position") or def_role_p
+            if p_name == "HONGKONG PARISH" and pos_badge.upper() == "PARISH PRIEST":
+                pos_badge = "Leader"
+            elif p_name == "MALANAS PARISH" and pos_badge.upper() == "PARISH PRIEST":
+                pos_badge = "House Church"
+            parish_disp_name = "MALANAS HOUSE CHURCH" if p_name == "MALANAS PARISH" else p_name
             is_my_card = (not is_master and p_name == my_parish)
             border_c = "#38BDF8" if not is_my_card else "#F59E0B"
             with p_cols[c_i]:
-                av_p = _build_profile_avatar_html(p_info.get("photo_b64", ""), border_c, 76, "⛪")
+                av_p = _build_profile_avatar_html(p_info.get("photo_b64", ""), border_c, 76, "🏠" if p_name == "MALANAS PARISH" else "⛪")
                 st.markdown(
                     f"<div style='background:rgba(30,41,59,0.88);border:1.5px solid {border_c};border-radius:12px;"
                     f"padding:12px 8px;text-align:center;margin-bottom:10px;min-height:185px;'>"
                     f"{av_p}<br>"
                     f"<span style='background:rgba(56,189,248,0.18);color:#7DD3FC;font-weight:700;font-size:0.68rem;padding:2px 8px;border-radius:8px;'>"
-                    f"{p_info.get('position', 'Parish Priest')}</span>"
+                    f"{pos_badge}</span>"
                     f"<div style='font-size:0.92rem;font-weight:800;color:#F8FAFC;margin-top:6px;line-height:1.25;'>{p_info.get('name')}</div>"
-                    f"<div style='font-size:0.75rem;color:#38BDF8;font-weight:700;margin-top:4px;'>{p_name}</div>"
+                    f"<div style='font-size:0.75rem;color:#38BDF8;font-weight:700;margin-top:4px;'>{parish_disp_name}</div>"
                     f"</div>",
                     unsafe_allow_html=True
                 )
 
-    # Editor Expander: Master Admin can edit Supreme Head, Spouse, 2 Diocese Heads, and all 10 Parish Priests;
-    # Parish Leader / Priest can edit their own Parish Priest profile & picture.
-    editor_label = (
-        "✏️ I-edit ang Pangalan, Position at Picture (Supreme Head, Asawa, 2 Diocese Heads, at 10 Parish Priests)"
-        if is_master
-        else f"✏️ I-update ang Iyong Parish Priest Profile & Picture ({my_parish})"
-    )
-    with st.expander(editor_label, expanded=False):
-        if is_master:
-            target_choices = [
-                ("supreme_head", "👑 Supreme Head"),
-                ("supreme_head_spouse", "🌟 Asawa ng Supreme Head (Spouse)"),
-                ("diocese_head_1", "🏛️ Diocese Head I"),
-                ("diocese_head_2", "🏛️ Diocese Head II"),
-            ] + [(f"priest::{p}", f"⛪ Parish Priest — {p}") for p in PARISH_ORDER]
-        else:
-            target_choices = [(f"priest::{my_parish}", f"⛪ Parish Priest — {my_parish}")]
+    # STRICT ROLE-SEPARATED EDITING:
+    # - Master Admin edits ONLY Supreme Head, Asawa ng Supreme Head, and the 2 Diocese Heads (side-by-side clean editor!)
+    # - Parish Admin Users edit ONLY their own Parish Priest / House Church / Leader Profile in their own Admin account!
+    if is_master:
+        with st.expander("👑 Master Admin Editor: Ilagay / I-edit ang Pangalan, Position at Picture ng Supreme Head, Asawa, at 2 Diocese Heads", expanded=False):
+            st.caption("Bilang Master Admin, dito mo direktang mailalagay ang pangalan, position, at picture ng **Supreme Head**, **Asawa ng Supreme Head**, at **Dalawang Diocese Heads**. (Ang 10 Parish Priests / House Church / Hongkong Leader ay sila mismo ang maglalagay sa kani-kanilang Parish Admin account).")
+            head_tabs = st.tabs([
+                "👑 1. Supreme Head",
+                "🌟 2. Asawa ng Supreme Head",
+                "🏛️ 3. Diocese Head I",
+                "🏛️ 4. Diocese Head II"
+            ])
+            head_keys_meta = [
+                ("supreme_head", "Supreme Head", "Supreme Head — Church of the Temple of God", "CTG Supreme Leadership"),
+                ("supreme_head_spouse", "Asawa ng Supreme Head", "Spouse of the Supreme Head — Ministry Leadership", "CTG Supreme Leadership"),
+                ("diocese_head_1", "Diocese Head I", "Diocese Head — Diocese I", "CTG Diocese I Oversight"),
+                ("diocese_head_2", "Diocese Head II", "Diocese Head — Diocese II", "CTG Diocese II Oversight"),
+            ]
+            for h_idx, (h_key, h_title, def_pos, def_scope) in enumerate(head_keys_meta):
+                with head_tabs[h_idx]:
+                    cur_h = profiles.get(h_key, {})
+                    with st.form(f"master_head_form_{h_key}_{context_key}"):
+                        hc1, hc2, hc3 = st.columns([1.4, 1.3, 1.3])
+                        with hc1:
+                            h_in_name = st.text_input(f"👤 Pangalan ({h_title}):", value=str(cur_h.get("name", ""))).strip()
+                        with hc2:
+                            h_in_pos = st.text_input(f"🏷️ Position ({h_title}):", value=str(cur_h.get("position", def_pos))).strip()
+                        with hc3:
+                            h_in_scope = st.text_input(f"🏛️ Scope / Diocese ({h_title}):", value=str(cur_h.get("parish", def_scope))).strip()
+                        h_in_pic = st.file_uploader(f"📸 Picture para sa {h_title} (.jpg, .png):", type=["jpg", "jpeg", "png"], key=f"up_h_{h_key}_{context_key}")
+                        if st.form_submit_button(f"💾 I-save ang {h_title}", type="primary", use_container_width=True):
+                            new_h_b64 = cur_h.get("photo_b64", "")
+                            new_h_link = cur_h.get("drive_link", "")
+                            if h_in_pic is not None:
+                                raw_hb = h_in_pic.read()
+                                comp_h = compress_profile_image_to_data_uri(raw_hb)
+                                if comp_h:
+                                    new_h_b64 = comp_h
+                                d_lnk_h, _ = upload_member_image_to_parish_database_folder(
+                                    raw_hb,
+                                    f"CTG_Head_{h_key}_{h_in_name.replace(' ', '_')}.jpg",
+                                    h_in_pic.type or "image/jpeg",
+                                    PARISH_ORDER[0]
+                                )
+                                if d_lnk_h:
+                                    new_h_link = d_lnk_h
+                            profiles[h_key] = {
+                                "key": h_key,
+                                "name": h_in_name or cur_h.get("name", h_title),
+                                "position": h_in_pos or def_pos,
+                                "parish": h_in_scope or def_scope,
+                                "photo_b64": new_h_b64,
+                                "drive_link": new_h_link
+                            }
+                            save_leadership_and_priests_profiles(profiles)
+                            st.success(f"✅ Matagumpay na na-save ang **{h_title}**!")
+                            time.sleep(0.4)
+                            st.rerun()
+    else:
+        my_role_default = get_default_parish_leader_role_title(my_parish)
+        with st.expander(f"✏️ I-update ang Iyong {my_role_default} Profile & Picture ({my_parish})", expanded=False):
+            cur_prof = profiles["parish_priests"].get(my_parish, {})
+            with st.form(f"parish_own_profile_form_{context_key}"):
+                fc1, fc2, fc3 = st.columns([1.4, 1.2, 1.4])
+                with fc1:
+                    in_name = st.text_input("👤 Iyong Buong Pangalan:", value=str(cur_prof.get("name", ""))).strip()
+                with fc2:
+                    in_pos = st.text_input("🏷️ Position / Title:", value=str(cur_prof.get("position", my_role_default))).strip()
+                with fc3:
+                    st.text_input("⛪ Nakatalagang Parokya:", value=my_parish, disabled=True)
+                in_photo = st.file_uploader("📸 Mag-upload ng Iyong Litrato / Profile Picture (.jpg, .png):", type=["jpg", "jpeg", "png"], key=f"own_pic_up_{context_key}")
 
-        sel_target_idx = st.selectbox(
-            "Piliin ang Profile na I-e-edit / Lalagyan ng Picture:",
-            range(len(target_choices)),
-            format_func=lambda i: target_choices[i][1],
-            key=f"ldr_edit_sel_{context_key}"
-        )
-        sel_key_code, sel_disp_lbl = target_choices[sel_target_idx]
-        if sel_key_code.startswith("priest::"):
-            target_p_name = sel_key_code.split("priest::", 1)[1]
-            cur_prof = profiles["parish_priests"].get(target_p_name, {})
-        else:
-            target_p_name = ""
-            cur_prof = profiles.get(sel_key_code, {})
+                if st.form_submit_button("💾 I-save ang Aking Profile at Picture", type="primary", use_container_width=True):
+                    new_b64 = cur_prof.get("photo_b64", "")
+                    new_drive_link = cur_prof.get("drive_link", "")
+                    if in_photo is not None:
+                        raw_img_b = in_photo.read()
+                        comp_uri = compress_profile_image_to_data_uri(raw_img_b)
+                        if comp_uri:
+                            new_b64 = comp_uri
+                        d_link, _ = upload_member_image_to_parish_database_folder(
+                            raw_img_b,
+                            f"CTG_Leader_Profile_{my_parish.replace(' ', '_')}_{in_name.replace(' ', '_')}.jpg",
+                            in_photo.type or "image/jpeg",
+                            my_parish
+                        )
+                        if d_link:
+                            new_drive_link = d_link
 
-        with st.form(f"ldr_profile_form_{context_key}"):
-            fc1, fc2, fc3 = st.columns([1.3, 1.2, 1.5])
-            with fc1:
-                in_name = st.text_input("👤 Buong Pangalan (Name):", value=str(cur_prof.get("name", ""))).strip()
-            with fc2:
-                in_pos = st.text_input("🏷️ Position / Title (Hal. Parish Priest / Supreme Head / Diocese Head):", value=str(cur_prof.get("position", "Parish Priest"))).strip()
-            with fc3:
-                in_parish_lbl = st.text_input(
-                    "⛪ Parokya / Diocese / Scope:",
-                    value=str(target_p_name if target_p_name else cur_prof.get("parish", "")),
-                    disabled=bool(target_p_name)
-                ).strip()
-            in_photo = st.file_uploader("📸 Mag-upload ng Litrato / Profile Picture (.jpg, .png):", type=["jpg", "jpeg", "png"], key=f"ldr_pic_up_{context_key}")
-
-            if st.form_submit_button("💾 I-save ang Profile at Picture", type="primary", use_container_width=True):
-                new_b64 = cur_prof.get("photo_b64", "")
-                new_drive_link = cur_prof.get("drive_link", "")
-                if in_photo is not None:
-                    raw_img_b = in_photo.read()
-                    comp_uri = compress_profile_image_to_data_uri(raw_img_b)
-                    if comp_uri:
-                        new_b64 = comp_uri
-                    upload_p_scope = target_p_name if target_p_name else (my_parish if my_parish in PARISH_ORDER else PARISH_ORDER[0])
-                    d_link, _ = upload_member_image_to_parish_database_folder(
-                        raw_img_b,
-                        f"CTG_Leader_Profile_{sel_key_code.replace(':', '_')}_{in_name.replace(' ', '_')}.jpg",
-                        in_photo.type or "image/jpeg",
-                        upload_p_scope
-                    )
-                    if d_link:
-                        new_drive_link = d_link
-
-                updated_entry = {
-                    "key": sel_key_code,
-                    "name": in_name or cur_prof.get("name", ""),
-                    "position": in_pos or cur_prof.get("position", "Parish Priest"),
-                    "parish": target_p_name if target_p_name else (in_parish_lbl or cur_prof.get("parish", "")),
-                    "photo_b64": new_b64,
-                    "drive_link": new_drive_link
-                }
-                if sel_key_code.startswith("priest::"):
-                    profiles["parish_priests"][target_p_name] = updated_entry
-                else:
-                    profiles[sel_key_code] = updated_entry
-                save_leadership_and_priests_profiles(profiles)
-                st.success(f"✅ Matagumpay na na-update ang profile para sa **{sel_disp_lbl}**!")
-                time.sleep(0.4)
-                st.rerun()
-
+                    profiles["parish_priests"][my_parish] = {
+                        "key": my_parish,
+                        "name": in_name or cur_prof.get("name", ""),
+                        "position": in_pos or my_role_default,
+                        "parish": my_parish,
+                        "photo_b64": new_b64,
+                        "drive_link": new_drive_link
+                    }
+                    save_leadership_and_priests_profiles(profiles)
+                    st.success(f"✅ Matagumpay na na-update ang iyong profile para sa **{my_parish}**!")
+                    time.sleep(0.4)
+                    st.rerun()
 
 def extract_id_from_url(url: str) -> str:
     if not url:
@@ -8430,133 +8481,7 @@ def render_weekly_report_page():
         effective_parish_filter = my_parish
         focused_parish_for_sheets = my_parish
 
-    # =====================================================================
-    # 🧭 MULTI-PAGE NAVIGATION CONTROLLER (BACK - HOME - NEXT + DROPDOWN SA RIGHT SIDE)
-    # =====================================================================
-    if is_master:
-        pwr_subpages = [
-            f"🏠 Home: Master Admin Monitoring & Control Hub ({focused_parish_for_sheets})",
-            f"⛪ Liturgical Officers & Preachers (Para sa PARISH WEEKLY REPORT Sheet) — {focused_parish_for_sheets} ({view_month.upper()} {selected_year} — {len(active_month_weeks)} Weeks)",
-            f"📝 Remarks para sa Nag-attend ng Mass / Pampamilya / Adal / House Church / Online Mass / Visitors (Galing sa Image/Excel Report) — {focused_parish_for_sheets} ({view_month.upper()} {selected_year})",
-            f"📊 Parish Weekly Report Data (Adults/Youths/Kids Attendance) — {focused_parish_for_sheets} ({view_month.upper()} {selected_year})",
-            f"📅 Buong Buwan ng {view_month.upper()} {selected_year} — Parish Monitoring Report & Summary for Posting (1st Week hanggang {active_month_weeks[-1]})",
-            "🏆 Church of the Temple of God – Parish Ministry Performance Report (Master Admin Exclusive)",
-        ]
-    else:
-        pwr_subpages = [
-            f"🏠 Home: Upload the Image / Excel File Here! & Parish Weekly Report Data Editor ({my_parish})",
-            f"⛪ Liturgical Officers & Preachers (Para sa PARISH WEEKLY REPORT Sheet) — {my_parish} ({view_month.upper()} {selected_year} — {len(active_month_weeks)} Weeks)",
-            f"📝 Remarks para sa Nag-attend ng Mass / Pampamilya / Adal / House Church / Online Mass / Visitors (Galing sa Image/Excel Report) — {my_parish} ({view_month.upper()} {selected_year})",
-            f"📊 Parish Weekly Report Data (Adults/Youths/Kids Attendance) — {my_parish} ({view_month.upper()} {selected_year})",
-            f"📅 Buong Buwan ng {view_month.upper()} {selected_year} — Parish Monitoring Report & Summary for Posting (1st Week hanggang {active_month_weeks[-1]})",
-        ]
-
-    max_subpage_idx = len(pwr_subpages) - 1
-    if "pwr_active_subpage_idx" not in st.session_state:
-        st.session_state["pwr_active_subpage_idx"] = 0
-    if st.session_state["pwr_active_subpage_idx"] < 0 or st.session_state["pwr_active_subpage_idx"] > max_subpage_idx:
-        st.session_state["pwr_active_subpage_idx"] = 0
-
-    cur_page_idx = int(st.session_state["pwr_active_subpage_idx"])
-
-    # Side-by-Side Horizontal Section Tabs (Tulad ng sa Parish Census & Member Manager)
-    if is_master:
-        pwr_short_tab_labels = [
-            "🏠 1. Home & Control Hub",
-            "⛪ 2. Liturgical Officers & Preachers",
-            "📝 3. Remarks (Mass/Adal/Visitors)",
-            "📊 4. Weekly Attendance Data",
-            "📅 5. Monthly Monitoring & Summary",
-            "🏆 6. Ministry Performance Report",
-        ]
-    else:
-        pwr_short_tab_labels = [
-            "🏠 1. Home & Upload / Editor",
-            "⛪ 2. Liturgical Officers & Preachers",
-            "📝 3. Remarks (Mass/Adal/Visitors)",
-            "📊 4. Weekly Attendance Data",
-            "📅 5. Monthly Monitoring & Summary",
-        ]
-
-    st.markdown(
-        "<div style='font-size:0.84rem;font-weight:700;color:#93C5FD;margin:4px 0 6px 0;'>"
-        "🗂️ Pumili ng Pahina / Section ng Weekly Report (Magkakatabi tulad ng Parish Census & Member Manager):"
-        "</div>",
-        unsafe_allow_html=True
-    )
-    pwr_tab_cols = st.columns(len(pwr_short_tab_labels))
-    for t_i, t_lbl in enumerate(pwr_short_tab_labels):
-        with pwr_tab_cols[t_i]:
-            if st.button(
-                t_lbl,
-                key=f"pwr_top_side_tab_{t_i}",
-                type="primary" if cur_page_idx == t_i else "secondary",
-                use_container_width=True
-            ):
-                st.session_state["pwr_active_subpage_idx"] = t_i
-                st.rerun()
-
-    cur_page_idx = int(st.session_state["pwr_active_subpage_idx"])
-
-    def _render_pwr_page_navigator(pos_suffix: str):
-        """Nagre-render sa ibaba ng pahina ng magkakatabing [⬅️ Back] [🏠 Home] [Next ➡️] at [📂 Pumili ng Pahina / Section na Bubuksan]
-        na naka-optimize para sa Desktop, Tablet, at Smartphone."""
-        c_idx = int(st.session_state.get("pwr_active_subpage_idx", 0))
-        nav_left_btns, nav_right_sel = st.columns([2.15, 2.85])
-        with nav_left_btns:
-            st.markdown(
-                f"<div style='font-size:0.86rem;font-weight:600;margin-bottom:4px;opacity:0.92;'>"
-                f"🧭 Page {c_idx + 1} / {len(pwr_subpages)} Controller:"
-                f"</div>",
-                unsafe_allow_html=True
-            )
-            b_c1, b_c2, b_c3 = st.columns(3)
-            with b_c1:
-                if st.button(
-                    "⬅️ Back",
-                    key=f"pwr_btn_back_{pos_suffix}",
-                    use_container_width=True,
-                    disabled=(c_idx <= 0),
-                    help=f"Bumalik sa: {pwr_subpages[c_idx - 1]}" if c_idx > 0 else "Nasa unang pahina (Home) ka na"
-                ):
-                    st.session_state["pwr_active_subpage_idx"] = max(0, c_idx - 1)
-                    st.rerun()
-            with b_c2:
-                if st.button(
-                    "🏠 Home",
-                    key=f"pwr_btn_home_{pos_suffix}",
-                    use_container_width=True,
-                    type="primary" if c_idx == 0 else "secondary",
-                    disabled=(c_idx == 0),
-                    help="Bumalik sa Home Page"
-                ):
-                    st.session_state["pwr_active_subpage_idx"] = 0
-                    st.rerun()
-            with b_c3:
-                if st.button(
-                    "Next ➡️",
-                    key=f"pwr_btn_next_{pos_suffix}",
-                    use_container_width=True,
-                    type="primary" if c_idx < max_subpage_idx else "secondary",
-                    disabled=(c_idx >= max_subpage_idx),
-                    help=f"Susunod: {pwr_subpages[c_idx + 1]}" if c_idx < max_subpage_idx else "Nasa huling pahina ka na"
-                ):
-                    st.session_state["pwr_active_subpage_idx"] = min(max_subpage_idx, c_idx + 1)
-                    st.rerun()
-        with nav_right_sel:
-            sel_key = f"pwr_subpage_select_{pos_suffix}"
-            st.session_state[sel_key] = c_idx
-
-            def _on_subpage_dropdown_change(k=sel_key):
-                st.session_state["pwr_active_subpage_idx"] = int(st.session_state.get(k, 0))
-
-            st.selectbox(
-                "📂 Pumili ng Pahina / Section na Bubuksan:",
-                options=list(range(len(pwr_subpages))),
-                format_func=lambda i: pwr_subpages[i],
-                key=sel_key,
-                on_change=_on_subpage_dropdown_change
-            )
+    # Clean st.tabs navigation rendered below the top filter bar
 
     # =====================================================================
     # 📤 FOR ALL PARISH ADMINS: 1. UPLOAD THE IMAGE / EXCEL FILE HERE! & 2. MANUAL VERIFICATION EDITOR
@@ -8768,19 +8693,12 @@ def render_weekly_report_page():
     # =====================================================================
     # 🏠 HOME BANNER (SA HOME PAGE LAMANG) + 🎛️ TOP FILTER & WEEK BAR (SA ITAAS NG LAHAT NG PAGES PARA SA LAHAT NG ADMINS)
     # =====================================================================
-    if cur_page_idx == 0:
-        st.markdown("<div class='pmr-banner'>CHURCH OF THE TEMPLE OF GOD</div>", unsafe_allow_html=True)
-        st.markdown(
-            f"<div class='pmr-subbanner'>Parish Monitoring Report — Full Year 2027 (January–December, Dynamic Weeks per Month) & Google Drive Auto-Sync "
-            f"<br><span class='ph-time-badge'>🇵🇭 Oras at Petsa sa Pilipinas: {get_philippine_datetime_str()}</span></div>",
-            unsafe_allow_html=True
-        )
-
-        if is_master:
-            st.info(
-                "🏛️ **Master Admin Monitoring Dashboard:** Ang pag-upload ng Weekly Reports ay para sa mga **Parish Admins (Lipay Norte hanggang Hongkong)**. "
-                "Bilang **Master Admin**, dito mo mamo-monitor ang **Performance Report** at lahat ng **Records** ng bawat Parokya mula sa Google Drive files."
-            )
+    st.markdown("<div class='pmr-banner'>CHURCH OF THE TEMPLE OF GOD</div>", unsafe_allow_html=True)
+    st.markdown(
+        f"<div class='pmr-subbanner'>Parish Monitoring Report — Full Year 2027 (January–December, Dynamic Weeks per Month) & Google Drive Auto-Sync "
+        f"<br><span class='ph-time-badge'>🇵🇭 Oras at Petsa sa Pilipinas: {get_philippine_datetime_str()}</span></div>",
+        unsafe_allow_html=True
+    )
 
     # 🎛️ TOP MASTER CONTROL BAR (BUWAN, LINGGO/ALL WEEKS, PAROKYA, YEAR, AUTO-SYNC & REFRESH) — NASA ITAAS NG LAHAT NG PAGES
     top_month_options = MONTHS_2027 + ["Lahat ng Buwan (Jan–Dec)"]
@@ -8878,10 +8796,31 @@ def render_weekly_report_page():
             st.session_state["_next_mon_view_week"] = dynamic_top_week_opts[-1]
             st.rerun()
 
-    if cur_page_idx > 0:
-        st.divider()
+    st.divider()
+    if is_master:
+        pwr_tabs_list = st.tabs([
+            f"🏠 Home & Control Hub ({focused_parish_for_sheets})",
+            f"⛪ Liturgical Officers & Preachers ({len(active_month_weeks)} Weeks)",
+            "📝 Remarks (Mass / Adal / House Church / Visitors)",
+            "📊 Parish Weekly Report Data (Attendance)",
+            f"📅 Buong Buwan ng {view_month.upper()} {selected_year} — Monitoring & Summary",
+            "🏆 Parish Ministry Performance Report"
+        ])
+    else:
+        pwr_tabs_list = st.tabs([
+            f"🏠 Home & Upload / Verification Editor ({my_parish})",
+            f"⛪ Liturgical Officers & Preachers ({len(active_month_weeks)} Weeks)",
+            "📝 Remarks (Mass / Adal / House Church / Visitors)",
+            "📊 Parish Weekly Report Data (Attendance)",
+            f"📅 Buong Buwan ng {view_month.upper()} {selected_year} — Monitoring & Summary"
+        ])
 
-    if cur_page_idx == 0:
+    with pwr_tabs_list[0]:
+        if is_master:
+            st.info(
+                "🏛️ **Master Admin Monitoring Dashboard:** Ang pag-upload ng Weekly Reports ay para sa mga **Parish Admins (Lipay Norte hanggang Hongkong)**. "
+                "Bilang **Master Admin**, dito mo mamo-monitor ang **Performance Report** at lahat ng **Records** ng bawat Parokya mula sa Google Drive files."
+            )
 
         # 🗑️ CLICKABLE OPTION TO CLEAR / DELETE POPULATED DATA & MASTER ADMIN DEADLINE / OVERRIDE CONTROLLER
         ctrl_bar_1, ctrl_bar_2 = st.columns([1.85, 1.15]) if is_master else ([None, st.container()])
@@ -9259,7 +9198,7 @@ def render_weekly_report_page():
     # =====================================================================
     # ⛪ PAGE 2 (SECTION A): LITURGICAL OFFICERS & PREACHERS
     # =====================================================================
-    if cur_page_idx == 1:
+    with pwr_tabs_list[1]:
         for m_disp in months_to_display:
             m_disp_weeks = get_weeks_for_month_year(m_disp, int(selected_year))
             st.markdown(
@@ -9310,7 +9249,7 @@ def render_weekly_report_page():
     # =====================================================================
     # 📝 PAGE 3 (SECTION B): REMARKS PARA SA NAG-ATTEND NG MASS / PAMPAMILYA / ADAL / HOUSE CHURCH / ONLINE MASS / VISITORS
     # =====================================================================
-    elif cur_page_idx == 2:
+    with pwr_tabs_list[2]:
         for m_disp in months_to_display:
             m_disp_weeks = get_weeks_for_month_year(m_disp, int(selected_year))
             st.markdown(
@@ -9338,7 +9277,7 @@ def render_weekly_report_page():
     # =====================================================================
     # 📊 PAGE 4 (SECTION C): PARISH WEEKLY REPORT DATA (ADULTS / YOUTHS / KIDS ATTENDANCE SHEET)
     # =====================================================================
-    elif cur_page_idx == 3:
+    with pwr_tabs_list[3]:
         for m_disp in months_to_display:
             m_disp_weeks = get_weeks_for_month_year(m_disp, int(selected_year))
             st.markdown(
@@ -9396,7 +9335,7 @@ def render_weekly_report_page():
     # =====================================================================
     # 📅 PAGE 5 (SECTION D): BUONG BUWAN — PARISH MONITORING REPORT & SUMMARY FOR POSTING
     # =====================================================================
-    elif cur_page_idx == 4:
+    with pwr_tabs_list[4]:
         for m_disp in months_to_display:
             m_disp_weeks = get_weeks_for_month_year(m_disp, int(selected_year))
             st.markdown(
@@ -9417,127 +9356,127 @@ def render_weekly_report_page():
     # =====================================================================
     # 🏆 PAGE 6 (SECTION E - MASTER ADMIN EXCLUSIVE): CHURCH OF THE TEMPLE OF GOD – PARISH MINISTRY PERFORMANCE REPORT
     # =====================================================================
-    elif cur_page_idx == 5 and is_master:
-        st.markdown("### 🏆 Church of the Temple of God – Parish Ministry Performance Report (Master Admin Exclusive)")
-        st.caption(
-            "Awtomatikong binubuo mula sa Attendance Percentages ng lahat ng 10 Parokya at kinukuha ang **House Visitation**, "
-            "**Missionary Work / Indoctrination**, at **Remarks** mula sa pahina ng `🏠 House Visitation, Missionary Work, Indoctrination & Remarks`. "
-            "Maaari mo itong i-switch sa **English** o **Ilokano**, i-edit, at direktang i-send sa **Gmail**."
-        )
-
-        pr_c1, pr_c2, pr_c3, pr_c4 = st.columns([1.1, 1.1, 1.1, 1.3])
-        with pr_c1:
-            perf_month = st.selectbox("📅 Buwan ng Report:", MONTHS_2027, index=MONTHS_2027.index(view_month) if view_month in MONTHS_2027 else 0, key="perf_rep_month")
-        perf_valid_weeks = get_weeks_for_month_year(perf_month, int(selected_year))
-        with pr_c2:
-            perf_week = st.selectbox("🗓️ Linggo ng Report:", perf_valid_weeks, index=perf_valid_weeks.index(view_week) if view_week in perf_valid_weeks else 0, key="perf_rep_week")
-        with pr_c3:
-            perf_lang = st.selectbox("🌐 Wika ng Performance Report:", ["English", "Ilokano"], key="perf_rep_lang")
-        with pr_c4:
-            st.write("")
-            regen_perf_btn = st.button("🔄 I-regenerate Mula sa Live Data", use_container_width=True, key="btn_regen_perf_rep")
-
-        perf_state_key = f"editable_perf_report_{perf_month}_{perf_week}_{selected_year}_{perf_lang}"
-        if regen_perf_btn or perf_state_key not in st.session_state:
-            st.session_state[perf_state_key] = generate_parish_ministry_performance_report_text(
-                perf_month, perf_week, str(selected_year), perf_lang
+    if is_master:
+        with pwr_tabs_list[5]:
+            st.markdown("### 🏆 Church of the Temple of God – Parish Ministry Performance Report (Master Admin Exclusive)")
+            st.caption(
+                "Awtomatikong binubuo mula sa Attendance Percentages ng lahat ng 10 Parokya at kinukuha ang **House Visitation**, "
+                "**Missionary Work / Indoctrination**, at **Remarks** mula sa pahina ng `🏠 House Visitation, Missionary Work, Indoctrination & Remarks`. "
+                "Maaari mo itong i-switch sa **English** o **Ilokano**, i-edit, at direktang i-send sa **Gmail**."
             )
 
-        ai_pol_col1, ai_pol_col2 = st.columns([1.8, 1.8])
-        with ai_pol_col1:
-            if st.button(f"✨ I-polish / I-translate sa {perf_lang} Gamit ang Gemini AI (Optional)", use_container_width=True, key="btn_ai_polish_perf"):
-                valid_k = get_valid_gemini_keys()
-                if valid_k:
-                    with st.spinner(f"Inaayos ng Gemini AI sa wikang {perf_lang}..."):
-                        try:
-                            client_p = genai.Client(api_key=valid_k[0])
-                            base_txt = st.session_state.get(perf_state_key, "")
-                            p_prompt = (
-                                f"Translate and polish the following Church of the Temple of God – Parish Ministry Performance Report into natural, formal {perf_lang}. "
-                                "Keep the exact structure, headings, parish names, percentages, House Visitation, Missionary Work / Indoctrination, and Remarks intact:\n\n"
-                                + base_txt
-                            )
-                            res_p = safe_generate_content(client_p, selected_model, p_prompt)
-                            if res_p and res_p.text:
-                                st.session_state[perf_state_key] = res_p.text.strip()
-                                st.rerun()
-                        except Exception as ex_p:
-                            st.warning(f"AI Polish Notice: {str(ex_p)}")
-                else:
-                    st.warning("Maglagay ng GEMINI_API_KEY sa App Settings.")
-        with ai_pol_col2:
-            if st.button("💾 I-save ang In-edit na Summary sa App", type="primary", use_container_width=True, key="btn_save_perf_edits"):
-                cfg_s = load_saved_config()
-                saved_perf_map = cfg_s.get("SAVED_PERFORMANCE_REPORTS", {})
-                if not isinstance(saved_perf_map, dict):
-                    saved_perf_map = {}
-                saved_perf_map[perf_state_key] = st.session_state.get(perf_state_key, "")
-                cfg_s["SAVED_PERFORMANCE_REPORTS"] = saved_perf_map
-                try:
-                    with open(LOCAL_CONFIG_FILE, "w", encoding="utf-8") as f:
-                        json.dump(cfg_s, f, ensure_ascii=False, indent=2)
-                except Exception:
-                    pass
-                st.success("✅ Na-save na ang iyong in-edit na Parish Ministry Performance Report!")
-
-        edited_perf_text = st.text_area(
-            f"✏️ Parish Ministry Performance Report ({perf_lang} — Maaari mong i-edit bago i-save o i-send sa Gmail):",
-            value=st.session_state.get(perf_state_key, ""),
-            height=520,
-            key=f"ta_{perf_state_key}"
-        )
-        st.session_state[perf_state_key] = edited_perf_text
-
-        with st.expander("📖 Preview ng Parish Ministry Performance Report (Formatted Card View)", expanded=True):
-            st.markdown(f"<div class='full-text-card'>{edited_perf_text}</div>", unsafe_allow_html=True)
-
-        with st.expander("📧 I-send ang Parish Ministry Performance Report sa Gmail", expanded=True):
-            gm_c1, gm_c2, gm_c3 = st.columns([1.4, 1.6, 1.0])
-            with gm_c1:
-                perf_email_to = st.text_input(
-                    "📧 Email ng Tatanggap (pwedeng marami, paghiwalayin ng comma):",
-                    value=BACKUP_ADMIN_EMAIL,
-                    key="perf_rep_email_to"
-                )
-            with gm_c2:
-                perf_email_subj = st.text_input(
-                    "🏷️ Subject ng Email:",
-                    value=f"Church of the Temple of God – Parish Ministry Performance Report ({perf_week} of {perf_month} {selected_year} - {perf_lang})",
-                    key="perf_rep_email_subj"
-                )
-            with gm_c3:
+            pr_c1, pr_c2, pr_c3, pr_c4 = st.columns([1.1, 1.1, 1.1, 1.3])
+            with pr_c1:
+                perf_month = st.selectbox("📅 Buwan ng Report:", MONTHS_2027, index=MONTHS_2027.index(view_month) if view_month in MONTHS_2027 else 0, key="perf_rep_month")
+            perf_valid_weeks = get_weeks_for_month_year(perf_month, int(selected_year))
+            with pr_c2:
+                perf_week = st.selectbox("🗓️ Linggo ng Report:", perf_valid_weeks, index=perf_valid_weeks.index(view_week) if view_week in perf_valid_weeks else 0, key="perf_rep_week")
+            with pr_c3:
+                perf_lang = st.selectbox("🌐 Wika ng Performance Report:", ["English", "Ilokano"], key="perf_rep_lang")
+            with pr_c4:
                 st.write("")
-                if st.button("🚀 I-send Ngayon sa Gmail", type="primary", use_container_width=True, key="btn_send_perf_gmail"):
-                    recipients_list = [e.strip() for e in str(perf_email_to or "").split(",") if "@" in e.strip()]
-                    if not recipients_list:
-                        st.warning("Maglagay ng valid na Email Address.")
+                regen_perf_btn = st.button("🔄 I-regenerate Mula sa Live Data", use_container_width=True, key="btn_regen_perf_rep")
+
+            perf_state_key = f"editable_perf_report_{perf_month}_{perf_week}_{selected_year}_{perf_lang}"
+            if regen_perf_btn or perf_state_key not in st.session_state:
+                st.session_state[perf_state_key] = generate_parish_ministry_performance_report_text(
+                    perf_month, perf_week, str(selected_year), perf_lang
+                )
+
+            ai_pol_col1, ai_pol_col2 = st.columns([1.8, 1.8])
+            with ai_pol_col1:
+                if st.button(f"✨ I-polish / I-translate sa {perf_lang} Gamit ang Gemini AI (Optional)", use_container_width=True, key="btn_ai_polish_perf"):
+                    valid_k = get_valid_gemini_keys()
+                    if valid_k:
+                        with st.spinner(f"Inaayos ng Gemini AI sa wikang {perf_lang}..."):
+                            try:
+                                client_p = genai.Client(api_key=valid_k[0])
+                                base_txt = st.session_state.get(perf_state_key, "")
+                                p_prompt = (
+                                    f"Translate and polish the following Church of the Temple of God – Parish Ministry Performance Report into natural, formal {perf_lang}. "
+                                    "Keep the exact structure, headings, parish names, percentages, House Visitation, Missionary Work / Indoctrination, and Remarks intact:\n\n"
+                                    + base_txt
+                                )
+                                res_p = safe_generate_content(client_p, selected_model, p_prompt)
+                                if res_p and res_p.text:
+                                    st.session_state[perf_state_key] = res_p.text.strip()
+                                    st.rerun()
+                            except Exception as ex_p:
+                                st.warning(f"AI Polish Notice: {str(ex_p)}")
                     else:
-                        sent_ok = []
-                        err_list = []
-                        for r_addr in recipients_list:
-                            res_em = send_email_via_gmail(r_addr, perf_email_subj, edited_perf_text)
-                            if "Matagumpay" in res_em:
-                                sent_ok.append(r_addr)
-                            else:
-                                err_list.append(f"{r_addr}: {res_em}")
-                        if sent_ok:
-                            st.success(f"✅ Matagumpay na naipadala ang Parish Ministry Performance Report sa: {', '.join(sent_ok)}!")
-                        if err_list:
-                            st.error(" | ".join(err_list))
-        st.divider()
+                        st.warning("Maglagay ng GEMINI_API_KEY sa App Settings.")
+            with ai_pol_col2:
+                if st.button("💾 I-save ang In-edit na Summary sa App", type="primary", use_container_width=True, key="btn_save_perf_edits"):
+                    cfg_s = load_saved_config()
+                    saved_perf_map = cfg_s.get("SAVED_PERFORMANCE_REPORTS", {})
+                    if not isinstance(saved_perf_map, dict):
+                        saved_perf_map = {}
+                    saved_perf_map[perf_state_key] = st.session_state.get(perf_state_key, "")
+                    cfg_s["SAVED_PERFORMANCE_REPORTS"] = saved_perf_map
+                    try:
+                        with open(LOCAL_CONFIG_FILE, "w", encoding="utf-8") as f:
+                            json.dump(cfg_s, f, ensure_ascii=False, indent=2)
+                    except Exception:
+                        pass
+                    st.success("✅ Na-save na ang iyong in-edit na Parish Ministry Performance Report!")
 
-    # Bottom Page Navigator Bar (Back - Home - Next + Pumili ng Pahina / Section na Bubuksan sa Right Side)
-    _render_pwr_page_navigator("bottom")
+            edited_perf_text = st.text_area(
+                f"✏️ Parish Ministry Performance Report ({perf_lang} — Maaari mong i-edit bago i-save o i-send sa Gmail):",
+                value=st.session_state.get(perf_state_key, ""),
+                height=520,
+                key=f"ta_{perf_state_key}"
+            )
+            st.session_state[perf_state_key] = edited_perf_text
 
-    if cur_page_idx == 0 and os.path.exists(LOCAL_PWR_MASTER_FILE):
-        with open(LOCAL_PWR_MASTER_FILE, "rb") as f:
-            pwr_bytes = f.read()
-        st.download_button(
-            label=f"📥 I-download ang Na-update na Master Excel (PWR. {view_month} {view_week}.xlsx)",
-            data=pwr_bytes,
-            file_name=f"PWR. {view_month} {view_week}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+            with st.expander("📖 Preview ng Parish Ministry Performance Report (Formatted Card View)", expanded=True):
+                st.markdown(f"<div class='full-text-card'>{edited_perf_text}</div>", unsafe_allow_html=True)
+
+            with st.expander("📧 I-send ang Parish Ministry Performance Report sa Gmail", expanded=True):
+                gm_c1, gm_c2, gm_c3 = st.columns([1.4, 1.6, 1.0])
+                with gm_c1:
+                    perf_email_to = st.text_input(
+                        "📧 Email ng Tatanggap (pwedeng marami, paghiwalayin ng comma):",
+                        value=BACKUP_ADMIN_EMAIL,
+                        key="perf_rep_email_to"
+                    )
+                with gm_c2:
+                    perf_email_subj = st.text_input(
+                        "🏷️ Subject ng Email:",
+                        value=f"Church of the Temple of God – Parish Ministry Performance Report ({perf_week} of {perf_month} {selected_year} - {perf_lang})",
+                        key="perf_rep_email_subj"
+                    )
+                with gm_c3:
+                    st.write("")
+                    if st.button("🚀 I-send Ngayon sa Gmail", type="primary", use_container_width=True, key="btn_send_perf_gmail"):
+                        recipients_list = [e.strip() for e in str(perf_email_to or "").split(",") if "@" in e.strip()]
+                        if not recipients_list:
+                            st.warning("Maglagay ng valid na Email Address.")
+                        else:
+                            sent_ok = []
+                            err_list = []
+                            for r_addr in recipients_list:
+                                res_em = send_email_via_gmail(r_addr, perf_email_subj, edited_perf_text)
+                                if "Matagumpay" in res_em:
+                                    sent_ok.append(r_addr)
+                                else:
+                                    err_list.append(f"{r_addr}: {res_em}")
+                            if sent_ok:
+                                st.success(f"✅ Matagumpay na naipadala ang Parish Ministry Performance Report sa: {', '.join(sent_ok)}!")
+                            if err_list:
+                                st.error(" | ".join(err_list))
+            st.divider()
+
+
+    with pwr_tabs_list[0]:
+        if os.path.exists(LOCAL_PWR_MASTER_FILE):
+            with open(LOCAL_PWR_MASTER_FILE, "rb") as f:
+                pwr_bytes = f.read()
+            st.download_button(
+                label=f"📥 I-download ang Na-update na Master Excel (PWR. {view_month} {view_week}.xlsx)",
+                data=pwr_bytes,
+                file_name=f"PWR. {view_month} {view_week}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
 
 def _format_grouped_ministry_percentages(pcts_dict: dict, is_hongkong: bool = False, lang: str = "English") -> str:
     """Ginugrupo ang mga ministries na may parehong percentage (hal. '73% attendance on Mass, Pampamilya, and Adal ti Evangelio; 67% on Youth Fellowship...')."""
@@ -10231,71 +10170,76 @@ def render_outreach_visitation_missionary_page():
 with st.sidebar:
     _ldr_profiles_sb = load_leadership_and_priests_profiles()
     if st.session_state.user_role == "Master Admin":
-        _my_sb_prof = _ldr_profiles_sb.get("supreme_head", {})
-        _my_sb_title = _my_sb_prof.get("position", "Master Admin")
-        _my_sb_name = _my_sb_prof.get("name", "CTG Master Admin")
+        _sb_av_html = _build_profile_avatar_html("", "#10B981", 78, "⛪")
+        st.markdown(
+            f"<div style='background:linear-gradient(145deg, rgba(15,23,42,0.96), rgba(30,41,59,0.92));"
+            f"border:1.5px solid #10B981;border-radius:14px;padding:14px 10px;text-align:center;margin-bottom:10px;'>"
+            f"{_sb_av_html}<br>"
+            f"<span style='background:#065F46;color:#D1FAE5;font-size:0.70rem;font-weight:700;padding:2px 9px;border-radius:10px;'>"
+            f"Church of the Temple of God</span>"
+            f"<div style='font-size:0.98rem;font-weight:800;color:#F8FAFC;margin-top:6px;'>CTG Ministries Database</div>"
+            f"<div style='font-size:0.78rem;color:#38BDF8;font-weight:700;margin-top:2px;'>📍 {st.session_state.assigned_parish}</div>"
+            f"<div style='font-size:0.72rem;color:#94A3B8;margin-top:2px;'>Role: Master Admin</div>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
     else:
+        _def_role_sb = get_default_parish_leader_role_title(st.session_state.assigned_parish)
         _my_sb_prof = _ldr_profiles_sb.get("parish_priests", {}).get(st.session_state.assigned_parish, {})
-        _my_sb_title = _my_sb_prof.get("position", "Parish Priest")
-        _my_sb_name = _my_sb_prof.get("name", f"Parish Priest ({st.session_state.assigned_parish})")
-
-    _sb_av_html = _build_profile_avatar_html(_my_sb_prof.get("photo_b64", ""), "#10B981", 78, "⛪")
-    st.markdown(
-        f"<div style='background:linear-gradient(145deg, rgba(15,23,42,0.96), rgba(30,41,59,0.92));"
-        f"border:1.5px solid #10B981;border-radius:14px;padding:14px 10px;text-align:center;margin-bottom:10px;'>"
-        f"{_sb_av_html}<br>"
-        f"<span style='background:#065F46;color:#D1FAE5;font-size:0.70rem;font-weight:700;padding:2px 9px;border-radius:10px;'>"
-        f"{_my_sb_title}</span>"
-        f"<div style='font-size:0.98rem;font-weight:800;color:#F8FAFC;margin-top:6px;'>{_my_sb_name}</div>"
-        f"<div style='font-size:0.78rem;color:#38BDF8;font-weight:700;margin-top:2px;'>📍 {st.session_state.assigned_parish}</div>"
-        f"<div style='font-size:0.72rem;color:#94A3B8;margin-top:2px;'>Role: {st.session_state.user_role}</div>"
-        f"</div>",
-        unsafe_allow_html=True
-    )
-
-    with st.expander("👤 I-edit ang Aking Profile & Picture", expanded=False):
-        with st.form("sidebar_my_profile_form"):
-            sb_in_name = st.text_input("Pangalan (Parish Priest / Leader):", value=str(_my_sb_name)).strip()
-            sb_in_pos = st.text_input("Position:", value=str(_my_sb_title)).strip()
-            sb_in_pic = st.file_uploader("Palitan ang Picture (.jpg, .png):", type=["jpg", "jpeg", "png"], key="sb_prof_pic_up")
-            if st.form_submit_button("💾 I-save ang Aking Profile", type="primary", use_container_width=True):
-                new_sb_b64 = _my_sb_prof.get("photo_b64", "")
-                new_sb_link = _my_sb_prof.get("drive_link", "")
-                if sb_in_pic is not None:
-                    raw_sb_b = sb_in_pic.read()
-                    comp_sb = compress_profile_image_to_data_uri(raw_sb_b)
-                    if comp_sb:
-                        new_sb_b64 = comp_sb
-                    p_scope_sb = st.session_state.assigned_parish if st.session_state.assigned_parish in PARISH_ORDER else PARISH_ORDER[0]
-                    d_lnk, _ = upload_member_image_to_parish_database_folder(
-                        raw_sb_b,
-                        f"CTG_Priest_Profile_{p_scope_sb.replace(' ', '_')}_{sb_in_name.replace(' ', '_')}.jpg",
-                        sb_in_pic.type or "image/jpeg",
-                        p_scope_sb
-                    )
-                    if d_lnk:
-                        new_sb_link = d_lnk
-                if st.session_state.user_role == "Master Admin":
-                    _ldr_profiles_sb["supreme_head"].update({
-                        "name": sb_in_name or _my_sb_name,
-                        "position": sb_in_pos or _my_sb_title,
-                        "photo_b64": new_sb_b64,
-                        "drive_link": new_sb_link
-                    })
-                else:
+        _my_sb_title = _my_sb_prof.get("position") or _def_role_sb
+        if st.session_state.assigned_parish == "HONGKONG PARISH" and _my_sb_title.upper() == "PARISH PRIEST":
+            _my_sb_title = "Leader"
+        elif st.session_state.assigned_parish == "MALANAS PARISH" and _my_sb_title.upper() == "PARISH PRIEST":
+            _my_sb_title = "House Church"
+        _my_sb_name = _my_sb_prof.get("name", f"{_my_sb_title} ({st.session_state.assigned_parish})")
+        _sb_av_html = _build_profile_avatar_html(_my_sb_prof.get("photo_b64", ""), "#10B981", 78, "⛪")
+        st.markdown(
+            f"<div style='background:linear-gradient(145deg, rgba(15,23,42,0.96), rgba(30,41,59,0.92));"
+            f"border:1.5px solid #10B981;border-radius:14px;padding:14px 10px;text-align:center;margin-bottom:10px;'>"
+            f"{_sb_av_html}<br>"
+            f"<span style='background:#065F46;color:#D1FAE5;font-size:0.70rem;font-weight:700;padding:2px 9px;border-radius:10px;'>"
+            f"{_my_sb_title}</span>"
+            f"<div style='font-size:0.98rem;font-weight:800;color:#F8FAFC;margin-top:6px;'>{_my_sb_name}</div>"
+            f"<div style='font-size:0.78rem;color:#38BDF8;font-weight:700;margin-top:2px;'>📍 {st.session_state.assigned_parish}</div>"
+            f"<div style='font-size:0.72rem;color:#94A3B8;margin-top:2px;'>Role: {st.session_state.user_role}</div>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+        with st.expander(f"👤 I-edit ang Aking {_def_role_sb} Profile & Picture", expanded=False):
+            with st.form("sidebar_my_profile_form"):
+                sb_in_name = st.text_input(f"Pangalan ({_def_role_sb}):", value=str(_my_sb_name)).strip()
+                sb_in_pos = st.text_input("Position:", value=str(_my_sb_title)).strip()
+                sb_in_pic = st.file_uploader("Palitan ang Picture (.jpg, .png):", type=["jpg", "jpeg", "png"], key="sb_prof_pic_up")
+                if st.form_submit_button("💾 I-save ang Aking Profile", type="primary", use_container_width=True):
+                    new_sb_b64 = _my_sb_prof.get("photo_b64", "")
+                    new_sb_link = _my_sb_prof.get("drive_link", "")
+                    if sb_in_pic is not None:
+                        raw_sb_b = sb_in_pic.read()
+                        comp_sb = compress_profile_image_to_data_uri(raw_sb_b)
+                        if comp_sb:
+                            new_sb_b64 = comp_sb
+                        p_scope_sb = st.session_state.assigned_parish if st.session_state.assigned_parish in PARISH_ORDER else PARISH_ORDER[0]
+                        d_lnk, _ = upload_member_image_to_parish_database_folder(
+                            raw_sb_b,
+                            f"CTG_Leader_Profile_{p_scope_sb.replace(' ', '_')}_{sb_in_name.replace(' ', '_')}.jpg",
+                            sb_in_pic.type or "image/jpeg",
+                            p_scope_sb
+                        )
+                        if d_lnk:
+                            new_sb_link = d_lnk
                     p_k_sb = st.session_state.assigned_parish
                     if p_k_sb in _ldr_profiles_sb["parish_priests"]:
                         _ldr_profiles_sb["parish_priests"][p_k_sb].update({
                             "name": sb_in_name or _my_sb_name,
-                            "position": sb_in_pos or "Parish Priest",
+                            "position": sb_in_pos or _def_role_sb,
                             "parish": p_k_sb,
                             "photo_b64": new_sb_b64,
                             "drive_link": new_sb_link
                         })
-                save_leadership_and_priests_profiles(_ldr_profiles_sb)
-                st.success("✅ Na-update na ang iyong Profile!")
-                time.sleep(0.4)
-                st.rerun()
+                    save_leadership_and_priests_profiles(_ldr_profiles_sb)
+                    st.success("✅ Na-update na ang iyong Profile!")
+                    time.sleep(0.4)
+                    st.rerun()
 
     if st.button("🔄 Sync Live Excel & Notion Data", use_container_width=True):
         st.cache_data.clear()
