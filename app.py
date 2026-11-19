@@ -7209,7 +7209,7 @@ def render_weekly_report_page():
     ctrl_bar_1, ctrl_bar_2 = st.columns([1.85, 1.15]) if is_master else ([None, st.container()])
     if is_master and ctrl_bar_1 is not None:
         with ctrl_bar_1:
-            with st.expander("🛡️ Master Admin Submission Schedule & Deadline Controller (Auto Sat–Mon Unlock/Lock & No Report Control)", expanded=True):
+            with st.expander("🛡️ Master Admin Submission Schedule & Deadline Controller (Auto Sat–Mon Unlock/Lock & No Report Control)", expanded=False):
                 cur_auto_sched = is_auto_schedule_lock_enabled()
                 cur_dl_enabled = is_deadline_enforcement_enabled()
                 st.session_state["master_deadline_lock_toggle"] = cur_dl_enabled
@@ -7524,422 +7524,532 @@ def render_weekly_report_page():
                         st.error(f"Nagkaroon ng error at na-report na kay Master Admin sa Ministry Messenger: {str(ex_ed)}")
         return v_parish
 
-    if not is_master:
-        col_up_left, col_up_right = st.columns([1.15, 1.55])
-        with col_up_left:
-            st.markdown("### 📤 1. Upload the Image / Excel File Here!")
-            st.caption("I-upload ang larawan (screenshot/picture) o Excel file ng inyong Weekly Report. Ang deadline ng submission ay tuwing **Monday Midnight (11:59 PM PH Time)**.")
+    # =====================================================================
+    # 🧭 MULTI-PAGE NAVIGATION CONTROLLER (HOME, BACK, NEXT & DROPDOWN SELECTION)
+    # =====================================================================
+    if is_master:
+        pwr_subpages = [
+            f"🏠 Page 1 (Home): Master Admin Control & Verification Hub ({focused_parish_for_sheets})",
+            f"⛪ Page 2: Liturgical Officers & Preachers (Para sa PARISH WEEKLY REPORT Sheet) — {focused_parish_for_sheets} ({view_month.upper()} {selected_year} — {len(active_month_weeks)} Weeks)",
+            f"📝 Page 3: Remarks para sa Nag-attend ng Mass / Pampamilya / Adal / House Church / Online Mass / Visitors (Galing sa Image/Excel Report) — {focused_parish_for_sheets} ({view_month.upper()} {selected_year})",
+            f"📊 Page 4: Parish Weekly Report Data (Adults/Youths/Kids Attendance) — {focused_parish_for_sheets} ({view_month.upper()} {selected_year})",
+            f"📅 Page 5: Buong Buwan ng {view_month.upper()} {selected_year} — Parish Monitoring Report & Summary for Posting (1st Week hanggang {active_month_weeks[-1]})",
+            "🏆 Page 6: Church of the Temple of God – Parish Ministry Performance Report (Master Admin Exclusive)",
+        ]
+    else:
+        pwr_subpages = [
+            f"🏠 Page 1 (Home): Upload the Image / Excel File Here! & Parish Weekly Report Data Editor ({my_parish})",
+            f"⛪ Page 2: Liturgical Officers & Preachers (Para sa PARISH WEEKLY REPORT Sheet) — {my_parish} ({view_month.upper()} {selected_year} — {len(active_month_weeks)} Weeks)",
+            f"📝 Page 3: Remarks para sa Nag-attend ng Mass / Pampamilya / Adal / House Church / Online Mass / Visitors (Galing sa Image/Excel Report) — {my_parish} ({view_month.upper()} {selected_year})",
+            f"📊 Page 4: Parish Weekly Report Data (Adults/Youths/Kids Attendance) — {my_parish} ({view_month.upper()} {selected_year})",
+            f"📅 Page 5: Buong Buwan ng {view_month.upper()} {selected_year} — Parish Monitoring Report & Summary for Posting (1st Week hanggang {active_month_weeks[-1]})",
+        ]
 
-            c_m, c_w = st.columns(2)
-            with c_m:
-                sel_month = st.selectbox(
-                    "Buwan ng Report (2027):",
-                    MONTHS_2027,
-                    key="up_sel_month",
-                    on_change=_sync_from_upload_bar
-                )
-            up_month_weeks = get_weeks_for_month_year(sel_month, int(selected_year))
-            if st.session_state.get("up_sel_week") not in up_month_weeks:
-                st.session_state["up_sel_week"] = up_month_weeks[0]
-            with c_w:
-                sel_week = st.selectbox(
-                    f"Linggo ng Report ({len(up_month_weeks)} Weeks sa {sel_month}):",
-                    up_month_weeks,
-                    key="up_sel_week",
-                    on_change=_sync_from_upload_bar
-                )
+    max_subpage_idx = len(pwr_subpages) - 1
+    if "pwr_active_subpage_idx" not in st.session_state:
+        st.session_state["pwr_active_subpage_idx"] = 0
+    if st.session_state["pwr_active_subpage_idx"] < 0 or st.session_state["pwr_active_subpage_idx"] > max_subpage_idx:
+        st.session_state["pwr_active_subpage_idx"] = 0
 
-            parish_opts_up = [my_parish]
-            if st.session_state.get("up_sel_parish") not in parish_opts_up:
-                st.session_state["up_sel_parish"] = parish_opts_up[0]
-            target_parish = st.selectbox(
-                "Parokya na Nag-report:",
-                parish_opts_up,
-                key="up_sel_parish",
-                on_change=_sync_from_upload_bar
+    cur_page_idx = int(st.session_state["pwr_active_subpage_idx"])
+
+    def _render_pwr_page_navigator(pos_suffix: str):
+        c_idx = int(st.session_state.get("pwr_active_subpage_idx", 0))
+        prev_title = pwr_subpages[c_idx - 1].split(":")[0] if c_idx > 0 else "Home"
+        next_title = pwr_subpages[c_idx + 1].split(":")[0] if c_idx < max_subpage_idx else "End"
+
+        st.markdown(
+            f"<div class='full-text-card' style='padding:10px 14px;margin-top:6px;margin-bottom:10px;border-left:5px solid #38bdf8;'>"
+            f"<b>🧭 Page {c_idx + 1} of {len(pwr_subpages)}:</b> <code>{pwr_subpages[c_idx]}</code>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+        nav_c1, nav_c2, nav_c3, nav_c4 = st.columns([0.95, 0.75, 2.50, 0.95])
+        with nav_c1:
+            st.write("")
+            if st.button(
+                f"⬅️ Back ({prev_title})" if c_idx > 0 else "⬅️ Back",
+                key=f"pwr_btn_back_{pos_suffix}",
+                use_container_width=True,
+                disabled=(c_idx <= 0)
+            ):
+                st.session_state["pwr_active_subpage_idx"] = max(0, c_idx - 1)
+                st.rerun()
+        with nav_c2:
+            st.write("")
+            if st.button(
+                "🏠 Home",
+                key=f"pwr_btn_home_{pos_suffix}",
+                use_container_width=True,
+                type="primary" if c_idx == 0 else "secondary",
+                disabled=(c_idx == 0)
+            ):
+                st.session_state["pwr_active_subpage_idx"] = 0
+                st.rerun()
+        with nav_c3:
+            sel_key = f"pwr_subpage_select_{pos_suffix}"
+            st.session_state[sel_key] = c_idx
+
+            def _on_subpage_dropdown_change(k=sel_key):
+                st.session_state["pwr_active_subpage_idx"] = int(st.session_state.get(k, 0))
+
+            st.selectbox(
+                "📂 Pumili ng Pahina / Section na Bubuksan:",
+                options=list(range(len(pwr_subpages))),
+                format_func=lambda i: pwr_subpages[i],
+                key=sel_key,
+                on_change=_on_subpage_dropdown_change
             )
+        with nav_c4:
+            st.write("")
+            if st.button(
+                f"Next ({next_title}) ➡️" if c_idx < max_subpage_idx else "Next ➡️",
+                key=f"pwr_btn_next_{pos_suffix}",
+                use_container_width=True,
+                type="primary" if c_idx < max_subpage_idx else "secondary",
+                disabled=(c_idx >= max_subpage_idx)
+            ):
+                st.session_state["pwr_active_subpage_idx"] = min(max_subpage_idx, c_idx + 1)
+                st.rerun()
 
-            up_dl_info = evaluate_reporting_deadline(sel_month, sel_week, int(selected_year), parish_name=target_parish)
-            existing_up_rec = db_all_init.get(f"{target_parish.upper()}__{sel_month.upper()}__{sel_week}", {})
-            has_submitted_up = is_week_record_completed(existing_up_rec)
-            is_marked_nr_up = is_record_marked_no_report(existing_up_rec)
-            is_up_locked = bool(up_dl_info["is_past_deadline"])
-            if is_marked_nr_up:
-                st.error(
-                    f"⛔ **(No Report) — Ang {target_parish} para sa {sel_month} {selected_year} ({sel_week}, Petsa ng Sabado: `{up_dl_info['saturday_date_str']}`) ay naka-marka bilang `(No Report)`.** "
-                    f"Ang opisyal na araw ng pasahan ay tuwing **Sabado (Saturday)** hanggang **Lunes ng Hatinggabi (`{up_dl_info['monday_deadline_str']}`)**."
+    # Kung nasa Page 2..6, magpakita rin ng Top Navigator Bar para madaling bumalik sa Home o lumipat ng pahina
+    if cur_page_idx > 0:
+        _render_pwr_page_navigator("top")
+        st.divider()
+
+    # =====================================================================
+    # 🏠 PAGE 1 (HOME PAGE):
+    #   • Master Admin: Control Hub + Optional Admin Editor + Quick Page Selector
+    #   • Parish Leaders: Upload the Image / Excel File Here! + Manual Verification Editor
+    # =====================================================================
+    if cur_page_idx == 0:
+        if not is_master:
+            col_up_left, col_up_right = st.columns([1.15, 1.55])
+            with col_up_left:
+                st.markdown("### 📤 1. Upload the Image / Excel File Here!")
+                st.caption("I-upload ang larawan (screenshot/picture) o Excel file ng inyong Weekly Report. Ang deadline ng submission ay tuwing **Monday Midnight (11:59 PM PH Time)**.")
+
+                c_m, c_w = st.columns(2)
+                with c_m:
+                    sel_month = st.selectbox(
+                        "Buwan ng Report (2027):",
+                        MONTHS_2027,
+                        key="up_sel_month",
+                        on_change=_sync_from_upload_bar
+                    )
+                up_month_weeks = get_weeks_for_month_year(sel_month, int(selected_year))
+                if st.session_state.get("up_sel_week") not in up_month_weeks:
+                    st.session_state["up_sel_week"] = up_month_weeks[0]
+                with c_w:
+                    sel_week = st.selectbox(
+                        f"Linggo ng Report ({len(up_month_weeks)} Weeks sa {sel_month}):",
+                        up_month_weeks,
+                        key="up_sel_week",
+                        on_change=_sync_from_upload_bar
+                    )
+
+                parish_opts_up = [my_parish]
+                if st.session_state.get("up_sel_parish") not in parish_opts_up:
+                    st.session_state["up_sel_parish"] = parish_opts_up[0]
+                target_parish = st.selectbox(
+                    "Parokya na Nag-report:",
+                    parish_opts_up,
+                    key="up_sel_parish",
+                    on_change=_sync_from_upload_bar
                 )
-            else:
-                st.info(
-                    f"📅 **Paalala sa Araw ng Pasahan at Deadline ng Weekly Report ({target_parish} — {sel_month} {selected_year}, {sel_week} | Sabado: `{up_dl_info['saturday_date_str']}`):** "
-                    f"Ang pasahan ng Weekly Report ay nagbubukas tuwing **Sabado (Saturday)** at nagtatapos tuwing **Lunes ng Hatinggabi (Monday Midnight — `{up_dl_info['monday_deadline_str']}`)**. "
-                    f"Mangyaring mag-submit sa araw ng pasahan bago sumapit ang deadline."
-                )
 
-            auto_up_date = get_week_date_for_month_year(sel_month, sel_week, int(selected_year))
-            with st.form("weekly_report_upload_form"):
-                rep_date_input = st.text_input("Petsa ng Sabado / Pagsamba (MM/DD/YY):", value=auto_up_date, disabled=is_up_locked)
-                uploaded_rep = st.file_uploader(
-                    "📸 Pumili ng Weekly Report Image (.jpg, .png) o Excel (.xlsx):",
-                    type=["jpg", "jpeg", "png", "xlsx"],
-                    disabled=is_up_locked
-                )
-                up_hv = str(existing_up_rec.get("house_visitation", "0"))
-                up_mw = str(existing_up_rec.get("missionary_work", "0"))
-                up_ind = str(existing_up_rec.get("indoctrination", "0"))
-                extra_remarks = "" 
+                up_dl_info = evaluate_reporting_deadline(sel_month, sel_week, int(selected_year), parish_name=target_parish)
+                existing_up_rec = db_all_init.get(f"{target_parish.upper()}__{sel_month.upper()}__{sel_week}", {})
+                has_submitted_up = is_week_record_completed(existing_up_rec)
+                is_marked_nr_up = is_record_marked_no_report(existing_up_rec)
+                is_up_locked = bool(up_dl_info["is_past_deadline"])
+                if is_marked_nr_up:
+                    st.error(
+                        f"⛔ **(No Report) — Ang {target_parish} para sa {sel_month} {selected_year} ({sel_week}, Petsa ng Sabado: `{up_dl_info['saturday_date_str']}`) ay naka-marka bilang `(No Report)`.** "
+                        f"Ang opisyal na araw ng pasahan ay tuwing **Sabado (Saturday)** hanggang **Lunes ng Hatinggabi (`{up_dl_info['monday_deadline_str']}`)**."
+                    )
+                else:
+                    st.info(
+                        f"📅 **Paalala sa Araw ng Pasahan at Deadline ng Weekly Report ({target_parish} — {sel_month} {selected_year}, {sel_week} | Sabado: `{up_dl_info['saturday_date_str']}`):** "
+                        f"Ang pasahan ng Weekly Report ay nagbubukas tuwing **Sabado (Saturday)** at nagtatapos tuwing **Lunes ng Hatinggabi (Monday Midnight — `{up_dl_info['monday_deadline_str']}`)**. "
+                        f"Mangyaring mag-submit sa araw ng pasahan bago sumapit ang deadline."
+                    )
 
-                submit_up = st.form_submit_button(
-                    "🔒 Sarado ang Pasahan (Naka-ON ang Deadline Lock)" if is_up_locked else "🚀 I-upload sa Google Drive & I-type sa Parish Weekly Report",
-                    type="primary",
-                    use_container_width=True,
-                    disabled=is_up_locked
-                )
+                auto_up_date = get_week_date_for_month_year(sel_month, sel_week, int(selected_year))
+                with st.form("weekly_report_upload_form"):
+                    rep_date_input = st.text_input("Petsa ng Sabado / Pagsamba (MM/DD/YY):", value=auto_up_date, disabled=is_up_locked)
+                    uploaded_rep = st.file_uploader(
+                        "📸 Pumili ng Weekly Report Image (.jpg, .png) o Excel (.xlsx):",
+                        type=["jpg", "jpeg", "png", "xlsx"],
+                        disabled=is_up_locked
+                    )
+                    up_hv = str(existing_up_rec.get("house_visitation", "0"))
+                    up_mw = str(existing_up_rec.get("missionary_work", "0"))
+                    up_ind = str(existing_up_rec.get("indoctrination", "0"))
+                    extra_remarks = "" 
 
-                if submit_up:
-                    if is_up_locked:
-                        mark_unsubmitted_parish_as_no_report_in_excel_and_db(target_parish, sel_month, sel_week, int(selected_year))
-                        dispatch_app_notification_and_messenger_alert(
-                            sender_id=my_chat_identity,
-                            recipient_id="MASTER ADMIN",
-                            title=f"Blocked Late Report Upload ({target_parish} — {sel_month} {sel_week})",
-                            details=f"Sinubukang mag-upload ni {my_chat_identity} para sa {sel_month} {sel_week} (Petsa: {rep_date_input}) ngunit Martes–Biyernes / lagpas na sa Monday Midnight deadline ({up_dl_info['monday_deadline_str']}). Naka-marka na bilang '(No Report)'.",
-                            is_error=True
-                        )
-                        st.error(f"{t_ui('deadline_closed')} (Susunod na Sabado: {up_dl_info['next_saturday_str']})")
-                    elif uploaded_rep is None:
-                        st.warning("Mag-upload muna ng Image o Excel file ng Weekly Report.")
-                    else:
-                        t_start_up = time.time()
-                        prog_bar = st.progress(5, text="⏱️ 0.1s — Inihahanda ang file para sa mabilis na pag-upload...")
-                        timer_placeholder = st.empty()
-                        try:
-                            file_bytes = uploaded_rep.read()
-                            f_ext = uploaded_rep.name.split(".")[-1].lower()
-                            clean_p_name = target_parish.replace("PARISH", "").strip()
-                            exact_date_clean = rep_date_input.strip() or auto_up_date
-                            drive_filename = f"{clean_p_name} (PWR. {exact_date_clean.replace('/', '-')} {sel_month} {sel_week}).{f_ext}"
+                    submit_up = st.form_submit_button(
+                        "🔒 Sarado ang Pasahan (Naka-ON ang Deadline Lock)" if is_up_locked else "🚀 I-upload sa Google Drive & I-type sa Parish Weekly Report",
+                        type="primary",
+                        use_container_width=True,
+                        disabled=is_up_locked
+                    )
 
-                            elapsed_1 = time.time() - t_start_up
-                            prog_bar.progress(30, text=f"⏱️ {elapsed_1:.1f}s — Ina-upload sa Google Drive folder ng {target_parish} ('Upload the Image/Excel File here!')...")
-                            ph_now_stamp = get_philippine_datetime_str()
-
-                            up_folder_url = st.session_state.custom_secrets.get("PARISH_UPLOAD_FOLDER_URL", ACTIVE_PARISH_UPLOAD_URL) or st.session_state.custom_secrets.get("WEEKLY_REPORT_FOLDER_URL", ACTIVE_WEEKLY_FOLDER_URL)
-                            # Awtomatikong papasok sa Parish Folder (at sa Month subfolder tulad ng '01. January Pwr. 2027' kung mayroon sa loob ng Parish Folder)
-                            drive_link, drive_msg = upload_file_to_google_drive(
-                                file_bytes,
-                                drive_filename,
-                                mime_type=uploaded_rep.type,
-                                parent_folder_url=up_folder_url,
-                                parish_name=target_parish,
-                                month_name=sel_month
-                            )
-
-                            if not drive_link and drive_msg:
-                                dispatch_app_notification_and_messenger_alert(
-                                    sender_id=my_chat_identity,
-                                    recipient_id="MASTER ADMIN",
-                                    title=f"Google Drive Upload Issue ({target_parish})",
-                                    details=f"File: {uploaded_rep.name} | Buwan/Linggo: {sel_month} {sel_week} | Issue: {drive_msg}",
-                                    is_error=True
-                                )
-
-                            elapsed_2 = time.time() - t_start_up
-                            prog_bar.progress(65, text=f"⏱️ {elapsed_2:.1f}s — Binabasa ang datos para lamang sa {sel_month} ({sel_week}, Petsa: {exact_date_clean})...")
-
-                            # Kunin LAMANG ang datos para sa eksaktong napiling Buwan (sel_month), Linggo (sel_week), Parokya (target_parish), at Petsa (exact_date_clean)
-                            if f_ext == "xlsx":
-                                extracted = extract_weekly_report_from_excel_bytes(
-                                    file_bytes,
-                                    target_parish=target_parish,
-                                    target_month=sel_month,
-                                    target_week=sel_week
-                                )
-                            else:
-                                extracted = extract_weekly_report_via_ai_vision(
-                                    file_bytes,
-                                    uploaded_rep.type,
-                                    selected_model,
-                                    target_parish=target_parish
-                                )
-
-                            extracted["parish"] = target_parish
-                            extracted["month"] = sel_month
-                            extracted["week"] = sel_week
-                            extracted["report_date"] = exact_date_clean
-                            extracted["submitted_at_ph"] = ph_now_stamp
-
-                            denoms = get_parish_member_denominators(target_parish)
-                            if int(extracted.get("total_members_say", 0)) <= 0:
-                                extracted["total_members_say"] = denoms["say"]
-                                extracted["total_members_y"] = denoms["youth"]
-                                extracted["total_members_k"] = denoms["kids"]
-
-                            if up_hv.strip() and up_hv.strip() != "0":
-                                extracted["house_visitation"] = up_hv.strip()
-                            if up_mw.strip() and up_mw.strip() != "0":
-                                extracted["missionary_work"] = up_mw.strip()
-                            if up_ind.strip() and up_ind.strip() != "0":
-                                extracted["indoctrination"] = up_ind.strip()
-                            if extra_remarks:
-                                extracted["remarks"] = extra_remarks
-
-                            elapsed_3 = time.time() - t_start_up
-                            prog_bar.progress(88, text=f"⏱️ {elapsed_3:.1f}s — Tinatype sa App at sa Google Drive Excel ({sel_month} - {sel_week})...")
-
-                            ok_m, m_sync_msg = save_weekly_monitoring_record(
-                                target_parish, sel_month, sel_week,
-                                exact_date_clean,
-                                extracted,
-                                drive_link=drive_link or ""
-                            )
-
-                            tot_extracted_att = (
-                                int(extracted.get("mass_a", 0)) + int(extracted.get("mass_y", 0)) +
-                                int(extracted.get("pampamilya_a", 0)) + int(extracted.get("pampamilya_y", 0)) +
-                                int(extracted.get("online_a", 0)) + int(extracted.get("online_y", 0)) +
-                                int(extracted.get("youth_y", 0)) + int(extracted.get("kids_k", 0)) +
-                                int(extracted.get("adal_a", 0)) + int(extracted.get("adal_y", 0))
-                            )
-                            has_any_officer = any(
-                                str(extracted.get(k, "")).strip()
-                                for k in ["priest", "sakristan", "epistula", "evangelio", "tema_misa", "adal_evangelio", "tema_pampamilya"]
-                            )
-                            is_blank_up = (tot_extracted_att == 0 and not has_any_officer)
-                            total_elapsed = round(time.time() - t_start_up, 2)
-                            prog_bar.progress(100, text=f"✅ Tapos na sa loob ng ⏱️ {total_elapsed:.1f} seconds!")
-
-                            if is_blank_up:
-                                dispatch_app_notification_and_messenger_alert(
-                                    sender_id=my_chat_identity,
-                                    recipient_id="MASTER ADMIN",
-                                    title=f"Blank / Unreadable Report File Uploaded ({target_parish})",
-                                    details=f"Nag-upload si {my_chat_identity} ng '{uploaded_rep.name}' para sa {sel_month} {sel_week} ({exact_date_clean}) sa loob ng {total_elapsed}s ngunit 0 attendance at walang officers na nabasa.",
-                                    is_error=True
-                                )
-                            else:
-                                dispatch_app_notification_and_messenger_alert(
-                                    sender_id=my_chat_identity,
-                                    recipient_id="MASTER ADMIN",
-                                    title=f"Bagong Weekly Report Na-submit ({target_parish})",
-                                    details=f"Matagumpay na nakapag-submit ang {target_parish} para sa {sel_month} {selected_year} ({sel_week}, Petsa: {exact_date_clean}) sa loob ng {total_elapsed}s — Mass: {int(extracted.get('mass_a',0))+int(extracted.get('mass_y',0))}.",
-                                    is_error=False
-                                )
-
-                            st.session_state["_next_mon_view_month"] = sel_month
-                            st.session_state["_next_mon_view_week"] = sel_week
-                            st.session_state["_next_editor_parish"] = target_parish
-                            st.session_state["_next_editor_month"] = sel_month
-                            st.session_state["_next_editor_week"] = sel_week
-                            st.session_state["pwr_form_rev"] = st.session_state.get("pwr_form_rev", 0) + 1
-                            st.session_state["last_extracted_pwr"] = {
-                                "parish": target_parish,
-                                "month": sel_month,
-                                "week": sel_week,
-                                "date": exact_date_clean,
-                                "elapsed_sec": total_elapsed,
-                                "data": extracted,
-                                "drive_link": drive_link,
-                                "drive_msg": drive_msg,
-                                "sync_msg": m_sync_msg,
-                                "is_blank_source": is_blank_up
-                            }
-                            st.rerun()
-                        except Exception as ex_up:
-                            elapsed_err = round(time.time() - t_start_up, 2)
-                            timer_placeholder.caption(f"⏱️ Oras bago nag-error: {elapsed_err}s")
+                    if submit_up:
+                        if is_up_locked:
+                            mark_unsubmitted_parish_as_no_report_in_excel_and_db(target_parish, sel_month, sel_week, int(selected_year))
                             dispatch_app_notification_and_messenger_alert(
                                 sender_id=my_chat_identity,
                                 recipient_id="MASTER ADMIN",
-                                title=f"Report Submission Error ({target_parish})",
-                                details=f"Sinubukan ni {my_chat_identity} na mag-upload ng '{getattr(uploaded_rep, 'name', 'file')}' para sa {sel_month} {sel_week}. Error: {str(ex_up)}",
+                                title=f"Blocked Late Report Upload ({target_parish} — {sel_month} {sel_week})",
+                                details=f"Sinubukang mag-upload ni {my_chat_identity} para sa {sel_month} {sel_week} (Petsa: {rep_date_input}) ngunit Martes–Biyernes / lagpas na sa Monday Midnight deadline ({up_dl_info['monday_deadline_str']}). Naka-marka na bilang '(No Report)'.",
                                 is_error=True
                             )
-                            st.error(f"Nagkaroon ng error sa pag-submit at awtomatikong ipinadala kay Master Admin sa Ministry Messenger: {str(ex_up)}")
+                            st.error(f"{t_ui('deadline_closed')} (Susunod na Sabado: {up_dl_info['next_saturday_str']})")
+                        elif uploaded_rep is None:
+                            st.warning("Mag-upload muna ng Image o Excel file ng Weekly Report.")
+                        else:
+                            t_start_up = time.time()
+                            prog_bar = st.progress(5, text="⏱️ 0.1s — Inihahanda ang file para sa mabilis na pag-upload...")
+                            timer_placeholder = st.empty()
+                            try:
+                                file_bytes = uploaded_rep.read()
+                                f_ext = uploaded_rep.name.split(".")[-1].lower()
+                                clean_p_name = target_parish.replace("PARISH", "").strip()
+                                exact_date_clean = rep_date_input.strip() or auto_up_date
+                                drive_filename = f"{clean_p_name} (PWR. {exact_date_clean.replace('/', '-')} {sel_month} {sel_week}).{f_ext}"
 
-            if "last_extracted_pwr" in st.session_state:
-                flash = st.session_state["last_extracted_pwr"]
-                sub_ph_flash = flash.get("data", {}).get("submitted_at_ph", "") or get_philippine_datetime_str()
-                el_s = flash.get("elapsed_sec")
-                timer_badge = f" • ⏱️ **Na-upload sa loob ng `{el_s} seconds`**" if el_s is not None else ""
-                st.success(
-                    f"✅ Matagumpay na na-proseso ang Weekly Report ng **{flash.get('parish')}** para lamang sa **{flash.get('month')} {selected_year} ({flash.get('week')}, Petsa: `{flash.get('date')}`)**!{timer_badge} "
-                    f"(🇵🇭 Submitted: `{sub_ph_flash}` • {flash.get('sync_msg', '')})"
-                )
-                if flash.get("drive_link"):
-                    st.info(f"📂 Na-save sa Google Drive Folder ng {flash.get('parish')}: [Buksan ang File sa Google Drive]({flash.get('drive_link')})")
-                elif flash.get("drive_msg"):
-                    st.warning(f"⚠️ {flash.get('drive_msg')}")
+                                elapsed_1 = time.time() - t_start_up
+                                prog_bar.progress(30, text=f"⏱️ {elapsed_1:.1f}s — Ina-upload sa Google Drive folder ng {target_parish} ('Upload the Image/Excel File here!')...")
+                                ph_now_stamp = get_philippine_datetime_str()
 
-        with col_up_right:
-            _render_verification_editor_panel()
-        st.divider()
-    else:
-        with st.expander("✏️ Buksan ang Parish Weekly Report Manual Verification Editor (Optional Admin Editor)", expanded=False):
-            _render_verification_editor_panel()
+                                up_folder_url = st.session_state.custom_secrets.get("PARISH_UPLOAD_FOLDER_URL", ACTIVE_PARISH_UPLOAD_URL) or st.session_state.custom_secrets.get("WEEKLY_REPORT_FOLDER_URL", ACTIVE_WEEKLY_FOLDER_URL)
+                                # Awtomatikong papasok sa Parish Folder (at sa Month subfolder tulad ng '01. January Pwr. 2027' kung mayroon sa loob ng Parish Folder)
+                                drive_link, drive_msg = upload_file_to_google_drive(
+                                    file_bytes,
+                                    drive_filename,
+                                    mime_type=uploaded_rep.type,
+                                    parent_folder_url=up_folder_url,
+                                    parish_name=target_parish,
+                                    month_name=sel_month
+                                )
 
-    # =====================================================================
-    # ⛪ SECTION A (BOOK1 EXCEL LAYOUT): LITURGICAL OFFICERS & PREACHERS (DYNAMIC WEEKS OF THE MONTH SIDE-BY-SIDE)
-    # =====================================================================
+                                if not drive_link and drive_msg:
+                                    dispatch_app_notification_and_messenger_alert(
+                                        sender_id=my_chat_identity,
+                                        recipient_id="MASTER ADMIN",
+                                        title=f"Google Drive Upload Issue ({target_parish})",
+                                        details=f"File: {uploaded_rep.name} | Buwan/Linggo: {sel_month} {sel_week} | Issue: {drive_msg}",
+                                        is_error=True
+                                    )
+
+                                elapsed_2 = time.time() - t_start_up
+                                prog_bar.progress(65, text=f"⏱️ {elapsed_2:.1f}s — Binabasa ang datos para lamang sa {sel_month} ({sel_week}, Petsa: {exact_date_clean})...")
+
+                                # Kunin LAMANG ang datos para sa eksaktong napiling Buwan (sel_month), Linggo (sel_week), Parokya (target_parish), at Petsa (exact_date_clean)
+                                if f_ext == "xlsx":
+                                    extracted = extract_weekly_report_from_excel_bytes(
+                                        file_bytes,
+                                        target_parish=target_parish,
+                                        target_month=sel_month,
+                                        target_week=sel_week
+                                    )
+                                else:
+                                    extracted = extract_weekly_report_via_ai_vision(
+                                        file_bytes,
+                                        uploaded_rep.type,
+                                        selected_model,
+                                        target_parish=target_parish
+                                    )
+
+                                extracted["parish"] = target_parish
+                                extracted["month"] = sel_month
+                                extracted["week"] = sel_week
+                                extracted["report_date"] = exact_date_clean
+                                extracted["submitted_at_ph"] = ph_now_stamp
+
+                                denoms = get_parish_member_denominators(target_parish)
+                                if int(extracted.get("total_members_say", 0)) <= 0:
+                                    extracted["total_members_say"] = denoms["say"]
+                                    extracted["total_members_y"] = denoms["youth"]
+                                    extracted["total_members_k"] = denoms["kids"]
+
+                                if up_hv.strip() and up_hv.strip() != "0":
+                                    extracted["house_visitation"] = up_hv.strip()
+                                if up_mw.strip() and up_mw.strip() != "0":
+                                    extracted["missionary_work"] = up_mw.strip()
+                                if up_ind.strip() and up_ind.strip() != "0":
+                                    extracted["indoctrination"] = up_ind.strip()
+                                if extra_remarks:
+                                    extracted["remarks"] = extra_remarks
+
+                                elapsed_3 = time.time() - t_start_up
+                                prog_bar.progress(88, text=f"⏱️ {elapsed_3:.1f}s — Tinatype sa App at sa Google Drive Excel ({sel_month} - {sel_week})...")
+
+                                ok_m, m_sync_msg = save_weekly_monitoring_record(
+                                    target_parish, sel_month, sel_week,
+                                    exact_date_clean,
+                                    extracted,
+                                    drive_link=drive_link or ""
+                                )
+
+                                tot_extracted_att = (
+                                    int(extracted.get("mass_a", 0)) + int(extracted.get("mass_y", 0)) +
+                                    int(extracted.get("pampamilya_a", 0)) + int(extracted.get("pampamilya_y", 0)) +
+                                    int(extracted.get("online_a", 0)) + int(extracted.get("online_y", 0)) +
+                                    int(extracted.get("youth_y", 0)) + int(extracted.get("kids_k", 0)) +
+                                    int(extracted.get("adal_a", 0)) + int(extracted.get("adal_y", 0))
+                                )
+                                has_any_officer = any(
+                                    str(extracted.get(k, "")).strip()
+                                    for k in ["priest", "sakristan", "epistula", "evangelio", "tema_misa", "adal_evangelio", "tema_pampamilya"]
+                                )
+                                is_blank_up = (tot_extracted_att == 0 and not has_any_officer)
+                                total_elapsed = round(time.time() - t_start_up, 2)
+                                prog_bar.progress(100, text=f"✅ Tapos na sa loob ng ⏱️ {total_elapsed:.1f} seconds!")
+
+                                if is_blank_up:
+                                    dispatch_app_notification_and_messenger_alert(
+                                        sender_id=my_chat_identity,
+                                        recipient_id="MASTER ADMIN",
+                                        title=f"Blank / Unreadable Report File Uploaded ({target_parish})",
+                                        details=f"Nag-upload si {my_chat_identity} ng '{uploaded_rep.name}' para sa {sel_month} {sel_week} ({exact_date_clean}) sa loob ng {total_elapsed}s ngunit 0 attendance at walang officers na nabasa.",
+                                        is_error=True
+                                    )
+                                else:
+                                    dispatch_app_notification_and_messenger_alert(
+                                        sender_id=my_chat_identity,
+                                        recipient_id="MASTER ADMIN",
+                                        title=f"Bagong Weekly Report Na-submit ({target_parish})",
+                                        details=f"Matagumpay na nakapag-submit ang {target_parish} para sa {sel_month} {selected_year} ({sel_week}, Petsa: {exact_date_clean}) sa loob ng {total_elapsed}s — Mass: {int(extracted.get('mass_a',0))+int(extracted.get('mass_y',0))}.",
+                                        is_error=False
+                                    )
+
+                                st.session_state["_next_mon_view_month"] = sel_month
+                                st.session_state["_next_mon_view_week"] = sel_week
+                                st.session_state["_next_editor_parish"] = target_parish
+                                st.session_state["_next_editor_month"] = sel_month
+                                st.session_state["_next_editor_week"] = sel_week
+                                st.session_state["pwr_form_rev"] = st.session_state.get("pwr_form_rev", 0) + 1
+                                st.session_state["last_extracted_pwr"] = {
+                                    "parish": target_parish,
+                                    "month": sel_month,
+                                    "week": sel_week,
+                                    "date": exact_date_clean,
+                                    "elapsed_sec": total_elapsed,
+                                    "data": extracted,
+                                    "drive_link": drive_link,
+                                    "drive_msg": drive_msg,
+                                    "sync_msg": m_sync_msg,
+                                    "is_blank_source": is_blank_up
+                                }
+                                st.rerun()
+                            except Exception as ex_up:
+                                elapsed_err = round(time.time() - t_start_up, 2)
+                                timer_placeholder.caption(f"⏱️ Oras bago nag-error: {elapsed_err}s")
+                                dispatch_app_notification_and_messenger_alert(
+                                    sender_id=my_chat_identity,
+                                    recipient_id="MASTER ADMIN",
+                                    title=f"Report Submission Error ({target_parish})",
+                                    details=f"Sinubukan ni {my_chat_identity} na mag-upload ng '{getattr(uploaded_rep, 'name', 'file')}' para sa {sel_month} {sel_week}. Error: {str(ex_up)}",
+                                    is_error=True
+                                )
+                                st.error(f"Nagkaroon ng error sa pag-submit at awtomatikong ipinadala kay Master Admin sa Ministry Messenger: {str(ex_up)}")
+
+                if "last_extracted_pwr" in st.session_state:
+                    flash = st.session_state["last_extracted_pwr"]
+                    sub_ph_flash = flash.get("data", {}).get("submitted_at_ph", "") or get_philippine_datetime_str()
+                    el_s = flash.get("elapsed_sec")
+                    timer_badge = f" • ⏱️ **Na-upload sa loob ng `{el_s} seconds`**" if el_s is not None else ""
+                    st.success(
+                        f"✅ Matagumpay na na-proseso ang Weekly Report ng **{flash.get('parish')}** para lamang sa **{flash.get('month')} {selected_year} ({flash.get('week')}, Petsa: `{flash.get('date')}`)**!{timer_badge} "
+                        f"(🇵🇭 Submitted: `{sub_ph_flash}` • {flash.get('sync_msg', '')})"
+                    )
+                    if flash.get("drive_link"):
+                        st.info(f"📂 Na-save sa Google Drive Folder ng {flash.get('parish')}: [Buksan ang File sa Google Drive]({flash.get('drive_link')})")
+                    elif flash.get("drive_msg"):
+                        st.warning(f"⚠️ {flash.get('drive_msg')}")
+
+            with col_up_right:
+                _render_verification_editor_panel()
+            st.divider()
+        else:
+            with st.expander("✏️ Buksan ang Parish Weekly Report Manual Verification Editor (Optional Admin Editor)", expanded=False):
+                _render_verification_editor_panel()
+
+        st.markdown("#### 📂 Pumili ng Pahina sa Ibaba o Pindutin ang `Next ➡️` upang Buksan ang mga Tables & Performance Report:")
+        q_cols = st.columns(2)
+        for p_i in range(1, len(pwr_subpages)):
+            with q_cols[(p_i - 1) % 2]:
+                if st.button(f"👉 Buksan: {pwr_subpages[p_i]}", key=f"pwr_quick_jump_{p_i}", use_container_width=True):
+                    st.session_state["pwr_active_subpage_idx"] = p_i
+                    st.rerun()
+
     db_live = load_weekly_monitoring_records()
     months_to_display = MONTHS_2027 if show_all_months else [view_month]
 
-    for m_disp in months_to_display:
-        m_disp_weeks = get_weeks_for_month_year(m_disp, int(selected_year))
-        st.markdown(
-            f"### ⛪ Liturgical Officers & Preachers (Para sa PARISH WEEKLY REPORT Sheet) — `{focused_parish_for_sheets}` ({m_disp.upper()} {selected_year} — {len(m_disp_weeks)} Weeks)"
-        )
-        off_cols = st.columns(len(m_disp_weeks))
-        officer_field_labels = [
-            ("PRIEST:", "priest"),
-            ("SAKRISTAN:", "sakristan"),
-            ("EPISTULA:", "epistula"),
-            ("EVANGELIO:", "evangelio"),
-            ("CASASAAD:", "casasaad"),
-            ("CANDLE HOLDER:", "candle_holder"),
-            ("USHER:", "usher"),
-            ("MARSHAL:", "marshal"),
-            ("ADAL TI EVANGELIO:", "adal_evangelio"),
-            ("Preacher/s:", "adal_preacher"),
-            ("TEMA TI MISA:", "tema_misa"),
-            ("Preacher:", "misa_preacher"),
-            ("TEMA TI PAMPAMILYA:", "tema_pampamilya"),
-            ("Preacher:", "pampamilya_preacher"),
-        ]
-        for idx_w5, wk_5 in enumerate(m_disp_weeks):
-            rec_w5 = db_live.get(f"{focused_parish_for_sheets.upper()}__{m_disp.upper()}__{wk_5}", {})
-            has_w5 = is_week_record_completed(rec_w5)
-            dl_w5 = evaluate_reporting_deadline(m_disp, wk_5, int(selected_year), parish_name=focused_parish_for_sheets)
-            is_no_rep_w5 = is_record_marked_no_report(rec_w5)
-            wk_dt_5 = resolve_display_week_date(rec_w5, m_disp, wk_5, int(selected_year))
-            with off_cols[idx_w5]:
-                lines_html = [
-                    f"<div class='ctg-officer-wk-hdr'>"
-                    f"{wk_5} (Date: {wk_dt_5})"
-                    + ("<br><span style='color:#ef4444;'>❌ (No Report)</span>" if is_no_rep_w5 else "")
-                    + f"</div>"
-                ]
-                for lbl_txt, f_key in officer_field_labels:
-                    val_txt = str(rec_w5.get(f_key, "")).strip() if has_w5 else ("(No Report)" if is_no_rep_w5 else "")
-                    lines_html.append(
-                        f"<div style='font-size:0.86rem;padding:3px 0;border-bottom:1px solid rgba(148,163,184,0.22);'>"
-                        f"<b>{lbl_txt}</b> <span class='ctg-officer-val'>{val_txt if val_txt else '-'}</span>"
-                        f"</div>"
-                    )
-                st.markdown(
-                    f"<div class='full-text-card' style='padding:10px;'>{''.join(lines_html)}</div>",
-                    unsafe_allow_html=True
-                )
-
-        st.divider()
-
-        # =====================================================================
-        # 📝 SECTION B (BOOK1 EXCEL LAYOUT): REMARKS PARA SA NAG-ATTEND NG MASS / PAMPAMILYA / ADAL / HOUSE CHURCH / ONLINE MASS / VISITORS
-        # =====================================================================
-        st.markdown(
-            f"### 📝 Remarks para sa Nag-attend ng Mass / Pampamilya / Adal / House Church / Online Mass / Visitors (Galing sa Image/Excel Report) — `{focused_parish_for_sheets}` ({m_disp.upper()} {selected_year})"
-        )
-        for wk_r5 in m_disp_weeks:
-            rec_r5 = db_live.get(f"{focused_parish_for_sheets.upper()}__{m_disp.upper()}__{wk_r5}", {})
-            has_r5 = is_week_record_completed(rec_r5)
-            dl_r5 = evaluate_reporting_deadline(m_disp, wk_r5, int(selected_year), parish_name=focused_parish_for_sheets)
-            is_no_rep_r5 = is_record_marked_no_report(rec_r5)
-            wk_dt_r5 = resolve_display_week_date(rec_r5, m_disp, wk_r5, int(selected_year))
-            raw_rem_5 = str(rec_r5.get("remarks", "") or rec_r5.get("mass_remarks", "")).strip() if has_r5 else ("(No Report)" if is_no_rep_r5 else "")
-            sub_ph_5 = str(rec_r5.get("submitted_at_ph", "") or rec_r5.get("updated_at", "")).strip() if has_r5 else ""
-            disp_rem_5 = raw_rem_5.replace("\n", "<br>") if raw_rem_5 else "<span style='opacity:0.75;'>Wala pang nakalagay na Remarks para sa linggong ito.</span>"
+    # =====================================================================
+    # ⛪ PAGE 2 (SECTION A): LITURGICAL OFFICERS & PREACHERS
+    # =====================================================================
+    if cur_page_idx == 1:
+        for m_disp in months_to_display:
+            m_disp_weeks = get_weeks_for_month_year(m_disp, int(selected_year))
             st.markdown(
-                f"<div class='full-text-card' style='margin-bottom:10px;'>"
-                f"<b>🗓️ {wk_r5} (Date: {wk_dt_r5})</b> — <code>{focused_parish_for_sheets}</code> "
-                + (f"• 🇵🇭 <b>Submitted:</b> <code>{sub_ph_5}</code>" if sub_ph_5 else ("• ❌ <b>(No Report)</b>" if is_no_rep_r5 else "• ⏳ <i>Hindi Pa Tapos</i>"))
-                + f"<br><hr style='margin:6px 0;'>"
-                f"{disp_rem_5}"
-                f"</div>",
-                unsafe_allow_html=True
+                f"### ⛪ Liturgical Officers & Preachers (Para sa PARISH WEEKLY REPORT Sheet) — `{focused_parish_for_sheets}` ({m_disp.upper()} {selected_year} — {len(m_disp_weeks)} Weeks)"
             )
-
-        st.divider()
-
-        # =====================================================================
-        # 📊 SECTION C (BOOK1 EXCEL LAYOUT): PARISH WEEKLY REPORT DATA (ADULTS / YOUTHS / KIDS ATTENDANCE SHEET + TOTAL MEMBERS BOXES)
-        # =====================================================================
-        st.markdown(
-            f"### 📊 Parish Weekly Report Data (Adults/Youths/Kids Attendance) — `{focused_parish_for_sheets}` ({m_disp.upper()} {selected_year})"
-        )
-        st.caption(f"Maaari kang pumili ng Linggo ({len(m_disp_weeks)} Weeks sa {m_disp} o Lahat ng Weeks) sa dropdown sa ibaba o sa Top Control Bar upang makita ang listahan ng Attendance ng Adults, Youths, at Kids.")
-
-        ms_c1, ms_c2 = st.columns([1.4, 1.4])
-        with ms_c1:
-            mem_sheet_week_opts = m_disp_weeks + [f"Lahat ng Weeks (1st–{m_disp_weeks[-1]})"]
-            cur_ms_wk = st.session_state.get("member_sheet_week_sel", view_week)
-            if cur_ms_wk not in mem_sheet_week_opts:
-                cur_ms_wk = mem_sheet_week_opts[-1] if show_all_weeks_of_month else m_disp_weeks[0]
-                st.session_state["member_sheet_week_sel"] = cur_ms_wk
-            sel_mem_sheet_wk = st.selectbox(
-                f"🗓️ Pumili ng Linggo para sa Adults/Youths/Kids Attendance Sheet ({len(m_disp_weeks)} Weeks):",
-                mem_sheet_week_opts,
-                key=f"member_sheet_week_sel_{m_disp}" if show_all_months else "member_sheet_week_sel"
-            )
-        with ms_c2:
-            sel_mem_wk_for_date = sel_mem_sheet_wk if sel_mem_sheet_wk in m_disp_weeks else view_week
-            auto_dt_preview = get_week_date_for_month_year(m_disp, sel_mem_wk_for_date, int(selected_year))
-            st.info(f"📅 **Buwan & Linggo:** `{m_disp} {selected_year} — {sel_mem_sheet_wk}` (Petsa ng Pagsamba: **{auto_dt_preview}**)")
-
-        mem_weeks_to_show = m_disp_weeks if sel_mem_sheet_wk not in m_disp_weeks else [sel_mem_sheet_wk]
-        for mw_item in mem_weeks_to_show:
-            mem_sheet_df, mem_meta = build_parish_member_attendance_sheet_df(focused_parish_for_sheets, m_disp, mw_item, selected_year)
-            st.markdown(f"**📋 {focused_parish_for_sheets} — {mw_item} of {m_disp.upper()} {selected_year} (Date: `{mem_meta['report_date']}`)**")
-            st.dataframe(mem_sheet_df, use_container_width=True, hide_index=True)
-
-            tot_b1, tot_b2, tot_b3 = st.columns(3)
-            with tot_b1:
-                st.markdown(
-                    f"<div class='full-text-card' style='text-align:center;'>"
-                    f"<b>Total Members (Adults+Youths):</b><br><span style='font-size:1.35rem;font-weight:800;color:#10b981;'>{mem_meta['total_members_say']}</span>"
-                    f"</div>",
-                    unsafe_allow_html=True
-                )
-            with tot_b2:
-                st.markdown(
-                    f"<div class='full-text-card' style='text-align:center;'>"
-                    f"<b>Total Youth Members:</b><br><span style='font-size:1.35rem;font-weight:800;color:#3b82f6;'>{mem_meta['total_members_y']}</span>"
-                    f"</div>",
-                    unsafe_allow_html=True
-                )
-            with tot_b3:
-                st.markdown(
-                    f"<div class='full-text-card' style='text-align:center;'>"
-                    f"<b>Total Kids Members:</b><br><span style='font-size:1.35rem;font-weight:800;color:#d97706;'>{mem_meta['total_members_k']}</span>"
-                    f"</div>",
-                    unsafe_allow_html=True
-                )
-
-        st.divider()
-
-        # =====================================================================
-        # 📋📈 SECTION D (BOOK1 EXCEL LAYOUT): PAIRED WEEKLY TABLES (ACTUAL WEEKS OF THE MONTH ONLY)
-        # =====================================================================
-        st.markdown(
-            f"### 📅 Buong Buwan ng {m_disp.upper()} {selected_year} — Parish Monitoring Report & Summary for Posting (1st Week hanggang {m_disp_weeks[-1]})"
-        )
-        parishes_to_show_d = PARISH_ORDER if effective_parish_filter == "Lahat ng Parokya" else [p for p in PARISH_ORDER if normalize_parish_match(p, effective_parish_filter)]
-        for wk_pair in m_disp_weeks:
-            wk_pair_dt = get_week_date_for_month_year(m_disp, wk_pair, int(selected_year))
-            st.markdown(f"#### 🗓️ {wk_pair} of {m_disp.upper()} {selected_year} (Petsa ng Sabado: `{wk_pair_dt}`)")
-            att_monitoring_df = build_parish_monitoring_attendance_df(m_disp, wk_pair, effective_parish_filter)
-            st.dataframe(att_monitoring_df, use_container_width=True, hide_index=True)
-
-            for p_item in parishes_to_show_d:
-                df_post_p = build_summary_for_posting_per_parish_df(p_item, m_disp, wk_pair)
-                st.dataframe(df_post_p, use_container_width=True, hide_index=True)
-
-        st.divider()
+            off_cols = st.columns(len(m_disp_weeks))
+            officer_field_labels = [
+                ("PRIEST:", "priest"),
+                ("SAKRISTAN:", "sakristan"),
+                ("EPISTULA:", "epistula"),
+                ("EVANGELIO:", "evangelio"),
+                ("CASASAAD:", "casasaad"),
+                ("CANDLE HOLDER:", "candle_holder"),
+                ("USHER:", "usher"),
+                ("MARSHAL:", "marshal"),
+                ("ADAL TI EVANGELIO:", "adal_evangelio"),
+                ("Preacher/s:", "adal_preacher"),
+                ("TEMA TI MISA:", "tema_misa"),
+                ("Preacher:", "misa_preacher"),
+                ("TEMA TI PAMPAMILYA:", "tema_pampamilya"),
+                ("Preacher:", "pampamilya_preacher"),
+            ]
+            for idx_w5, wk_5 in enumerate(m_disp_weeks):
+                rec_w5 = db_live.get(f"{focused_parish_for_sheets.upper()}__{m_disp.upper()}__{wk_5}", {})
+                has_w5 = is_week_record_completed(rec_w5)
+                is_no_rep_w5 = is_record_marked_no_report(rec_w5)
+                wk_dt_5 = resolve_display_week_date(rec_w5, m_disp, wk_5, int(selected_year))
+                with off_cols[idx_w5]:
+                    lines_html = [
+                        f"<div class='ctg-officer-wk-hdr'>"
+                        f"{wk_5} (Date: {wk_dt_5})"
+                        + ("<br><span style='color:#ef4444;'>❌ (No Report)</span>" if is_no_rep_w5 else "")
+                        + f"</div>"
+                    ]
+                    for lbl_txt, f_key in officer_field_labels:
+                        val_txt = str(rec_w5.get(f_key, "")).strip() if has_w5 else ("(No Report)" if is_no_rep_w5 else "")
+                        lines_html.append(
+                            f"<div style='font-size:0.86rem;padding:3px 0;border-bottom:1px solid rgba(148,163,184,0.22);'>"
+                            f"<b>{lbl_txt}</b> <span class='ctg-officer-val'>{val_txt if val_txt else '-'}</span>"
+                            f"</div>"
+                        )
+                    st.markdown(
+                        f"<div class='full-text-card' style='padding:10px;'>{''.join(lines_html)}</div>",
+                        unsafe_allow_html=True
+                    )
+            st.divider()
 
     # =====================================================================
-    # 🏆 SECTION E (MASTER ADMIN EXCLUSIVE): CHURCH OF THE TEMPLE OF GOD – PARISH MINISTRY PERFORMANCE REPORT
-    # (English & Ilokano, Editable Summary, Pulls Outreach & Remarks from Outreach Page, Sendable via Gmail)
+    # 📝 PAGE 3 (SECTION B): REMARKS PARA SA NAG-ATTEND NG MASS / PAMPAMILYA / ADAL / HOUSE CHURCH / ONLINE MASS / VISITORS
     # =====================================================================
-    if is_master:
+    elif cur_page_idx == 2:
+        for m_disp in months_to_display:
+            m_disp_weeks = get_weeks_for_month_year(m_disp, int(selected_year))
+            st.markdown(
+                f"### 📝 Remarks para sa Nag-attend ng Mass / Pampamilya / Adal / House Church / Online Mass / Visitors (Galing sa Image/Excel Report) — `{focused_parish_for_sheets}` ({m_disp.upper()} {selected_year})"
+            )
+            for wk_r5 in m_disp_weeks:
+                rec_r5 = db_live.get(f"{focused_parish_for_sheets.upper()}__{m_disp.upper()}__{wk_r5}", {})
+                has_r5 = is_week_record_completed(rec_r5)
+                is_no_rep_r5 = is_record_marked_no_report(rec_r5)
+                wk_dt_r5 = resolve_display_week_date(rec_r5, m_disp, wk_r5, int(selected_year))
+                raw_rem_5 = str(rec_r5.get("remarks", "") or rec_r5.get("mass_remarks", "")).strip() if has_r5 else ("(No Report)" if is_no_rep_r5 else "")
+                sub_ph_5 = str(rec_r5.get("submitted_at_ph", "") or rec_r5.get("updated_at", "")).strip() if has_r5 else ""
+                disp_rem_5 = raw_rem_5.replace("\n", "<br>") if raw_rem_5 else "<span style='opacity:0.75;'>Wala pang nakalagay na Remarks para sa linggong ito.</span>"
+                st.markdown(
+                    f"<div class='full-text-card' style='margin-bottom:10px;'>"
+                    f"<b>🗓️ {wk_r5} (Date: {wk_dt_r5})</b> — <code>{focused_parish_for_sheets}</code> "
+                    + (f"• 🇵🇭 <b>Submitted:</b> <code>{sub_ph_5}</code>" if sub_ph_5 else ("• ❌ <b>(No Report)</b>" if is_no_rep_r5 else "• ⏳ <i>Hindi Pa Tapos</i>"))
+                    + f"<br><hr style='margin:6px 0;'>"
+                    f"{disp_rem_5}"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+            st.divider()
+
+    # =====================================================================
+    # 📊 PAGE 4 (SECTION C): PARISH WEEKLY REPORT DATA (ADULTS / YOUTHS / KIDS ATTENDANCE SHEET)
+    # =====================================================================
+    elif cur_page_idx == 3:
+        for m_disp in months_to_display:
+            m_disp_weeks = get_weeks_for_month_year(m_disp, int(selected_year))
+            st.markdown(
+                f"### 📊 Parish Weekly Report Data (Adults/Youths/Kids Attendance) — `{focused_parish_for_sheets}` ({m_disp.upper()} {selected_year})"
+            )
+            st.caption(f"Maaari kang pumili ng Linggo ({len(m_disp_weeks)} Weeks sa {m_disp} o Lahat ng Weeks) sa dropdown sa ibaba o sa Top Control Bar upang makita ang listahan ng Attendance ng Adults, Youths, at Kids.")
+
+            ms_c1, ms_c2 = st.columns([1.4, 1.4])
+            with ms_c1:
+                mem_sheet_week_opts = m_disp_weeks + [f"Lahat ng Weeks (1st–{m_disp_weeks[-1]})"]
+                cur_ms_wk = st.session_state.get("member_sheet_week_sel", view_week)
+                if cur_ms_wk not in mem_sheet_week_opts:
+                    cur_ms_wk = mem_sheet_week_opts[-1] if show_all_weeks_of_month else m_disp_weeks[0]
+                    st.session_state["member_sheet_week_sel"] = cur_ms_wk
+                sel_mem_sheet_wk = st.selectbox(
+                    f"🗓️ Pumili ng Linggo para sa Adults/Youths/Kids Attendance Sheet ({len(m_disp_weeks)} Weeks):",
+                    mem_sheet_week_opts,
+                    key=f"member_sheet_week_sel_{m_disp}" if show_all_months else "member_sheet_week_sel"
+                )
+            with ms_c2:
+                sel_mem_wk_for_date = sel_mem_sheet_wk if sel_mem_sheet_wk in m_disp_weeks else view_week
+                auto_dt_preview = get_week_date_for_month_year(m_disp, sel_mem_wk_for_date, int(selected_year))
+                st.info(f"📅 **Buwan & Linggo:** `{m_disp} {selected_year} — {sel_mem_sheet_wk}` (Petsa ng Pagsamba: **{auto_dt_preview}**)")
+
+            mem_weeks_to_show = m_disp_weeks if sel_mem_sheet_wk not in m_disp_weeks else [sel_mem_sheet_wk]
+            for mw_item in mem_weeks_to_show:
+                mem_sheet_df, mem_meta = build_parish_member_attendance_sheet_df(focused_parish_for_sheets, m_disp, mw_item, selected_year)
+                st.markdown(f"**📋 {focused_parish_for_sheets} — {mw_item} of {m_disp.upper()} {selected_year} (Date: `{mem_meta['report_date']}`)**")
+                st.dataframe(mem_sheet_df, use_container_width=True, hide_index=True)
+
+                tot_b1, tot_b2, tot_b3 = st.columns(3)
+                with tot_b1:
+                    st.markdown(
+                        f"<div class='full-text-card' style='text-align:center;'>"
+                        f"<b>Total Members (Adults+Youths):</b><br><span style='font-size:1.35rem;font-weight:800;color:#10b981;'>{mem_meta['total_members_say']}</span>"
+                        f"</div>",
+                        unsafe_allow_html=True
+                    )
+                with tot_b2:
+                    st.markdown(
+                        f"<div class='full-text-card' style='text-align:center;'>"
+                        f"<b>Total Youth Members:</b><br><span style='font-size:1.35rem;font-weight:800;color:#3b82f6;'>{mem_meta['total_members_y']}</span>"
+                        f"</div>",
+                        unsafe_allow_html=True
+                    )
+                with tot_b3:
+                    st.markdown(
+                        f"<div class='full-text-card' style='text-align:center;'>"
+                        f"<b>Total Kids Members:</b><br><span style='font-size:1.35rem;font-weight:800;color:#d97706;'>{mem_meta['total_members_k']}</span>"
+                        f"</div>",
+                        unsafe_allow_html=True
+                    )
+            st.divider()
+
+    # =====================================================================
+    # 📅 PAGE 5 (SECTION D): BUONG BUWAN — PARISH MONITORING REPORT & SUMMARY FOR POSTING
+    # =====================================================================
+    elif cur_page_idx == 4:
+        for m_disp in months_to_display:
+            m_disp_weeks = get_weeks_for_month_year(m_disp, int(selected_year))
+            st.markdown(
+                f"### 📅 Buong Buwan ng {m_disp.upper()} {selected_year} — Parish Monitoring Report & Summary for Posting (1st Week hanggang {m_disp_weeks[-1]})"
+            )
+            parishes_to_show_d = PARISH_ORDER if effective_parish_filter == "Lahat ng Parokya" else [p for p in PARISH_ORDER if normalize_parish_match(p, effective_parish_filter)]
+            for wk_pair in m_disp_weeks:
+                wk_pair_dt = get_week_date_for_month_year(m_disp, wk_pair, int(selected_year))
+                st.markdown(f"#### 🗓️ {wk_pair} of {m_disp.upper()} {selected_year} (Petsa ng Sabado: `{wk_pair_dt}`)")
+                att_monitoring_df = build_parish_monitoring_attendance_df(m_disp, wk_pair, effective_parish_filter)
+                st.dataframe(att_monitoring_df, use_container_width=True, hide_index=True)
+
+                for p_item in parishes_to_show_d:
+                    df_post_p = build_summary_for_posting_per_parish_df(p_item, m_disp, wk_pair)
+                    st.dataframe(df_post_p, use_container_width=True, hide_index=True)
+            st.divider()
+
+    # =====================================================================
+    # 🏆 PAGE 6 (SECTION E - MASTER ADMIN EXCLUSIVE): CHURCH OF THE TEMPLE OF GOD – PARISH MINISTRY PERFORMANCE REPORT
+    # =====================================================================
+    elif cur_page_idx == 5 and is_master:
         st.markdown("### 🏆 Church of the Temple of God – Parish Ministry Performance Report (Master Admin Exclusive)")
         st.caption(
             "Awtomatikong binubuo mula sa Attendance Percentages ng lahat ng 10 Parokya at kinukuha ang **House Visitation**, "
@@ -8046,8 +8156,10 @@ def render_weekly_report_page():
                             st.success(f"✅ Matagumpay na naipadala ang Parish Ministry Performance Report sa: {', '.join(sent_ok)}!")
                         if err_list:
                             st.error(" | ".join(err_list))
-
         st.divider()
+
+    # Bottom Page Navigator Bar (Back, Home, Dropdown Selection, Next)
+    _render_pwr_page_navigator("bottom")
 
     if os.path.exists(LOCAL_PWR_MASTER_FILE):
         with open(LOCAL_PWR_MASTER_FILE, "rb") as f:
