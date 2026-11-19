@@ -1260,105 +1260,76 @@ def render_church_leadership_and_priests_directory(context_key: str = "home"):
                     unsafe_allow_html=True
                 )
 
-    # STRICT ROLE-SEPARATED EDITING:
-    # - Master Admin edits ONLY Supreme Head, Asawa ng Supreme Head, and the 2 Diocese Heads (side-by-side clean editor!)
-    # - Parish Admin Users edit ONLY their own Parish Priest / House Church / Leader Profile in their own Admin account!
-    if is_master:
-        with st.expander("👑 Master Admin Editor: Ilagay / I-edit ang Pangalan, Position at Picture ng Supreme Head, Asawa, at 2 Diocese Heads", expanded=False):
-            st.caption("Bilang Master Admin, dito mo direktang mailalagay ang pangalan, position, at picture ng **Supreme Head**, **Asawa ng Supreme Head**, at **Dalawang Diocese Heads**. (Ang 10 Parish Priests / House Church / Hongkong Leader ay sila mismo ang maglalagay sa kani-kanilang Parish Admin account).")
-            head_tabs = st.tabs([
-                "👑 1. Supreme Head",
-                "🌟 2. Asawa ng Supreme Head",
-                "🏛️ 3. Diocese Head I",
-                "🏛️ 4. Diocese Head II"
-            ])
-            head_keys_meta = [
-                ("supreme_head", "Supreme Head", "Supreme Head — Church of the Temple of God", "CTG Supreme Leadership"),
-                ("supreme_head_spouse", "Asawa ng Supreme Head", "Spouse of the Supreme Head — Ministry Leadership", "CTG Supreme Leadership"),
-                ("diocese_head_1", "Diocese Head I", "Diocese Head — Diocese I", "CTG Diocese I Oversight"),
-                ("diocese_head_2", "Diocese Head II", "Diocese Head — Diocese II", "CTG Diocese II Oversight"),
-            ]
-            for h_idx, (h_key, h_title, def_pos, def_scope) in enumerate(head_keys_meta):
-                with head_tabs[h_idx]:
-                    cur_h = profiles.get(h_key, {})
-                    with st.form(f"master_head_form_{h_key}_{context_key}"):
-                        hc1, hc2, hc3 = st.columns([1.4, 1.3, 1.3])
-                        with hc1:
-                            h_in_name = st.text_input(f"👤 Pangalan ({h_title}):", value=str(cur_h.get("name", ""))).strip()
-                        with hc2:
-                            h_in_pos = st.text_input(f"🏷️ Position ({h_title}):", value=str(cur_h.get("position", def_pos))).strip()
-                        with hc3:
-                            h_in_scope = st.text_input(f"🏛️ Scope / Diocese ({h_title}):", value=str(cur_h.get("parish", def_scope))).strip()
-                        h_in_pic = st.file_uploader(f"📸 Picture para sa {h_title} (.jpg, .png):", type=["jpg", "jpeg", "png"], key=f"up_h_{h_key}_{context_key}")
-                        if st.form_submit_button(f"💾 I-save ang {h_title}", type="primary", use_container_width=True):
-                            new_h_b64 = cur_h.get("photo_b64", "")
-                            new_h_link = cur_h.get("drive_link", "")
-                            if h_in_pic is not None:
-                                raw_hb = h_in_pic.read()
-                                comp_h = compress_profile_image_to_data_uri(raw_hb)
-                                if comp_h:
-                                    new_h_b64 = comp_h
-                                d_lnk_h, _ = upload_member_image_to_parish_database_folder(
-                                    raw_hb,
-                                    f"CTG_Head_{h_key}_{h_in_name.replace(' ', '_')}.jpg",
-                                    h_in_pic.type or "image/jpeg",
-                                    PARISH_ORDER[0]
-                                )
-                                if d_lnk_h:
-                                    new_h_link = d_lnk_h
-                            profiles[h_key] = {
-                                "key": h_key,
-                                "name": h_in_name or cur_h.get("name", h_title),
-                                "position": h_in_pos or def_pos,
-                                "parish": h_in_scope or def_scope,
-                                "photo_b64": new_h_b64,
-                                "drive_link": new_h_link
-                            }
-                            save_leadership_and_priests_profiles(profiles)
-                            st.success(f"✅ Matagumpay na na-save ang **{h_title}**!")
-                            time.sleep(0.4)
-                            st.rerun()
-    else:
-        my_role_default = get_default_parish_leader_role_title(my_parish)
-        with st.expander(f"✏️ I-update ang Iyong {my_role_default} Profile & Picture ({my_parish})", expanded=False):
-            cur_prof = profiles["parish_priests"].get(my_parish, {})
-            with st.form(f"parish_own_profile_form_{context_key}"):
-                fc1, fc2, fc3 = st.columns([1.4, 1.2, 1.4])
-                with fc1:
-                    in_name = st.text_input("👤 Iyong Buong Pangalan:", value=str(cur_prof.get("name", ""))).strip()
-                with fc2:
-                    in_pos = st.text_input("🏷️ Position / Title:", value=str(cur_prof.get("position", my_role_default))).strip()
-                with fc3:
-                    st.text_input("⛪ Nakatalagang Parokya:", value=my_parish, disabled=True)
-                in_photo = st.file_uploader("📸 Mag-upload ng Iyong Litrato / Profile Picture (.jpg, .png):", type=["jpg", "jpeg", "png"], key=f"own_pic_up_{context_key}")
+def upload_leader_profile_image_to_weekly_report_folder(file_bytes: bytes, filename: str, mime_type: str, parish_name: str = "") -> tuple[str, str]:
+    """
+    Uploads the profile image of a Parish Priest, Malanas House Church, Hongkong Leader, or Supreme/Diocese Head
+    directly to the exact same Google Drive folder where their Weekly Report uploads go
+    (PARISH_UPLOAD_FOLDER_URL / 'Upload the Image/Excel File here!' -> Parish Subfolder).
+    """
+    weekly_upload_folder_url = st.session_state.get("custom_secrets", {}).get("PARISH_UPLOAD_FOLDER_URL", "") or load_saved_parish_upload_folder_url()
+    return upload_file_to_google_drive(
+        file_bytes,
+        filename,
+        mime_type=mime_type or "image/jpeg",
+        parent_folder_url=weekly_upload_folder_url,
+        parish_name=parish_name
+    )
 
-                if st.form_submit_button("💾 I-save ang Aking Profile at Picture", type="primary", use_container_width=True):
-                    new_b64 = cur_prof.get("photo_b64", "")
-                    new_drive_link = cur_prof.get("drive_link", "")
-                    if in_photo is not None:
-                        raw_img_b = in_photo.read()
-                        comp_uri = compress_profile_image_to_data_uri(raw_img_b)
-                        if comp_uri:
-                            new_b64 = comp_uri
-                        d_link, _ = upload_member_image_to_parish_database_folder(
-                            raw_img_b,
-                            f"CTG_Leader_Profile_{my_parish.replace(' ', '_')}_{in_name.replace(' ', '_')}.jpg",
-                            in_photo.type or "image/jpeg",
-                            my_parish
+def render_master_admin_heads_editor_panel(context_key: str = "settings"):
+    """Renders the Master Admin Editor for Supreme Head, Asawa ng Supreme Head, and 2 Diocese Heads inside App Settings."""
+    profiles = load_leadership_and_priests_profiles()
+    st.markdown("#### 👑 Master Admin Editor: Ilagay / I-edit ang Pangalan, Position at Picture ng Supreme Head, Asawa, at 2 Diocese Heads")
+    st.caption("Bilang Master Admin, dito mo sa **App Settings** direktang mailalagay o mababago ang pangalan, position, at picture ng **Supreme Head**, **Asawa ng Supreme Head**, at **Dalawang Diocese Heads**. Ang mga in-upload na profile pictures ay direktang pumupunta sa Google Drive Weekly Reports upload folder.")
+    head_tabs = st.tabs([
+        "👑 1. Supreme Head",
+        "🌟 2. Asawa ng Supreme Head",
+        "🏛️ 3. Diocese Head I",
+        "🏛️ 4. Diocese Head II"
+    ])
+    head_keys_meta = [
+        ("supreme_head", "Supreme Head", "Supreme Head — Church of the Temple of God", "CTG Supreme Leadership"),
+        ("supreme_head_spouse", "Asawa ng Supreme Head", "Spouse of the Supreme Head — Ministry Leadership", "CTG Supreme Leadership"),
+        ("diocese_head_1", "Diocese Head I", "Diocese Head — Diocese I", "CTG Diocese I Oversight"),
+        ("diocese_head_2", "Diocese Head II", "Diocese Head — Diocese II", "CTG Diocese II Oversight"),
+    ]
+    for h_idx, (h_key, h_title, def_pos, def_scope) in enumerate(head_keys_meta):
+        with head_tabs[h_idx]:
+            cur_h = profiles.get(h_key, {})
+            with st.form(f"master_head_form_{h_key}_{context_key}"):
+                hc1, hc2, hc3 = st.columns([1.4, 1.3, 1.3])
+                with hc1:
+                    h_in_name = st.text_input(f"👤 Pangalan ({h_title}):", value=str(cur_h.get("name", ""))).strip()
+                with hc2:
+                    h_in_pos = st.text_input(f"🏷️ Position ({h_title}):", value=str(cur_h.get("position", def_pos))).strip()
+                with hc3:
+                    h_in_scope = st.text_input(f"🏛️ Scope / Diocese ({h_title}):", value=str(cur_h.get("parish", def_scope))).strip()
+                h_in_pic = st.file_uploader(f"📸 Picture para sa {h_title} (.jpg, .png — Ise-save sa Weekly Report Upload Folder):", type=["jpg", "jpeg", "png"], key=f"up_h_{h_key}_{context_key}")
+                if st.form_submit_button(f"💾 I-save ang {h_title}", type="primary", use_container_width=True):
+                    new_h_b64 = cur_h.get("photo_b64", "")
+                    new_h_link = cur_h.get("drive_link", "")
+                    if h_in_pic is not None:
+                        raw_hb = h_in_pic.read()
+                        comp_h = compress_profile_image_to_data_uri(raw_hb)
+                        if comp_h:
+                            new_h_b64 = comp_h
+                        d_lnk_h, _ = upload_leader_profile_image_to_weekly_report_folder(
+                            raw_hb,
+                            f"CTG_Head_{h_key}_{h_in_name.replace(' ', '_')}.jpg",
+                            h_in_pic.type or "image/jpeg",
+                            ""
                         )
-                        if d_link:
-                            new_drive_link = d_link
-
-                    profiles["parish_priests"][my_parish] = {
-                        "key": my_parish,
-                        "name": in_name or cur_prof.get("name", ""),
-                        "position": in_pos or my_role_default,
-                        "parish": my_parish,
-                        "photo_b64": new_b64,
-                        "drive_link": new_drive_link
+                        if d_lnk_h:
+                            new_h_link = d_lnk_h
+                    profiles[h_key] = {
+                        "key": h_key,
+                        "name": h_in_name or cur_h.get("name", h_title),
+                        "position": h_in_pos or def_pos,
+                        "parish": h_in_scope or def_scope,
+                        "photo_b64": new_h_b64,
+                        "drive_link": new_h_link
                     }
                     save_leadership_and_priests_profiles(profiles)
-                    st.success(f"✅ Matagumpay na na-update ang iyong profile para sa **{my_parish}**!")
+                    st.success(f"✅ Matagumpay na na-save ang **{h_title}**!")
                     time.sleep(0.4)
                     st.rerun()
 
@@ -8822,10 +8793,9 @@ def render_weekly_report_page():
                 "Bilang **Master Admin**, dito mo mamo-monitor ang **Performance Report** at lahat ng **Records** ng bawat Parokya mula sa Google Drive files."
             )
 
-        # 🗑️ CLICKABLE OPTION TO CLEAR / DELETE POPULATED DATA & MASTER ADMIN DEADLINE / OVERRIDE CONTROLLER
-        ctrl_bar_1, ctrl_bar_2 = st.columns([1.85, 1.15]) if is_master else ([None, st.container()])
-        if is_master and ctrl_bar_1 is not None:
-            with ctrl_bar_1:
+        # 🛡️ MASTER ADMIN SUBMISSION SCHEDULE & DEADLINE / OVERRIDE CONTROLLER (SA ITAAS PARA KAY MASTER ADMIN)
+        if is_master:
+            with st.container():
                 with st.expander("🛡️ Master Admin Submission Schedule & Deadline Controller (Auto Sat–Mon Unlock/Lock & No Report Control)", expanded=False):
                     cur_auto_sched = is_auto_schedule_lock_enabled()
                     cur_dl_enabled = is_deadline_enforcement_enabled()
@@ -8914,26 +8884,8 @@ def render_weekly_report_page():
                     if marked_nr_parishes:
                         joined_nr_p = ", ".join(marked_nr_parishes)
                         st.caption(f"📋 **Kasalukuyang may `(No Report)` sa {nr_target_month} ({nr_target_week}):** `{joined_nr_p}`")
-        with ctrl_bar_2:
-            with st.expander(f"🗑️ {t_ui('delete_populated')}", expanded=False):
-                st.caption("Ang na-populate na data mula sa Image o Excel ay **mananatiling naka-save** at mabubura lamang kung pipindutin mo ang Delete button dito:")
-                del_target_p = focused_parish_for_sheets if is_master else my_parish
-                st.write(f"🎯 Target: **{del_target_p}** — `{view_month} {selected_year} ({view_week})`")
-                confirm_del_chk = st.checkbox("Kumpirmahin ang pagbura (Delete Record)", key=f"conf_del_{del_target_p}_{view_month}_{view_week}")
-                if st.button("🗑️ Burahin Ngayon ang Record na Ito", type="primary", use_container_width=True, disabled=not confirm_del_chk):
-                    delete_populated_weekly_record(del_target_p, view_month, view_week)
-                    dispatch_app_notification_and_messenger_alert(
-                        sender_id=my_chat_identity,
-                        recipient_id="MASTER ADMIN",
-                        title=f"Deleted Populated Weekly Data ({del_target_p})",
-                        details=f"Binura ni {my_chat_identity} ang na-populate na data para sa {del_target_p} ({view_month} {selected_year} - {view_week}).",
-                        is_error=False
-                    )
-                    st.success(f"Binura na ang na-populate na data para sa {del_target_p} ({view_month} - {view_week})!")
-                    time.sleep(0.5)
-                    st.rerun()
-
-        st.divider()
+        if is_master:
+            st.divider()
 
         if not is_master:
             col_up_left, col_up_right = st.columns([1.15, 1.55])
@@ -9468,15 +9420,37 @@ def render_weekly_report_page():
 
 
     with pwr_tabs_list[0]:
-        if os.path.exists(LOCAL_PWR_MASTER_FILE):
-            with open(LOCAL_PWR_MASTER_FILE, "rb") as f:
-                pwr_bytes = f.read()
-            st.download_button(
-                label=f"📥 I-download ang Na-update na Master Excel (PWR. {view_month} {view_week}.xlsx)",
-                data=pwr_bytes,
-                file_name=f"PWR. {view_month} {view_week}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+        st.divider()
+        bot_dl_col, bot_del_col = st.columns([1.35, 1.65])
+        with bot_dl_col:
+            if os.path.exists(LOCAL_PWR_MASTER_FILE):
+                with open(LOCAL_PWR_MASTER_FILE, "rb") as f:
+                    pwr_bytes = f.read()
+                st.download_button(
+                    label=f"📥 I-download ang Na-update na Master Excel (PWR. {view_month} {view_week}.xlsx)",
+                    data=pwr_bytes,
+                    file_name=f"PWR. {view_month} {view_week}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+        with bot_del_col:
+            with st.expander(f"🗑️ {t_ui('delete_populated')}", expanded=False):
+                st.caption("Ang na-populate na data mula sa Image o Excel ay **mananatiling naka-save** at mabubura lamang kung pipindutin mo ang Delete button dito:")
+                del_target_p = focused_parish_for_sheets if is_master else my_parish
+                st.write(f"🎯 Target: **{del_target_p}** — `{view_month} {selected_year} ({view_week})`")
+                confirm_del_chk = st.checkbox("Kumpirmahin ang pagbura (Delete Record)", key=f"conf_del_{del_target_p}_{view_month}_{view_week}")
+                if st.button("🗑️ Burahin Ngayon ang Record na Ito", type="primary", use_container_width=True, disabled=not confirm_del_chk):
+                    delete_populated_weekly_record(del_target_p, view_month, view_week)
+                    dispatch_app_notification_and_messenger_alert(
+                        sender_id=my_chat_identity,
+                        recipient_id="MASTER ADMIN",
+                        title=f"Deleted Populated Weekly Data ({del_target_p})",
+                        details=f"Binura ni {my_chat_identity} ang na-populate na data para sa {del_target_p} ({view_month} {selected_year} - {view_week}).",
+                        is_error=False
+                    )
+                    st.success(f"Binura na ang na-populate na data para sa {del_target_p} ({view_month} - {view_week})!")
+                    time.sleep(0.5)
+                    st.rerun()
 
 def _format_grouped_ministry_percentages(pcts_dict: dict, is_hongkong: bool = False, lang: str = "English") -> str:
     """Ginugrupo ang mga ministries na may parehong percentage (hal. '73% attendance on Mass, Pampamilya, and Adal ti Evangelio; 67% on Youth Fellowship...')."""
@@ -10219,7 +10193,7 @@ with st.sidebar:
                         if comp_sb:
                             new_sb_b64 = comp_sb
                         p_scope_sb = st.session_state.assigned_parish if st.session_state.assigned_parish in PARISH_ORDER else PARISH_ORDER[0]
-                        d_lnk, _ = upload_member_image_to_parish_database_folder(
+                        d_lnk, _ = upload_leader_profile_image_to_weekly_report_folder(
                             raw_sb_b,
                             f"CTG_Leader_Profile_{p_scope_sb.replace(' ', '_')}_{sb_in_name.replace(' ', '_')}.jpg",
                             sb_in_pic.type or "image/jpeg",
@@ -12320,8 +12294,9 @@ elif app_mode == "📢 Announcement Broadcaster":
 elif app_mode == "🛠️ App Settings":
     render_title_with_logo("🛠️ App Controller, Theme, Excel Sync & Configuration Settings", "I-customize ang hitsura ng app, i-manage ang Google Drive Excel File, at i-update ang API settings.")
 
-    tab_ui, tab_security, tab_excel, tab_api = st.tabs([
+    tab_ui, tab_heads, tab_security, tab_excel, tab_api = st.tabs([
         "🎨 Theme, Display & App Controller",
+        "👑 Supreme Head, Asawa & 2 Diocese Heads Editor",
         "🔐 Account Security, Username/Password & Access Control",
         "📊 Google Drive Links & Separate Upload Center",
         "🔑 API & Google Drive / Gmail Credentials (Fix 403 Scope)"
@@ -12380,6 +12355,14 @@ elif app_mode == "🛠️ App Settings":
                 st.success("Na-clear na ang cache at na-refresh ang data!")
                 time.sleep(0.5)
                 st.rerun()
+
+    with tab_heads:
+        if st.session_state.user_role == "Master Admin" or st.session_state.get("login_role") == "Master Admin":
+            render_master_admin_heads_editor_panel(context_key="app_settings_heads")
+        else:
+            _my_p_set = st.session_state.get("assigned_parish", PARISH_ORDER[0])
+            _my_r_set = get_default_parish_leader_role_title(_my_p_set)
+            st.info(f"🔒 Ang **👑 Master Admin Editor (Supreme Head, Asawa, at 2 Diocese Heads)** ay para lamang sa **Master Admin**. Maaari mong i-update ang iyong **{_my_r_set} Profile & Picture ({_my_p_set})** sa kaliwang Sidebar Control Panel (`👤 I-edit ang Aking {_my_r_set} Profile & Picture`).")
 
     with tab_security:
         st.subheader("🔐 Account Security, Encrypted Passwords (PBKDF2-SHA256) & User Access Control")
