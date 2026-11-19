@@ -172,9 +172,15 @@ APP_USER = get_secret("APP_USER", "ctg.ministry.master.admin")
 APP_PASSWORD = get_secret("APP_PASSWORD", "")
 BACKUP_ADMIN_EMAIL = "clarojerald16@gmail.com"
 
+APP_STORAGE_FOLDER_ID = "1MDIZBfdIGgM9gBZvG04xj2m3zJ5TCfJg"
+APP_STORAGE_FOLDER_URL = get_secret(
+    "APP_STORAGE_FOLDER_URL",
+    "https://drive.google.com/drive/folders/1MDIZBfdIGgM9gBZvG04xj2m3zJ5TCfJg?usp=sharing"
+)
+MASTER_CENSUS_EXCEL_FILE_ID = "1s-HWF_IxwAq2mIXe5Hs6sqJMrcZPPolj"
 DEFAULT_CLOUD_SPREADSHEET_URL = get_secret(
     "CLOUD_SPREADSHEET_URL",
-    "https://docs.google.com/spreadsheets/d/1v7BFj32ixL7xg5BaElAU1Ji-zsSKhdOF/edit?usp=sharing"
+    "https://drive.google.com/file/d/1s-HWF_IxwAq2mIXe5Hs6sqJMrcZPPolj/view?usp=sharing"
 )
 WEEKLY_REPORT_FOLDER_URL = get_secret(
     "WEEKLY_REPORT_FOLDER_URL",
@@ -184,10 +190,24 @@ PARISH_UPLOAD_FOLDER_URL = get_secret(
     "PARISH_UPLOAD_FOLDER_URL",
     "https://drive.google.com/drive/folders/1WHvH81kNL3jmXItNtPl39GnhmTzpmK1X?usp=sharing"
 )
+ALL_PARISH_DB_FOLDER_ID = "1RXOTB6iA0jgcsOf1kE8wn3V8DHVduvH0"
 ALL_PARISH_DB_FOLDER_URL = get_secret(
     "ALL_PARISH_DB_FOLDER_URL",
     "https://drive.google.com/drive/folders/1RXOTB6iA0jgcsOf1kE8wn3V8DHVduvH0?usp=sharing"
 )
+# Exact 10 Parish Subfolder IDs inside 'CTG MEMBERS DATABASE ALL PARISH' (1RXOTB6iA0jgcsOf1kE8wn3V8DHVduvH0)
+CTG_MEMBERS_DB_PARISH_SUBFOLDER_IDS = {
+    "LIPAY NORTE PARISH": "1yjxkDNgbyLhfjALMDLr7hQ4dmYOyWr4b",   # 1. LIPAY NORTE PARISH
+    "MALANAS PARISH": "1JXtEz65hz6-aq1IUk-eNuDoudTE6WCXk",       # 2. MALANAS PARISH
+    "POBLACION PARISH": "1FKK3NjSK6NiIJ6NUNZAu9W3fIOLs6MHV",     # 3. POBLACION PARISH
+    "DUPLAS PARISH": "1bU53ymDlwyjG1twWQrMeE_uOqERDpRIi",        # 4. DUPLAS PARISH
+    "SANTIAGO PARISH": "1IS-lu_ZyPwxgR3mWE7uKWFdLwOSLixS5",      # 5. SANTIAGO PARISH
+    "CABA PARISH": "1DklQBF9L0d2f6YqqIDRKL0pO8QSCbCRg",          # 6. CABA PARISH
+    "MANILA PARISH": "1-5S2Qgoh_MvDVzFDZrcEmt-PrM-iQ_yJ",        # 7. MANILA PARISH
+    "ANDABUEN PARISH": "1kMYQO6Ft4FB-eTnBZSHuVKvVwGhMnfB8",      # 8. ANDABUEN PARISH
+    "APAYAO PARISH": "1E0COumLcVE2WM_vXgCPKEp1NKGr8jPOn",        # 9. APAYAO
+    "HONGKONG PARISH": "1SWipITcT2m5JzC6RDVuJiFJCrNOBNtid",      # 10. HONGKONG PARISH
+}
 DEFAULT_OUTREACH_DRIVE_SHEET_URL = get_secret(
     "OUTREACH_DRIVE_SHEET_URL",
     "https://docs.google.com/spreadsheets/d/1FZLr3gFvU-YXWJMTrRkOqJ2X0hTAaQ3rRerX9cdUIb8/edit?usp=sharing"
@@ -195,7 +215,7 @@ DEFAULT_OUTREACH_DRIVE_SHEET_URL = get_secret(
 DEFAULT_OUTREACH_DRIVE_SHEET_ID = "1FZLr3gFvU-YXWJMTrRkOqJ2X0hTAaQ3rRerX9cdUIb8"
 LOCAL_OUTREACH_RESPONSES_CACHE = "ctg_outreach_drive_responses_cache.json"
 
-LOCAL_EXCEL_CACHE = "CTG_HEADS_TOTAL_UPDATED FIXED.xlsx"
+LOCAL_EXCEL_CACHE = "CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx"
 LOCAL_PWR_MASTER_FILE = "PWR. January 1st Week.xlsx"
 LOCAL_WEEKLY_REPORTS_DB = "ctg_weekly_monitoring_records.json"
 LOCAL_DRIVE_LINKS_REGISTRY_FILE = "ctg_saved_drive_links.json"
@@ -234,11 +254,15 @@ def load_saved_config() -> dict:
 
 def load_saved_cloud_url() -> str:
     if "custom_secrets" in st.session_state and st.session_state.custom_secrets.get("CLOUD_SPREADSHEET_URL"):
-        return st.session_state.custom_secrets["CLOUD_SPREADSHEET_URL"].strip()
+        u = st.session_state.custom_secrets["CLOUD_SPREADSHEET_URL"].strip()
+        if "1v7BFj32ixL7xg5BaElAU1Ji-zsSKhdOF" not in u:
+            return u
     data = load_saved_config()
     if data.get("CLOUD_SPREADSHEET_URL"):
-        return data["CLOUD_SPREADSHEET_URL"].strip()
-    return get_secret("CLOUD_SPREADSHEET_URL", DEFAULT_CLOUD_SPREADSHEET_URL)
+        u = data["CLOUD_SPREADSHEET_URL"].strip()
+        if "1v7BFj32ixL7xg5BaElAU1Ji-zsSKhdOF" not in u:
+            return u
+    return DEFAULT_CLOUD_SPREADSHEET_URL
 
 def load_saved_weekly_folder_url() -> str:
     if "custom_secrets" in st.session_state and st.session_state.custom_secrets.get("WEEKLY_REPORT_FOLDER_URL"):
@@ -1157,9 +1181,82 @@ def upload_file_to_google_drive(file_bytes, filename, mime_type="image/jpeg", pa
             )
         return None, f"Google Drive Upload Error: {err_str}"
 
+def upload_member_image_to_parish_database_folder(file_bytes: bytes, filename: str, mime_type: str, parish_name: str) -> tuple[str, str]:
+    """
+    Routes any member registration photo or OCR form image uploaded by Parish Leaders / Admins
+    directly to that Parish's dedicated subfolder inside 'CTG MEMBERS DATABASE ALL PARISH'
+    (Parent Folder ID: 1RXOTB6iA0jgcsOf1kE8wn3V8DHVduvH0 -> Subfolders 1..10 per Parish).
+    """
+    service = get_google_drive_service()
+    if service is None:
+        return None, "Error: Kulang ang Google Drive/Gmail credentials sa App Settings."
+
+    p_clean = (parish_name or "").upper().strip()
+    target_subfolder_id = CTG_MEMBERS_DB_PARISH_SUBFOLDER_IDS.get(p_clean, "")
+    if not target_subfolder_id:
+        for p_k, f_id in CTG_MEMBERS_DB_PARISH_SUBFOLDER_IDS.items():
+            if normalize_parish_match(p_clean, p_k):
+                target_subfolder_id = f_id
+                break
+
+    verified_folder_id = _verify_drive_folder_id(service, target_subfolder_id) if target_subfolder_id else ""
+    if not verified_folder_id:
+        # Search inside CTG MEMBERS DATABASE ALL PARISH (1RXOTB6iA0jgcsOf1kE8wn3V8DHVduvH0)
+        verified_folder_id = get_or_create_parish_subfolder(service, ALL_PARISH_DB_FOLDER_ID, parish_name, "")
+
+    file_metadata = {"name": filename}
+    if verified_folder_id:
+        file_metadata["parents"] = [verified_folder_id]
+
+    try:
+        media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype=mime_type or "image/jpeg", resumable=True)
+        created = service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields="id, webViewLink",
+            supportsAllDrives=True
+        ).execute()
+        return created.get("webViewLink"), f"Matagumpay na na-save sa CTG MEMBERS DATABASE ALL PARISH ({parish_name})!"
+    except Exception:
+        # Fallback to general upload_file_to_google_drive with ALL_PARISH_DB_FOLDER_URL
+        return upload_file_to_google_drive(
+            file_bytes,
+            filename,
+            mime_type=mime_type,
+            parent_folder_url=ALL_PARISH_DB_FOLDER_URL,
+            parish_name=parish_name
+        )
+
 def load_saved_drive_links_registry() -> list[dict]:
     """Binabasa ang listahan ng lahat ng naka-save na Google Drive links upang walang mawala kahit magdagdag ng bagong link."""
     default_links = [
+        {
+            "label": "CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx (CTG Ministry Hub app_Storage)",
+            "category": "Master Census / Members Database Excel",
+            "month": "All Months",
+            "week": "All Weeks",
+            "parish": "Lahat ng Parokya (Master)",
+            "url": "https://drive.google.com/file/d/1s-HWF_IxwAq2mIXe5Hs6sqJMrcZPPolj/view?usp=sharing",
+            "added_at": "2026-11-19"
+        },
+        {
+            "label": "CTG Ministry Hub app_Storage (Master Excel Storage Folder)",
+            "category": "Master Census / Members Database Excel",
+            "month": "All Months",
+            "week": "All Weeks",
+            "parish": "Lahat ng Parokya (Master)",
+            "url": "https://drive.google.com/drive/folders/1MDIZBfdIGgM9gBZvG04xj2m3zJ5TCfJg?usp=sharing",
+            "added_at": "2026-11-19"
+        },
+        {
+            "label": "CTG MEMBERS DATABASE ALL PARISH (10 Parishes Member Image & Registration Folder)",
+            "category": "Photos / Videos / Media Archive Folder",
+            "month": "All Months",
+            "week": "All Weeks",
+            "parish": "Lahat ng Parokya (Master)",
+            "url": "https://drive.google.com/drive/folders/1RXOTB6iA0jgcsOf1kE8wn3V8DHVduvH0?usp=sharing",
+            "added_at": "2026-11-19"
+        },
         {
             "label": "PWR. January 1st Week.xlsx (Google Drive Master PWR)",
             "category": "Master Weekly Report Excel (PWR)",
@@ -1325,18 +1422,35 @@ def find_2027_master_excel_on_drive(service, weekly_folder_url: str, month_name:
             return "1v7BFj32ixL7xg5BaElAU1Ji-zsSKhdOF", extract_id_from_url(weekly_folder_url)
         return "", extract_id_from_url(weekly_folder_url)
 
+def _resolve_master_census_excel_file_id(service, spreadsheet_url: str) -> str:
+    """Resolves the exact File ID of CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx inside CTG Ministry Hub app_Storage (1MDIZBfdIGgM9gBZvG04xj2m3zJ5TCfJg)."""
+    raw_id = extract_id_from_url(spreadsheet_url)
+    if raw_id and raw_id not in ["1v7BFj32ixL7xg5BaElAU1Ji-zsSKhdOF", APP_STORAGE_FOLDER_ID, ALL_PARISH_DB_FOLDER_ID]:
+        return raw_id
+    if service is not None:
+        try:
+            q_folder = f"'{APP_STORAGE_FOLDER_ID}' in parents and name = 'CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx' and trashed = false"
+            res = service.files().list(q=q_folder, spaces="drive", fields="files(id, name)", pageSize=5, supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
+            files = res.get("files", [])
+            if files:
+                return files[0]["id"]
+        except Exception:
+            pass
+    return MASTER_CENSUS_EXCEL_FILE_ID
+
 def sync_excel_bytes_to_drive(excel_bytes: bytes, spreadsheet_url: str, local_cache_path: str = LOCAL_EXCEL_CACHE) -> tuple[bool, str]:
-    try:
-        with open(local_cache_path, "wb") as f:
-            f.write(excel_bytes)
-    except Exception:
-        pass
+    for local_f in [local_cache_path, "CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx", "CTG_HEADS_TOTAL_UPDATED FIXED.xlsx"]:
+        try:
+            with open(local_f, "wb") as f:
+                f.write(excel_bytes)
+        except Exception:
+            pass
 
     service = get_google_drive_service()
     if service is None:
-        return True, "Na-save sa lokal na Excel database! (Maglagay ng Google Drive token sa Settings kung nais i-sync sa Cloud)."
+        return True, "Na-save sa lokal na CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx! (Maglagay ng Google Drive token sa Settings kung nais i-sync sa Cloud)."
 
-    doc_id = extract_id_from_url(spreadsheet_url)
+    doc_id = _resolve_master_census_excel_file_id(service, spreadsheet_url)
     media = MediaIoBaseUpload(
         io.BytesIO(excel_bytes),
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1344,24 +1458,30 @@ def sync_excel_bytes_to_drive(excel_bytes: bytes, spreadsheet_url: str, local_ca
     )
     try:
         if doc_id and len(doc_id) > 15:
-            service.files().update(fileId=doc_id, media_body=media).execute()
-            return True, "Matagumpay na na-update ang Excel sa App at sa iyong Google Drive Cloud!"
+            service.files().update(fileId=doc_id, media_body=media, supportsAllDrives=True).execute()
+            return True, "Matagumpay na na-update ang CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx sa CTG Ministry Hub app_Storage sa Google Drive!"
     except Exception:
         pass
 
     try:
         res = service.files().list(
-            q=f"name='{local_cache_path}' and trashed=false",
+            q=f"('{APP_STORAGE_FOLDER_ID}' in parents or name='CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx') and name='CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx' and trashed=false",
             spaces="drive",
             fields="files(id)",
-            pageSize=1
+            pageSize=1,
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True
         ).execute()
         files = res.get("files", [])
         if files:
-            service.files().update(fileId=files[0]["id"], media_body=media).execute()
+            service.files().update(fileId=files[0]["id"], media_body=media, supportsAllDrives=True).execute()
         else:
-            service.files().create(body={"name": local_cache_path}, media_body=media).execute()
-        return True, "Na-save sa lokal na Excel at na-upload bilang backup sa iyong Google Drive!"
+            service.files().create(
+                body={"name": "CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx", "parents": [APP_STORAGE_FOLDER_ID]},
+                media_body=media,
+                supportsAllDrives=True
+            ).execute()
+        return True, "Matagumpay na na-save ang CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx sa CTG Ministry Hub app_Storage folder sa Google Drive!"
     except Exception as e:
         return True, f"Na-save sa App Excel! (Cloud Sync Notice: {str(e)})"
 
@@ -1481,15 +1601,15 @@ def fetch_live_excel_bytes(spreadsheet_url: str, force_cloud: bool = False) -> t
                 except Exception:
                     pass
 
-    doc_id = extract_id_from_url(spreadsheet_url)
     service = get_google_drive_service()
+    doc_id = _resolve_master_census_excel_file_id(service, spreadsheet_url)
     if service is not None and doc_id and len(doc_id) > 15:
         try:
-            content = service.files().get_media(fileId=doc_id).execute()
+            content = service.files().get_media(fileId=doc_id, supportsAllDrives=True).execute()
             if content and len(content) > 1000:
                 with open(LOCAL_EXCEL_CACHE, "wb") as f:
                     f.write(content)
-                return content, "Google Drive Cloud Excel (Live API Sync)"
+                return content, "CTG Ministry Hub app_Storage / CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx (Live API Sync)"
         except Exception:
             pass
 
@@ -11190,13 +11310,29 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                 key="auto_add_mem_uploader"
             )
         if auto_mem_file is not None:
-            if st.button("🔍 Extract Data via Gemini OCR / Excel Parser & Auto-Populate Form", type="primary", use_container_width=True):
-                with st.spinner("Binabasa ang datos gamit ang Gemini API at ina-auto-populate ang form..."):
+            if st.button("🔍 Extract Data via Gemini OCR / Excel Parser, Upload Image to CTG MEMBERS DATABASE ALL PARISH & Auto-Populate Form", type="primary", use_container_width=True):
+                with st.spinner(f"Ina-upload sa CTG MEMBERS DATABASE ALL PARISH ({def_p_auto}) at binabasa ang datos gamit ang Gemini API..."):
                     f_bytes_m = auto_mem_file.read()
+                    ext_low = auto_mem_file.name.split(".")[-1].lower()
+                    uploaded_ocr_link = ""
+                    if ext_low in ["jpg", "jpeg", "png"]:
+                        up_link, up_msg = upload_member_image_to_parish_database_folder(
+                            f_bytes_m,
+                            f"CTG_Form_{def_p_auto.replace(' ', '_')}_{auto_mem_file.name}",
+                            auto_mem_file.type or "image/jpeg",
+                            def_p_auto
+                        )
+                        if up_link:
+                            uploaded_ocr_link = up_link
+                            st.info(f"📁 Na-upload na ang larawan sa **CTG MEMBERS DATABASE ALL PARISH → {def_p_auto}** ([Buksan sa Google Drive]({up_link}))")
                     ext_members = extract_members_from_uploaded_image_or_file(
                         f_bytes_m, auto_mem_file.name, auto_mem_file.type, def_p_auto, selected_model
                     )
                     if ext_members:
+                        if uploaded_ocr_link:
+                            for em_it in ext_members:
+                                cur_r = str(em_it.get("Remarks", "") or "").strip()
+                                em_it["Remarks"] = f"{cur_r} (Drive Photo: {uploaded_ocr_link})".strip()
                         st.session_state["extracted_members_batch"] = ext_members
                         st.session_state["extracted_member_form_prefill"] = ext_members[0]
                         if len(ext_members) > 1:
@@ -11367,12 +11503,17 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                 final_fid = fid if fid else generate_next_family_id_for_parish(target_parish_final, master_members_df)
                 drive_link_text = "Walang inilakip na litrato."
                 if pho is not None:
-                    with st.spinner("Ina-upload ang litrato sa iyong Google Drive..."):
+                    with st.spinner(f"Ina-upload ang litrato sa CTG MEMBERS DATABASE ALL PARISH ({target_parish_final})..."):
                         file_bytes = pho.read()
-                        link, msg = upload_file_to_google_drive(file_bytes, f"CTG_Member_{final_fid}_{fn}.jpg", pho.type)
+                        link, msg = upload_member_image_to_parish_database_folder(
+                            file_bytes,
+                            f"CTG_Member_{final_fid}_{fn}.jpg",
+                            pho.type or "image/jpeg",
+                            target_parish_final
+                        )
                         if link:
                             drive_link_text = f"Google Drive Link: {link}"
-                            st.success(f"✅ Matagumpay na na-upload ang litrato sa Google Drive! ([Buksan ang Link]({link}))")
+                            st.success(f"✅ Matagumpay na na-upload ang litrato sa **CTG MEMBERS DATABASE ALL PARISH → {target_parish_final}**! ([Buksan ang Link]({link}))")
                         else:
                             st.warning(f"⚠️ {msg}")
 
