@@ -1025,33 +1025,33 @@ def get_default_leadership_and_priests_profiles() -> dict:
     profiles = {
         "supreme_head": {
             "key": "supreme_head",
-            "name": "Supreme Head",
-            "position": "Supreme Head — Church of the Temple of God",
-            "parish": "CTG Supreme Leadership",
+            "name": "GIDEON FLORANTE A. ABAQUITA, Sr.",
+            "position": "Supreme Head/Bishop, Presiding Elder",
+            "parish": "Church of the Temple of God — Supreme Leadership",
             "photo_b64": default_avatar_svg,
             "drive_link": ""
         },
         "supreme_head_spouse": {
             "key": "supreme_head_spouse",
-            "name": "Spouse of the Supreme Head",
-            "position": "Spouse of the Supreme Head — Ministry Leadership",
-            "parish": "CTG Supreme Leadership",
+            "name": "JOSEPHINE ALENSUELA ABAQUITA",
+            "position": "SUPREME SECRETARY/SEMINAR DIRECTOR",
+            "parish": "Church of the Temple of God — Supreme Leadership",
             "photo_b64": default_avatar_svg,
             "drive_link": ""
         },
         "diocese_head_1": {
             "key": "diocese_head_1",
-            "name": "Diocese Head I",
-            "position": "Diocese Head — Diocese I",
-            "parish": "CTG Diocese I Oversight",
+            "name": "Msgr. BELLA B. BINABICE",
+            "position": "DIOCESE HEAD I - Region 1",
+            "parish": "CTG Diocese I — Region 1 Oversight",
             "photo_b64": default_avatar_svg,
             "drive_link": ""
         },
         "diocese_head_2": {
             "key": "diocese_head_2",
-            "name": "Diocese Head II",
-            "position": "Diocese Head — Diocese II",
-            "parish": "CTG Diocese II Oversight",
+            "name": "MSGR. ELORDE A. WAYET",
+            "position": "DIOCESE HEAD I - Region II",
+            "parish": "CTG Diocese I — Region II Oversight",
             "photo_b64": default_avatar_svg,
             "drive_link": ""
         },
@@ -1065,12 +1065,19 @@ def get_default_leadership_and_priests_profiles() -> dict:
             "position": role_lbl,
             "parish": p_name,
             "photo_b64": "",
-            "drive_link": ""
+            "drive_link": "",
+            "is_active_online": True,
+            "last_active_ph": ""
         }
     return profiles
 
 def load_leadership_and_priests_profiles() -> dict:
     profiles = get_default_leadership_and_priests_profiles()
+    placeholder_head_names = {
+        "Supreme Head", "CTG Ministries Database", "CTG Master Admin",
+        "Spouse of the Supreme Head", "Asawa ng Supreme Head",
+        "Diocese Head I", "Diocese Head 1", "Diocese Head II", "Diocese Head 2"
+    }
     if os.path.exists(LOCAL_LEADERSHIP_PROFILES_FILE):
         try:
             with open(LOCAL_LEADERSHIP_PROFILES_FILE, "r", encoding="utf-8") as f:
@@ -1079,15 +1086,21 @@ def load_leadership_and_priests_profiles() -> dict:
                 for top_k in ["supreme_head", "supreme_head_spouse", "diocese_head_1", "diocese_head_2"]:
                     if isinstance(saved.get(top_k), dict):
                         s_item = saved[top_k]
-                        # Restore default if supreme_head was accidentally overwritten with CTG Ministries Database
-                        if top_k == "supreme_head" and str(s_item.get("name", "")).strip() == "CTG Ministries Database":
-                            continue
-                        profiles[top_k].update(s_item)
+                        s_name = str(s_item.get("name", "")).strip()
+                        if s_name and s_name not in placeholder_head_names:
+                            profiles[top_k]["name"] = s_name
+                            if str(s_item.get("position", "")).strip():
+                                profiles[top_k]["position"] = str(s_item.get("position", "")).strip()
+                            if str(s_item.get("parish", "")).strip():
+                                profiles[top_k]["parish"] = str(s_item.get("parish", "")).strip()
+                        if s_item.get("photo_b64"):
+                            profiles[top_k]["photo_b64"] = s_item["photo_b64"]
+                        if s_item.get("drive_link"):
+                            profiles[top_k]["drive_link"] = s_item["drive_link"]
                 if isinstance(saved.get("parish_priests"), dict):
                     for p_k, p_v in saved["parish_priests"].items():
                         if p_k in profiles["parish_priests"] and isinstance(p_v, dict):
                             profiles["parish_priests"][p_k].update(p_v)
-                            # Enforce "Leader" for HONGKONG PARISH and "House Church" for MALANAS PARISH if still default Parish Priest
                             if p_k == "HONGKONG PARISH":
                                 if str(profiles["parish_priests"][p_k].get("position", "")).strip().upper() == "PARISH PRIEST":
                                     profiles["parish_priests"][p_k]["position"] = "Leader"
@@ -1108,6 +1121,40 @@ def save_leadership_and_priests_profiles(profiles: dict):
             json.dump(profiles, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
+
+def record_parish_leader_active_presence(parish_name: str):
+    """Records a live active heartbeat timestamp when a Parish Admin Leader logs in or opens the app."""
+    if not parish_name or parish_name not in PARISH_ORDER:
+        return
+    now_str = get_philippine_datetime_str()
+    last_recorded = st.session_state.get("_last_heartbeat_saved_ph", "")
+    # Throttle disk writes to once per minute per session while keeping live status active
+    if last_recorded and last_recorded[:16] == now_str[:16]:
+        return
+    try:
+        profiles = load_leadership_and_priests_profiles()
+        if parish_name in profiles.get("parish_priests", {}):
+            profiles["parish_priests"][parish_name]["is_active_online"] = True
+            profiles["parish_priests"][parish_name]["last_active_ph"] = now_str
+            save_leadership_and_priests_profiles(profiles)
+            st.session_state["_last_heartbeat_saved_ph"] = now_str
+    except Exception:
+        pass
+
+def _build_green_active_badge_html(small: bool = False, last_active_ph: str = "") -> str:
+    pad = "2px 8px" if small else "3px 10px"
+    f_sz = "0.66rem" if small else "0.70rem"
+    dot_sz = "7px" if small else "8px"
+    sub_ts = f"<div style='font-size:0.65rem;color:#6EE7B7;margin-top:2px;'>🕒 Last Open: {last_active_ph}</div>" if (last_active_ph and not small) else ""
+    return (
+        f"<div style='margin-top:4px;margin-bottom:4px;'>"
+        f"<span style='display:inline-flex;align-items:center;gap:5px;background:rgba(16,185,129,0.18);"
+        f"color:#34D399;border:1px solid #10B981;font-size:{f_sz};font-weight:800;padding:{pad};"
+        f"border-radius:999px;letter-spacing:0.4px;box-shadow:0 0 10px rgba(16,185,129,0.22);'>"
+        f"<span style='width:{dot_sz};height:{dot_sz};border-radius:50%;background:#22C55E;"
+        f"box-shadow:0 0 6px #22C55E;display:inline-block;'></span>Active"
+        f"</span>{sub_ts}</div>"
+    )
 
 def compress_profile_image_to_data_uri(file_bytes: bytes) -> str:
     """Compresses an uploaded profile image to a crisp 220x220 center-cropped square JPEG data URI for instant rendering."""
@@ -1143,24 +1190,28 @@ def _build_profile_avatar_html(photo_b64: str, border_color: str = "#38BDF8", si
 
 def render_church_leadership_and_priests_directory(context_key: str = "home"):
     """
-    Renders the Church of the Temple of God Leadership Hierarchy & Parish Priests Directory on the Home Dashboard:
-    - Tier 1: Supreme Head & Spouse of the Supreme Head (Editable ONLY by Master Admin)
-    - Tier 2: Two Diocese Heads — Diocese Head I & Diocese Head II (Editable ONLY by Master Admin)
-    - Tier 3: 10 Parishes (Parish Priest for 8 parishes, House Church for Malanas Parish, Leader for Hongkong Parish)
-      — Editable by each Parish's own Admin User!
+    Renders the Church of the Temple of God Leadership Hierarchy on the Home Dashboard:
+    - Tier 1 (Visible to ALL):
+      * GIDEON FLORANTE A. ABAQUITA, Sr. (Supreme Head/Bishop, Presiding Elder)
+      * JOSEPHINE ALENSUELA ABAQUITA (SUPREME SECRETARY/SEMINAR DIRECTOR)
+    - Tier 2 (Visible to ALL):
+      * Msgr. BELLA B. BINABICE (DIOCESE HEAD I - Region 1)
+      * MSGR. ELORDE A. WAYET (DIOCESE HEAD I - Region II)
+    - Tier 3 (Visible ONLY to Master Admin):
+      * 10 Parish Priests / Malanas House Church / Hongkong Leader cards with Green Active status badge
+        and last login/open timestamp. (Parish Leaders see their own profile card in the left Side Control Panel only).
     """
     profiles = load_leadership_and_priests_profiles()
     is_master = (st.session_state.user_role == "Master Admin")
-    my_parish = st.session_state.get("assigned_parish", PARISH_ORDER[0])
 
     st.markdown(
         "<div style='background:linear-gradient(135deg, #064E3B 0%, #0F172A 100%);"
         "border:1px solid rgba(16,185,129,0.45);border-radius:14px;padding:16px 20px;margin-bottom:14px;text-align:center;'>"
         "<div style='font-size:1.25rem;font-weight:800;color:#F8FAFC;letter-spacing:0.5px;'>"
-        "🏛️ CHURCH OF THE TEMPLE OF GOD — SUPREME LEADERSHIP, DIOCESE HEADS & PARISH PRIESTS / LEADERS"
+        "🏛️ CHURCH OF THE TEMPLE OF GOD — SUPREME LEADERSHIP & DIOCESE HEADS"
         "</div>"
         "<div style='font-size:0.86rem;color:#A7F3D0;margin-top:4px;'>"
-        "Opisyal na Direktoryo ng Supreme Head, Asawa ng Supreme Head, 2 Diocese Heads, at 10 Parishes (Parish Priests • Malanas House Church • Hongkong Leader)"
+        "Opisyal na Pamunuan ng Church of the Temple of God (Supreme Head, Supreme Secretary/Seminar Director & Diocese Heads)"
         "</div></div>",
         unsafe_allow_html=True
     )
@@ -1168,97 +1219,101 @@ def render_church_leadership_and_priests_directory(context_key: str = "home"):
     # TIER 1: SUPREME HEAD & SPOUSE
     sup1 = profiles["supreme_head"]
     sup2 = profiles["supreme_head_spouse"]
-    sp_L, col_sup1, col_sup2, sp_R = st.columns([0.4, 1.6, 1.6, 0.4])
+    sp_L, col_sup1, col_sup2, sp_R = st.columns([0.3, 1.7, 1.7, 0.3])
     with col_sup1:
         av1 = _build_profile_avatar_html(sup1.get("photo_b64", ""), "#F59E0B", 98, "👑")
         st.markdown(
-            f"<div style='background:linear-gradient(145deg, rgba(30,41,59,0.95), rgba(15,23,42,0.95));"
-            f"border:2px solid #F59E0B;border-radius:14px;padding:16px 12px;text-align:center;"
-            f"box-shadow:0 6px 18px rgba(245,158,11,0.15);margin-bottom:10px;'>"
+            f"<div style='background:linear-gradient(145deg, rgba(30,41,59,0.96), rgba(15,23,42,0.96));"
+            f"border:2px solid #F59E0B;border-radius:14px;padding:16px 14px;text-align:center;"
+            f"box-shadow:0 6px 18px rgba(245,158,11,0.16);margin-bottom:10px;min-height:225px;'>"
             f"{av1}<br>"
-            f"<span style='background:#F59E0B;color:#0F172A;font-weight:800;font-size:0.74rem;padding:2px 10px;border-radius:12px;'>SUPREME HEAD</span>"
-            f"<div style='font-size:1.12rem;font-weight:800;color:#FEF3C7;margin-top:6px;'>{sup1.get('name')}</div>"
-            f"<div style='font-size:0.86rem;color:#FDE68A;font-weight:600;'>{sup1.get('position')}</div>"
-            f"<div style='font-size:0.78rem;color:#94A3B8;margin-top:2px;'>{sup1.get('parish')}</div>"
+            f"<span style='background:#F59E0B;color:#0F172A;font-weight:800;font-size:0.73rem;padding:2px 10px;border-radius:12px;'>SUPREME HEAD</span>"
+            f"<div style='font-size:1.08rem;font-weight:800;color:#FEF3C7;margin-top:8px;'>{sup1.get('name')}</div>"
+            f"<div style='font-size:0.85rem;color:#FDE68A;font-weight:700;margin-top:3px;'>{sup1.get('position')}</div>"
+            f"<div style='font-size:0.76rem;color:#94A3B8;margin-top:3px;'>{sup1.get('parish')}</div>"
             f"</div>",
             unsafe_allow_html=True
         )
     with col_sup2:
         av2 = _build_profile_avatar_html(sup2.get("photo_b64", ""), "#F59E0B", 98, "🌟")
         st.markdown(
-            f"<div style='background:linear-gradient(145deg, rgba(30,41,59,0.95), rgba(15,23,42,0.95));"
-            f"border:2px solid #F59E0B;border-radius:14px;padding:16px 12px;text-align:center;"
-            f"box-shadow:0 6px 18px rgba(245,158,11,0.15);margin-bottom:10px;'>"
+            f"<div style='background:linear-gradient(145deg, rgba(30,41,59,0.96), rgba(15,23,42,0.96));"
+            f"border:2px solid #F59E0B;border-radius:14px;padding:16px 14px;text-align:center;"
+            f"box-shadow:0 6px 18px rgba(245,158,11,0.16);margin-bottom:10px;min-height:225px;'>"
             f"{av2}<br>"
-            f"<span style='background:#F59E0B;color:#0F172A;font-weight:800;font-size:0.74rem;padding:2px 10px;border-radius:12px;'>SUPREME LEADERSHIP</span>"
-            f"<div style='font-size:1.12rem;font-weight:800;color:#FEF3C7;margin-top:6px;'>{sup2.get('name')}</div>"
-            f"<div style='font-size:0.86rem;color:#FDE68A;font-weight:600;'>{sup2.get('position')}</div>"
-            f"<div style='font-size:0.78rem;color:#94A3B8;margin-top:2px;'>{sup2.get('parish')}</div>"
+            f"<span style='background:#F59E0B;color:#0F172A;font-weight:800;font-size:0.73rem;padding:2px 10px;border-radius:12px;'>SUPREME LEADERSHIP</span>"
+            f"<div style='font-size:1.08rem;font-weight:800;color:#FEF3C7;margin-top:8px;'>{sup2.get('name')}</div>"
+            f"<div style='font-size:0.85rem;color:#FDE68A;font-weight:700;margin-top:3px;'>{sup2.get('position')}</div>"
+            f"<div style='font-size:0.76rem;color:#94A3B8;margin-top:3px;'>{sup2.get('parish')}</div>"
             f"</div>",
             unsafe_allow_html=True
         )
 
-    # TIER 2: TWO DIOCESE HEADS
+    # TIER 2: TWO DIOCESE HEADS (Region 1 & Region II)
     dio1 = profiles["diocese_head_1"]
     dio2 = profiles["diocese_head_2"]
-    dsp_L, col_dio1, col_dio2, dsp_R = st.columns([0.55, 1.45, 1.45, 0.55])
+    dsp_L, col_dio1, col_dio2, dsp_R = st.columns([0.45, 1.55, 1.55, 0.45])
     with col_dio1:
         av_d1 = _build_profile_avatar_html(dio1.get("photo_b64", ""), "#10B981", 86, "🏛️")
         st.markdown(
-            f"<div style='background:rgba(15,23,42,0.92);border:1.5px solid #10B981;border-radius:12px;"
-            f"padding:14px 10px;text-align:center;margin-bottom:12px;'>"
+            f"<div style='background:rgba(15,23,42,0.94);border:1.5px solid #10B981;border-radius:12px;"
+            f"padding:14px 12px;text-align:center;margin-bottom:12px;min-height:200px;'>"
             f"{av_d1}<br>"
-            f"<span style='background:#065F46;color:#D1FAE5;font-weight:700;font-size:0.72rem;padding:2px 9px;border-radius:10px;'>DIOCESE HEAD I</span>"
-            f"<div style='font-size:1.02rem;font-weight:800;color:#ECFDF5;margin-top:6px;'>{dio1.get('name')}</div>"
-            f"<div style='font-size:0.83rem;color:#6EE7B7;font-weight:600;'>{dio1.get('position')}</div>"
-            f"<div style='font-size:0.76rem;color:#94A3B8;margin-top:2px;'>{dio1.get('parish')}</div>"
+            f"<span style='background:#065F46;color:#D1FAE5;font-weight:700;font-size:0.72rem;padding:2px 10px;border-radius:10px;'>DIOCESE HEAD I — REGION 1</span>"
+            f"<div style='font-size:1.02rem;font-weight:800;color:#ECFDF5;margin-top:7px;'>{dio1.get('name')}</div>"
+            f"<div style='font-size:0.83rem;color:#6EE7B7;font-weight:700;margin-top:2px;'>{dio1.get('position')}</div>"
+            f"<div style='font-size:0.75rem;color:#94A3B8;margin-top:2px;'>{dio1.get('parish')}</div>"
             f"</div>",
             unsafe_allow_html=True
         )
     with col_dio2:
         av_d2 = _build_profile_avatar_html(dio2.get("photo_b64", ""), "#10B981", 86, "🏛️")
         st.markdown(
-            f"<div style='background:rgba(15,23,42,0.92);border:1.5px solid #10B981;border-radius:12px;"
-            f"padding:14px 10px;text-align:center;margin-bottom:12px;'>"
+            f"<div style='background:rgba(15,23,42,0.94);border:1.5px solid #10B981;border-radius:12px;"
+            f"padding:14px 12px;text-align:center;margin-bottom:12px;min-height:200px;'>"
             f"{av_d2}<br>"
-            f"<span style='background:#065F46;color:#D1FAE5;font-weight:700;font-size:0.72rem;padding:2px 9px;border-radius:10px;'>DIOCESE HEAD II</span>"
-            f"<div style='font-size:1.02rem;font-weight:800;color:#ECFDF5;margin-top:6px;'>{dio2.get('name')}</div>"
-            f"<div style='font-size:0.83rem;color:#6EE7B7;font-weight:600;'>{dio2.get('position')}</div>"
-            f"<div style='font-size:0.76rem;color:#94A3B8;margin-top:2px;'>{dio2.get('parish')}</div>"
+            f"<span style='background:#065F46;color:#D1FAE5;font-weight:700;font-size:0.72rem;padding:2px 10px;border-radius:10px;'>DIOCESE HEAD I — REGION II</span>"
+            f"<div style='font-size:1.02rem;font-weight:800;color:#ECFDF5;margin-top:7px;'>{dio2.get('name')}</div>"
+            f"<div style='font-size:0.83rem;color:#6EE7B7;font-weight:700;margin-top:2px;'>{dio2.get('position')}</div>"
+            f"<div style='font-size:0.75rem;color:#94A3B8;margin-top:2px;'>{dio2.get('parish')}</div>"
             f"</div>",
             unsafe_allow_html=True
         )
 
-    # TIER 3: 10 PARISHES (Parish Priests, Malanas House Church, Hongkong Leader)
-    st.markdown("##### ⛪ Mga Parish Priests, Malanas House Church & Hongkong Leader (10 Parishes)")
-    priests_dict = profiles.get("parish_priests", {})
-    for row_start in range(0, len(PARISH_ORDER), 5):
-        row_parishes = PARISH_ORDER[row_start:row_start + 5]
-        p_cols = st.columns(5)
-        for c_i, p_name in enumerate(row_parishes):
-            def_role_p = get_default_parish_leader_role_title(p_name)
-            p_info = priests_dict.get(p_name, {"name": f"{def_role_p} ({p_name.title()})", "position": def_role_p, "parish": p_name, "photo_b64": ""})
-            pos_badge = p_info.get("position") or def_role_p
-            if p_name == "HONGKONG PARISH" and pos_badge.upper() == "PARISH PRIEST":
-                pos_badge = "Leader"
-            elif p_name == "MALANAS PARISH" and pos_badge.upper() == "PARISH PRIEST":
-                pos_badge = "House Church"
-            parish_disp_name = "MALANAS HOUSE CHURCH" if p_name == "MALANAS PARISH" else p_name
-            is_my_card = (not is_master and p_name == my_parish)
-            border_c = "#38BDF8" if not is_my_card else "#F59E0B"
-            with p_cols[c_i]:
-                av_p = _build_profile_avatar_html(p_info.get("photo_b64", ""), border_c, 76, "🏠" if p_name == "MALANAS PARISH" else "⛪")
-                st.markdown(
-                    f"<div style='background:rgba(30,41,59,0.88);border:1.5px solid {border_c};border-radius:12px;"
-                    f"padding:12px 8px;text-align:center;margin-bottom:10px;min-height:185px;'>"
-                    f"{av_p}<br>"
-                    f"<span style='background:rgba(56,189,248,0.18);color:#7DD3FC;font-weight:700;font-size:0.68rem;padding:2px 8px;border-radius:8px;'>"
-                    f"{pos_badge}</span>"
-                    f"<div style='font-size:0.92rem;font-weight:800;color:#F8FAFC;margin-top:6px;line-height:1.25;'>{p_info.get('name')}</div>"
-                    f"<div style='font-size:0.75rem;color:#38BDF8;font-weight:700;margin-top:4px;'>{parish_disp_name}</div>"
-                    f"</div>",
-                    unsafe_allow_html=True
-                )
+    # TIER 3: 10 PARISHES — VISIBLE ONLY TO MASTER ADMIN!
+    if is_master:
+        st.markdown("##### ⛪ Mga Parish Priests, Malanas House Church & Hongkong Leader (10 Parishes — Master Admin Live Active Monitor)")
+        priests_dict = profiles.get("parish_priests", {})
+        for row_start in range(0, len(PARISH_ORDER), 5):
+            row_parishes = PARISH_ORDER[row_start:row_start + 5]
+            p_cols = st.columns(5)
+            for c_i, p_name in enumerate(row_parishes):
+                def_role_p = get_default_parish_leader_role_title(p_name)
+                p_info = priests_dict.get(p_name, {"name": f"{def_role_p} ({p_name.title()})", "position": def_role_p, "parish": p_name, "photo_b64": ""})
+                pos_badge = p_info.get("position") or def_role_p
+                if p_name == "HONGKONG PARISH" and pos_badge.upper() == "PARISH PRIEST":
+                    pos_badge = "Leader"
+                elif p_name == "MALANAS PARISH" and pos_badge.upper() == "PARISH PRIEST":
+                    pos_badge = "House Church"
+                parish_disp_name = "MALANAS HOUSE CHURCH" if p_name == "MALANAS PARISH" else p_name
+                last_act_str = str(p_info.get("last_active_ph", "") or "").strip()
+                active_badge_html = _build_green_active_badge_html(small=False, last_active_ph=last_act_str)
+                with p_cols[c_i]:
+                    av_p = _build_profile_avatar_html(p_info.get("photo_b64", ""), "#10B981", 76, "🏠" if p_name == "MALANAS PARISH" else "⛪")
+                    st.markdown(
+                        f"<div style='background:linear-gradient(160deg, rgba(30,41,59,0.94), rgba(15,23,42,0.94));"
+                        f"border:1.5px solid #10B981;border-radius:14px;padding:12px 8px;text-align:center;"
+                        f"margin-bottom:10px;min-height:220px;box-shadow:0 4px 14px rgba(16,185,129,0.12);'>"
+                        f"{av_p}<br>"
+                        f"{active_badge_html}"
+                        f"<span style='background:rgba(56,189,248,0.18);color:#7DD3FC;font-weight:700;font-size:0.68rem;padding:2px 8px;border-radius:8px;'>"
+                        f"{pos_badge}</span>"
+                        f"<div style='font-size:0.92rem;font-weight:800;color:#F8FAFC;margin-top:6px;line-height:1.25;'>{p_info.get('name')}</div>"
+                        f"<div style='font-size:0.75rem;color:#38BDF8;font-weight:700;margin-top:4px;'>{parish_disp_name}</div>"
+                        f"</div>",
+                        unsafe_allow_html=True
+                    )
+
 
 def upload_leader_profile_image_to_weekly_report_folder(file_bytes: bytes, filename: str, mime_type: str, parish_name: str = "") -> tuple[str, str]:
     """
@@ -8775,6 +8830,8 @@ def render_weekly_report_page():
             "📝 Remarks (Mass / Adal / House Church / Visitors)",
             "📊 Parish Weekly Report Data (Attendance)",
             f"📅 Buong Buwan ng {view_month.upper()} {selected_year} — Monitoring & Summary",
+            "🏅 Passing Ministry Areas (≥75% Passing)",
+            f"📊 Monthly & Annual Consolidation (Jan–Dec {selected_year})",
             "🏆 Parish Ministry Performance Report"
         ])
     else:
@@ -8783,7 +8840,8 @@ def render_weekly_report_page():
             f"⛪ Liturgical Officers & Preachers ({len(active_month_weeks)} Weeks)",
             "📝 Remarks (Mass / Adal / House Church / Visitors)",
             "📊 Parish Weekly Report Data (Attendance)",
-            f"📅 Buong Buwan ng {view_month.upper()} {selected_year} — Monitoring & Summary"
+            f"📅 Buong Buwan ng {view_month.upper()} {selected_year} — Monitoring & Summary",
+            "🏅 Passing Ministry Areas (≥75% Passing)"
         ])
 
     with pwr_tabs_list[0]:
@@ -9308,8 +9366,526 @@ def render_weekly_report_page():
     # =====================================================================
     # 🏆 PAGE 6 (SECTION E - MASTER ADMIN EXCLUSIVE): CHURCH OF THE TEMPLE OF GOD – PARISH MINISTRY PERFORMANCE REPORT
     # =====================================================================
+    # =====================================================================
+    # 🏅 TAB 5: PASSING MINISTRY AREAS (≥ 75% PASSING STANDARD — PER MONTH & WEEKS)
+    # =====================================================================
+    with pwr_tabs_list[5]:
+        st.markdown(
+            f"<div style='background:linear-gradient(135deg, #064E3B 0%, #0F172A 100%);"
+            f"border:1px solid rgba(16,185,129,0.5);border-radius:14px;padding:16px 20px;margin-bottom:14px;'>"
+            f"<div style='font-size:1.22rem;font-weight:800;color:#F8FAFC;'>"
+            f"🏅 Ministry Areas Passing Report (Passing Standard: ≥ 75% Attendance)"
+            f"</div>"
+            f"<div style='font-size:0.86rem;color:#A7F3D0;margin-top:4px;'>"
+            f"Tanging ang mga Ministry Areas na nakapasa sa <b>75% Passing Standard</b> bawat linggo at sa buong buwan ng "
+            f"<b>{view_month.upper()} {selected_year}</b> ({len(active_month_weeks)} Weeks) ang ipinapakita rito."
+            f"</div></div>",
+            unsafe_allow_html=True
+        )
+
+        target_parishes_pass = (
+            PARISH_ORDER
+            if (is_master and effective_parish_filter == "Lahat ng Parokya")
+            else ([focused_parish_for_sheets] if is_master else [my_parish])
+        )
+        ministry_area_defs = [
+            ("Mass", "mass_a", "mass_y", "say"),
+            ("Pampamilya", "pampamilya_a", "pampamilya_y", "say"),
+            ("Adal ti Evangelio", "adal_a", "adal_y", "say"),
+            ("Online Ministry", "online_a", "online_y", "say"),
+            ("Youth Fellowship", None, "youth_y", "youth"),
+            ("Kids Fellowship", None, "kids_k", "kids"),
+        ]
+
+        pass_matrix_rows = []
+        detailed_pass_cards = []
+        total_weekly_pass_events = 0
+        parishes_with_any_pass = 0
+        area_pass_counter = {m_lbl: 0 for m_lbl, _, _, _ in ministry_area_defs}
+
+        for p_item in target_parishes_pass:
+            denoms_p = get_parish_member_denominators(p_item)
+            short_p_lbl = "MALANAS HOUSE CHURCH" if p_item == "MALANAS PARISH" else ("HONGKONG CHAPTER" if p_item == "HONGKONG PARISH" else p_item)
+            row_dict = {"Parokya": short_p_lbl}
+            area_weeks_passed = {m_lbl: [] for m_lbl, _, _, _ in ministry_area_defs}
+            area_pcts_month = {m_lbl: [] for m_lbl, _, _, _ in ministry_area_defs}
+            parish_passed_any = False
+
+            for wk_lbl in active_month_weeks:
+                rec_w = db_live.get(f"{p_item.upper()}__{view_month.upper()}__{wk_lbl}", {})
+                has_w = is_week_record_completed(rec_w)
+                passed_in_wk = []
+                if has_w:
+                    d_say = int(rec_w.get("total_members_say", 0)) or denoms_p["say"]
+                    d_y = int(rec_w.get("total_members_y", 0)) or denoms_p["youth"]
+                    d_k = int(rec_w.get("total_members_k", 0)) or denoms_p["kids"]
+                    denom_map = {"say": d_say, "youth": d_y, "kids": d_k}
+
+                    for m_lbl, k_a, k_2, d_key in ministry_area_defs:
+                        if p_item == "HONGKONG PARISH" and m_lbl not in ["Mass", "Online Ministry"]:
+                            continue
+                        att_v = (int(rec_w.get(k_a, 0)) if k_a else 0) + (int(rec_w.get(k_2, 0)) if k_2 else 0)
+                        den_v = denom_map.get(d_key, 0)
+                        pct_v = int(round((att_v / den_v) * 100)) if den_v > 0 else 0
+                        area_pcts_month[m_lbl].append(pct_v)
+                        if pct_v >= 75:
+                            passed_in_wk.append(f"🟢 {m_lbl} ({pct_v}%)")
+                            area_weeks_passed[m_lbl].append(f"{wk_lbl} ({pct_v}%)")
+                            area_pass_counter[m_lbl] += 1
+                            total_weekly_pass_events += 1
+                            parish_passed_any = True
+
+                row_dict[wk_lbl] = " • ".join(passed_in_wk) if passed_in_wk else "—"
+
+            if parish_passed_any:
+                parishes_with_any_pass += 1
+
+            # Summarize how many weeks each Ministry Area passed (>= 75%) in this month
+            weeks_count_summary = []
+            monthly_avg_passed = []
+            for m_lbl, _, _, _ in ministry_area_defs:
+                if p_item == "HONGKONG PARISH" and m_lbl not in ["Mass", "Online Ministry"]:
+                    continue
+                w_list = area_weeks_passed[m_lbl]
+                if len(w_list) > 0:
+                    weeks_count_summary.append(f"✅ {m_lbl}: {len(w_list)}/{len(active_month_weeks)} Weeks")
+                p_list = area_pcts_month[m_lbl]
+                if p_list:
+                    avg_m_pct = int(round(sum(p_list) / len(p_list)))
+                    if avg_m_pct >= 75:
+                        monthly_avg_passed.append(f"🏅 {m_lbl} ({avg_m_pct}% Avg)")
+
+            row_dict[f"Ilang Weeks Nakapasa (Out of {len(active_month_weeks)} Weeks)"] = " | ".join(weeks_count_summary) if weeks_count_summary else "Wala pang ≥75%"
+            row_dict["Monthly Passing Average (≥75%)"] = " • ".join(monthly_avg_passed) if monthly_avg_passed else "—"
+            pass_matrix_rows.append(row_dict)
+
+            if parish_passed_any:
+                detailed_pass_cards.append({
+                    "parish": short_p_lbl,
+                    "weeks_summary": weeks_count_summary,
+                    "monthly_avg_passed": monthly_avg_passed,
+                    "area_weeks_passed": {k: v for k, v in area_weeks_passed.items() if v}
+                })
+
+        top_area_name = max(area_pass_counter.items(), key=lambda x: x[1])[0] if total_weekly_pass_events > 0 else "N/A"
+        pm1, pm2, pm3, pm4 = st.columns(4)
+        pm1.metric("🏛️ Parokyang May Passed Area (≥75%)", f"{parishes_with_any_pass} / {len(target_parishes_pass)}")
+        pm2.metric("🟢 Total Weekly Area Passes (≥75%)", total_weekly_pass_events)
+        pm3.metric("🏆 Top Passing Ministry Area", top_area_name)
+        pm4.metric("📅 Saklaw na Buwan", f"{view_month} {selected_year} ({len(active_month_weeks)} Wks)")
+
+        st.markdown(f"#### 📋 Matrix ng mga Nakapasa sa 75% Passing Standard — `{view_month.upper()} {selected_year}` (1st Week hanggang {active_month_weeks[-1]})")
+        df_pass_matrix = pd.DataFrame(pass_matrix_rows)
+        st.dataframe(df_pass_matrix, use_container_width=True, hide_index=True)
+
+        if detailed_pass_cards:
+            st.markdown("#### 🏅 Detalyadong Talaan ng mga Parokya at Ministry Areas na Nakapasa (≥ 75%)")
+            for p_card in detailed_pass_cards:
+                area_lines_html = "".join(
+                    f"<div style='margin:4px 0;font-size:0.88rem;'>"
+                    f"<span style='background:#065F46;color:#D1FAE5;padding:2px 8px;border-radius:8px;font-weight:700;'>✅ {a_name}</span> "
+                    f"— Nakapasa ng <b>{len(w_arr)}/{len(active_month_weeks)} Weeks</b>: <code>{', '.join(w_arr)}</code>"
+                    f"</div>"
+                    for a_name, w_arr in p_card["area_weeks_passed"].items()
+                )
+                avg_badge_html = (
+                    f"<div style='margin-top:6px;font-size:0.86rem;color:#FDE68A;'><b>🏆 Monthly Overall Passing Average (≥75%):</b> {' | '.join(p_card['monthly_avg_passed'])}</div>"
+                    if p_card["monthly_avg_passed"] else ""
+                )
+                st.markdown(
+                    f"<div class='full-text-card' style='border-left:5px solid #10B981;margin-bottom:10px;'>"
+                    f"<div style='font-size:1.05rem;font-weight:800;color:#34D399;margin-bottom:6px;'>⛪ {p_card['parish']} — {view_month.upper()} {selected_year}</div>"
+                    f"{area_lines_html}"
+                    f"{avg_badge_html}"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+        else:
+            st.info(f"Wala pang naitalang Ministry Area na umabot sa ≥ 75% Passing Rate para sa {view_month} {selected_year}.")
+
+        pass_csv_bytes = df_pass_matrix.to_csv(index=False).encode("utf-8-sig")
+        st.download_button(
+            label=f"📥 I-download ang ≥75% Passing Ministry Areas Report ({view_month} {selected_year} .csv)",
+            data=pass_csv_bytes,
+            file_name=f"CTG_Passing_75Pct_Ministry_Areas_{view_month}_{selected_year}.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key=f"dl_pass_75_{view_month}_{selected_year}"
+        )
+
+    # =====================================================================
+    # 📊 TAB 6 (MASTER ADMIN EXCLUSIVE): MONTHLY (>) EXPANDABLE CONSOLIDATION & JAN-DEC WHOLE-YEAR COMPUTATION + DOWNLOAD
+    # =====================================================================
     if is_master:
-        with pwr_tabs_list[5]:
+        with pwr_tabs_list[6]:
+            st.markdown(
+                f"<div style='background:linear-gradient(135deg, #1E3A8A 0%, #0F172A 100%);"
+                f"border:1px solid rgba(59,130,246,0.5);border-radius:14px;padding:16px 20px;margin-bottom:14px;'>"
+                f"<div style='font-size:1.24rem;font-weight:800;color:#F8FAFC;'>"
+                f"📊 Master Admin Monthly & Whole-Year Consolidation Center (January–December {selected_year})"
+                f"</div>"
+                f"<div style='font-size:0.86rem;color:#BFDBFE;margin-top:4px;'>"
+                f"Pindutin ang arrow <b>(▶)</b> sa bawat buwan upang buksan ang buong <b>Monthly Consolidation Table</b> ng lahat ng 10 Parokya (Lipay Norte hanggang Hongkong) mula sa kanilang isinumiteng Weekly Reports, at tingnan sa ibaba ang <b>January to December Whole-Year Computation & Full-Year Excel Download</b>."
+                f"</div></div>",
+                unsafe_allow_html=True
+            )
+
+            def _build_month_consolidated_df_for_all_parishes(m_target: str, yr_val: int) -> tuple[pd.DataFrame, dict]:
+                m_wks = get_weeks_for_month_year(m_target, yr_val)
+                m_rows = []
+                tot_sub_wks_all = 0
+                sum_say_all, sum_y_all, sum_k_all = 0, 0, 0
+                sum_mass_all, sum_pamp_all, sum_adal_all, sum_onl_all, sum_yth_all, sum_kds_all = 0, 0, 0, 0, 0, 0
+                sum_hc_all, sum_vis_all, sum_hv_all, sum_mw_all, sum_ind_all = 0, 0, 0, 0, 0
+                active_wk_slots_say, active_wk_slots_y, active_wk_slots_k = 0, 0, 0
+
+                for p_n in PARISH_ORDER:
+                    den_p = get_parish_member_denominators(p_n)
+                    short_p = "MALANAS HOUSE CHURCH" if p_n == "MALANAS PARISH" else ("HONGKONG CHAPTER" if p_n == "HONGKONG PARISH" else p_n.replace("PARISH", "").strip())
+                    sub_cnt = 0
+                    p_mass_sum, p_pamp_sum, p_adal_sum, p_onl_sum, p_yth_sum, p_kds_sum = 0, 0, 0, 0, 0, 0
+                    p_hc_sum, p_vis_sum, p_hv_sum, p_mw_sum, p_ind_sum = 0, 0, 0, 0, 0
+                    p_say_base, p_y_base, p_k_base = den_p["say"], den_p["youth"], den_p["kids"]
+                    wk_mass_cells = {}
+
+                    for w_lbl in WEEKS_2027:
+                        if w_lbl not in m_wks:
+                            wk_mass_cells[w_lbl] = "N/A"
+                            continue
+                        rec_m = db_live.get(f"{p_n.upper()}__{m_target.upper()}__{w_lbl}", {})
+                        has_m = is_week_record_completed(rec_m)
+                        is_nr = is_record_marked_no_report(rec_m)
+                        if has_m:
+                            sub_cnt += 1
+                            tot_sub_wks_all += 1
+                            p_say_base = int(rec_m.get("total_members_say", 0)) or p_say_base
+                            p_y_base = int(rec_m.get("total_members_y", 0)) or p_y_base
+                            p_k_base = int(rec_m.get("total_members_k", 0)) or p_k_base
+
+                            m_v = int(rec_m.get("mass_a", 0)) + int(rec_m.get("mass_y", 0))
+                            p_v = int(rec_m.get("pampamilya_a", 0)) + int(rec_m.get("pampamilya_y", 0))
+                            ad_v = int(rec_m.get("adal_a", 0)) + int(rec_m.get("adal_y", 0))
+                            on_v = int(rec_m.get("online_a", 0)) + int(rec_m.get("online_y", 0))
+                            y_v = int(rec_m.get("youth_y", 0))
+                            k_v = int(rec_m.get("kids_k", 0))
+                            hc_v = int(rec_m.get("hc_a", 0)) + int(rec_m.get("hc_y", 0)) + int(rec_m.get("hc_k", 0))
+                            vis_v = int(rec_m.get("visitors_a", 0)) + int(rec_m.get("visitors_y", 0)) + int(rec_m.get("visitors_k", 0))
+
+                            hv_f, _ = count_families_and_people_from_text(str(rec_m.get("hv_names", "")), str(rec_m.get("house_visitation", "0")))
+                            mw_f, _ = count_families_and_people_from_text(str(rec_m.get("mw_names", "")), str(rec_m.get("missionary_work", "0")))
+                            in_f, _ = count_families_and_people_from_text(str(rec_m.get("ind_names", "")), str(rec_m.get("indoctrination", "0")))
+
+                            p_mass_sum += m_v
+                            p_pamp_sum += p_v
+                            p_adal_sum += ad_v
+                            p_onl_sum += on_v
+                            p_yth_sum += y_v
+                            p_kds_sum += k_v
+                            p_hc_sum += hc_v
+                            p_vis_sum += vis_v
+                            p_hv_sum += hv_f
+                            p_mw_sum += mw_f
+                            p_ind_sum += in_f
+
+                            m_pct_w = calc_pct_str(m_v, p_say_base)
+                            wk_mass_cells[w_lbl] = f"{m_v}/{p_say_base} ({m_pct_w})"
+                        elif is_nr:
+                            wk_mass_cells[w_lbl] = "❌ (No Report)"
+                        else:
+                            wk_mass_cells[w_lbl] = "⏳ (0)"
+
+                    denom_say_month = p_say_base * sub_cnt if sub_cnt > 0 else p_say_base
+                    denom_y_month = p_y_base * sub_cnt if sub_cnt > 0 else p_y_base
+                    denom_k_month = p_k_base * sub_cnt if sub_cnt > 0 else p_k_base
+
+                    sum_say_all += p_say_base
+                    sum_y_all += p_y_base
+                    sum_k_all += p_k_base
+                    if sub_cnt > 0:
+                        active_wk_slots_say += denom_say_month
+                        active_wk_slots_y += denom_y_month
+                        active_wk_slots_k += denom_k_month
+
+                    sum_mass_all += p_mass_sum
+                    sum_pamp_all += p_pamp_sum
+                    sum_adal_all += p_adal_sum
+                    sum_onl_all += p_onl_sum
+                    sum_yth_all += p_yth_sum
+                    sum_kds_all += p_kds_sum
+                    sum_hc_all += p_hc_sum
+                    sum_vis_all += p_vis_sum
+                    sum_hv_all += p_hv_sum
+                    sum_mw_all += p_mw_sum
+                    sum_ind_all += p_ind_sum
+
+                    mass_avg_pct = int(round((p_mass_sum / denom_say_month) * 100)) if (sub_cnt > 0 and denom_say_month > 0) else 0
+                    pamp_avg_pct = int(round((p_pamp_sum / denom_say_month) * 100)) if (sub_cnt > 0 and denom_say_month > 0) else 0
+                    adal_avg_pct = int(round((p_adal_sum / denom_say_month) * 100)) if (sub_cnt > 0 and denom_say_month > 0) else 0
+                    onl_avg_pct = int(round((p_onl_sum / denom_say_month) * 100)) if (sub_cnt > 0 and denom_say_month > 0) else 0
+                    yth_avg_pct = int(round((p_yth_sum / denom_y_month) * 100)) if (sub_cnt > 0 and denom_y_month > 0) else 0
+                    kds_avg_pct = int(round((p_kds_sum / denom_k_month) * 100)) if (sub_cnt > 0 and denom_k_month > 0) else 0
+
+                    passed_tags = []
+                    for area_n, pct_val in [
+                        ("Mass", mass_avg_pct), ("Pampamilya", pamp_avg_pct), ("Adal", adal_avg_pct),
+                        ("Online", onl_avg_pct), ("Youth", yth_avg_pct), ("Kids", kds_avg_pct)
+                    ]:
+                        if p_n == "HONGKONG PARISH" and area_n not in ["Mass", "Online"]:
+                            continue
+                        if sub_cnt > 0 and pct_val >= 75:
+                            passed_tags.append(f"🟢 {area_n} ({pct_val}%)")
+
+                    m_rows.append({
+                        "Parish": short_p,
+                        "Submitted Weeks": f"{sub_cnt}/{len(m_wks)} Wks",
+                        "Base Members (SAY|Y|K)": f"{p_say_base} | {p_y_base} | {p_k_base}",
+                        "1st Week (Mass)": wk_mass_cells.get("1st Week", "N/A"),
+                        "2nd Week (Mass)": wk_mass_cells.get("2nd Week", "N/A"),
+                        "3rd Week (Mass)": wk_mass_cells.get("3rd Week", "N/A"),
+                        "4th Week (Mass)": wk_mass_cells.get("4th Week", "N/A"),
+                        "5th Week (Mass)": wk_mass_cells.get("5th Week", "N/A"),
+                        "Consolidated Mass": f"{p_mass_sum} ({mass_avg_pct}%)",
+                        "Consolidated Pampamilya": f"{p_pamp_sum} ({pamp_avg_pct}%)",
+                        "Consolidated Adal": f"{p_adal_sum} ({adal_avg_pct}%)",
+                        "Consolidated Online": f"{p_onl_sum} ({onl_avg_pct}%)",
+                        "Consolidated Youth": f"{p_yth_sum} ({yth_avg_pct}%)",
+                        "Consolidated Kids": f"{p_kds_sum} ({kds_avg_pct}%)",
+                        "House Church | Visitors": f"HC:{p_hc_sum} | Vis:{p_vis_sum}",
+                        "Outreach (HV | MW | IND Fams)": f"HV:{p_hv_sum} | MW:{p_mw_sum} | IND:{p_ind_sum}",
+                        "Passing Areas (≥75% Avg)": " • ".join(passed_tags) if passed_tags else "—",
+                    })
+
+                ov_mass_pct = int(round((sum_mass_all / active_wk_slots_say) * 100)) if active_wk_slots_say > 0 else 0
+                ov_pamp_pct = int(round((sum_pamp_all / active_wk_slots_say) * 100)) if active_wk_slots_say > 0 else 0
+                ov_adal_pct = int(round((sum_adal_all / active_wk_slots_say) * 100)) if active_wk_slots_say > 0 else 0
+                ov_onl_pct = int(round((sum_onl_all / active_wk_slots_say) * 100)) if active_wk_slots_say > 0 else 0
+                ov_yth_pct = int(round((sum_yth_all / active_wk_slots_y) * 100)) if active_wk_slots_y > 0 else 0
+                ov_kds_pct = int(round((sum_kds_all / active_wk_slots_k) * 100)) if active_wk_slots_k > 0 else 0
+
+                m_rows.append({
+                    "Parish": f"TOTAL / CONSOLIDATED ({m_target.upper()} {yr_val}):",
+                    "Submitted Weeks": f"{tot_sub_wks_all} Reports",
+                    "Base Members (SAY|Y|K)": f"{sum_say_all} | {sum_y_all} | {sum_k_all}",
+                    "1st Week (Mass)": "All Parishes",
+                    "2nd Week (Mass)": "All Parishes",
+                    "3rd Week (Mass)": "All Parishes",
+                    "4th Week (Mass)": "All Parishes",
+                    "5th Week (Mass)": "All Parishes",
+                    "Consolidated Mass": f"{sum_mass_all} ({ov_mass_pct}%)",
+                    "Consolidated Pampamilya": f"{sum_pamp_all} ({ov_pamp_pct}%)",
+                    "Consolidated Adal": f"{sum_adal_all} ({ov_adal_pct}%)",
+                    "Consolidated Online": f"{sum_onl_all} ({ov_onl_pct}%)",
+                    "Consolidated Youth": f"{sum_yth_all} ({ov_yth_pct}%)",
+                    "Consolidated Kids": f"{sum_kds_all} ({ov_kds_pct}%)",
+                    "House Church | Visitors": f"HC:{sum_hc_all} | Vis:{sum_vis_all}",
+                    "Outreach (HV | MW | IND Fams)": f"HV:{sum_hv_all} | MW:{sum_mw_all} | IND:{sum_ind_all}",
+                    "Passing Areas (≥75% Avg)": f"Overall Mass Avg: {ov_mass_pct}%",
+                })
+
+                meta_totals = {
+                    "month": m_target,
+                    "submitted_reports": tot_sub_wks_all,
+                    "mass_att": sum_mass_all, "mass_pct": ov_mass_pct,
+                    "pamp_att": sum_pamp_all, "pamp_pct": ov_pamp_pct,
+                    "adal_att": sum_adal_all, "adal_pct": ov_adal_pct,
+                    "onl_att": sum_onl_all, "onl_pct": ov_onl_pct,
+                    "yth_att": sum_yth_all, "yth_pct": ov_yth_pct,
+                    "kds_att": sum_kds_all, "kds_pct": ov_kds_pct,
+                    "hc_att": sum_hc_all, "vis_att": sum_vis_all,
+                    "hv_fams": sum_hv_all, "mw_fams": sum_mw_all, "ind_fams": sum_ind_all,
+                    "active_say_denom": active_wk_slots_say,
+                    "active_y_denom": active_wk_slots_y,
+                    "active_k_denom": active_wk_slots_k,
+                }
+                return pd.DataFrame(m_rows), meta_totals
+
+            monthly_dfs_map = {}
+            monthly_metas_list = []
+
+            st.markdown(f"#### 📂 1. Monthly Expandable Consolidation (`▶` Click Month Arrow to View Lipay Norte hanggang Hongkong)")
+            for m_iter in MONTHS_2027:
+                df_m_cons, meta_m = _build_month_consolidated_df_for_all_parishes(m_iter, int(selected_year))
+                monthly_dfs_map[m_iter] = df_m_cons
+                monthly_metas_list.append(meta_m)
+                sub_badge = f"✅ {meta_m['submitted_reports']} Submitted Reports | Mass Total: {meta_m['mass_att']} ({meta_m['mass_pct']}%)" if meta_m["submitted_reports"] > 0 else "⏳ 0 Submitted Reports"
+                with st.expander(f"▶ {m_iter.upper()} {selected_year} — Consolidation (Lipay Norte hanggang Hongkong)  •  [{sub_badge}]", expanded=(m_iter == view_month)):
+                    st.dataframe(df_m_cons, use_container_width=True, hide_index=True)
+                    m_csv_b = df_m_cons.to_csv(index=False).encode("utf-8-sig")
+                    st.download_button(
+                        label=f"📥 Download {m_iter.upper()} {selected_year} Consolidation (.csv)",
+                        data=m_csv_b,
+                        file_name=f"CTG_Consolidated_{m_iter}_{selected_year}.csv",
+                        mime="text/csv",
+                        key=f"dl_m_cons_csv_{m_iter}_{selected_year}"
+                    )
+
+            st.divider()
+            st.markdown(f"#### 🧮 2. January to December {selected_year} — Whole-Year Computation & Annual Summary")
+            st.caption("Awtomatikong pinagsasama-sama ang lahat ng isinumiteng datos mula **January hanggang December** para sa buong taon na Computation.")
+
+            # A) Month-by-Month (January to December) Computation Table
+            annual_month_rows = []
+            yr_sub_tot = 0
+            yr_mass_tot, yr_pamp_tot, yr_adal_tot, yr_onl_tot, yr_yth_tot, yr_kds_tot = 0, 0, 0, 0, 0, 0
+            yr_hc_tot, yr_vis_tot, yr_hv_tot, yr_mw_tot, yr_ind_tot = 0, 0, 0, 0, 0
+            yr_say_denom, yr_y_denom, yr_k_denom = 0, 0, 0
+
+            for mm in monthly_metas_list:
+                yr_sub_tot += mm["submitted_reports"]
+                yr_mass_tot += mm["mass_att"]
+                yr_pamp_tot += mm["pamp_att"]
+                yr_adal_tot += mm["adal_att"]
+                yr_onl_tot += mm["onl_att"]
+                yr_yth_tot += mm["yth_att"]
+                yr_kds_tot += mm["kds_att"]
+                yr_hc_tot += mm["hc_att"]
+                yr_vis_tot += mm["vis_att"]
+                yr_hv_tot += mm["hv_fams"]
+                yr_mw_tot += mm["mw_fams"]
+                yr_ind_tot += mm["ind_fams"]
+                yr_say_denom += mm["active_say_denom"]
+                yr_y_denom += mm["active_y_denom"]
+                yr_k_denom += mm["active_k_denom"]
+
+                annual_month_rows.append({
+                    "Month (Buwan)": f"{mm['month'].upper()} {selected_year}",
+                    "Submitted Weekly Reports": mm["submitted_reports"],
+                    "Mass (Total Att | Avg %)": f"{mm['mass_att']} ({mm['mass_pct']}%)",
+                    "Pampamilya (Total Att | Avg %)": f"{mm['pamp_att']} ({mm['pamp_pct']}%)",
+                    "Adal ti Evangelio (Total Att | Avg %)": f"{mm['adal_att']} ({mm['adal_pct']}%)",
+                    "Online Ministry (Total Att | Avg %)": f"{mm['onl_att']} ({mm['onl_pct']}%)",
+                    "Youth Fellowship (Total Att | Avg %)": f"{mm['yth_att']} ({mm['yth_pct']}%)",
+                    "Kids Fellowship (Total Att | Avg %)": f"{mm['kds_att']} ({mm['kds_pct']}%)",
+                    "House Church | Visitors": f"HC:{mm['hc_att']} | Vis:{mm['vis_att']}",
+                    "Outreach (HV | MW | IND Fams)": f"HV:{mm['hv_fams']} | MW:{mm['mw_fams']} | IND:{mm['ind_fams']}",
+                })
+
+            yr_mass_pct = int(round((yr_mass_tot / yr_say_denom) * 100)) if yr_say_denom > 0 else 0
+            yr_pamp_pct = int(round((yr_pamp_tot / yr_say_denom) * 100)) if yr_say_denom > 0 else 0
+            yr_adal_pct = int(round((yr_adal_tot / yr_say_denom) * 100)) if yr_say_denom > 0 else 0
+            yr_onl_pct = int(round((yr_onl_tot / yr_say_denom) * 100)) if yr_say_denom > 0 else 0
+            yr_yth_pct = int(round((yr_yth_tot / yr_y_denom) * 100)) if yr_y_denom > 0 else 0
+            yr_kds_pct = int(round((yr_kds_tot / yr_k_denom) * 100)) if yr_k_denom > 0 else 0
+
+            annual_month_rows.append({
+                "Month (Buwan)": f"GRAND TOTAL & ANNUAL AVERAGE (JAN–DEC {selected_year}):",
+                "Submitted Weekly Reports": yr_sub_tot,
+                "Mass (Total Att | Avg %)": f"{yr_mass_tot} ({yr_mass_pct}%)",
+                "Pampamilya (Total Att | Avg %)": f"{yr_pamp_tot} ({yr_pamp_pct}%)",
+                "Adal ti Evangelio (Total Att | Avg %)": f"{yr_adal_tot} ({yr_adal_pct}%)",
+                "Online Ministry (Total Att | Avg %)": f"{yr_onl_tot} ({yr_onl_pct}%)",
+                "Youth Fellowship (Total Att | Avg %)": f"{yr_yth_tot} ({yr_yth_pct}%)",
+                "Kids Fellowship (Total Att | Avg %)": f"{yr_kds_tot} ({yr_kds_pct}%)",
+                "House Church | Visitors": f"HC:{yr_hc_tot} | Vis:{yr_vis_tot}",
+                "Outreach (HV | MW | IND Fams)": f"HV:{yr_hv_tot} | MW:{yr_mw_tot} | IND:{yr_ind_tot}",
+            })
+            df_annual_months = pd.DataFrame(annual_month_rows)
+
+            # B) Parish-by-Parish (Lipay Norte hanggang Hongkong) Whole-Year Computation Table
+            annual_parish_rows = []
+            for p_n in PARISH_ORDER:
+                den_p = get_parish_member_denominators(p_n)
+                short_p = "MALANAS HOUSE CHURCH" if p_n == "MALANAS PARISH" else ("HONGKONG CHAPTER" if p_n == "HONGKONG PARISH" else p_n)
+                p_yr_subs = 0
+                p_yr_mass, p_yr_pamp, p_yr_adal, p_yr_onl, p_yr_yth, p_yr_kds = 0, 0, 0, 0, 0, 0
+                p_yr_hc, p_yr_vis, p_yr_hv, p_yr_mw, p_yr_ind = 0, 0, 0, 0, 0
+                p_yr_say_den, p_yr_y_den, p_yr_k_den = 0, 0, 0
+
+                for m_iter in MONTHS_2027:
+                    for w_lbl in get_weeks_for_month_year(m_iter, int(selected_year)):
+                        rec_y = db_live.get(f"{p_n.upper()}__{m_iter.upper()}__{w_lbl}", {})
+                        if is_week_record_completed(rec_y):
+                            p_yr_subs += 1
+                            s_b = int(rec_y.get("total_members_say", 0)) or den_p["say"]
+                            y_b = int(rec_y.get("total_members_y", 0)) or den_p["youth"]
+                            k_b = int(rec_y.get("total_members_k", 0)) or den_p["kids"]
+                            p_yr_say_den += s_b
+                            p_yr_y_den += y_b
+                            p_yr_k_den += k_b
+
+                            p_yr_mass += int(rec_y.get("mass_a", 0)) + int(rec_y.get("mass_y", 0))
+                            p_yr_pamp += int(rec_y.get("pampamilya_a", 0)) + int(rec_y.get("pampamilya_y", 0))
+                            p_yr_adal += int(rec_y.get("adal_a", 0)) + int(rec_y.get("adal_y", 0))
+                            p_yr_onl += int(rec_y.get("online_a", 0)) + int(rec_y.get("online_y", 0))
+                            p_yr_yth += int(rec_y.get("youth_y", 0))
+                            p_yr_kds += int(rec_y.get("kids_k", 0))
+                            p_yr_hc += int(rec_y.get("hc_a", 0)) + int(rec_y.get("hc_y", 0)) + int(rec_y.get("hc_k", 0))
+                            p_yr_vis += int(rec_y.get("visitors_a", 0)) + int(rec_y.get("visitors_y", 0)) + int(rec_y.get("visitors_k", 0))
+                            hf, _ = count_families_and_people_from_text(str(rec_y.get("hv_names", "")), str(rec_y.get("house_visitation", "0")))
+                            mf, _ = count_families_and_people_from_text(str(rec_y.get("mw_names", "")), str(rec_y.get("missionary_work", "0")))
+                            inf, _ = count_families_and_people_from_text(str(rec_y.get("ind_names", "")), str(rec_y.get("indoctrination", "0")))
+                            p_yr_hv += hf
+                            p_yr_mw += mf
+                            p_yr_ind += inf
+
+                pm_pct = int(round((p_yr_mass / p_yr_say_den) * 100)) if p_yr_say_den > 0 else 0
+                pp_pct = int(round((p_yr_pamp / p_yr_say_den) * 100)) if p_yr_say_den > 0 else 0
+                pa_pct = int(round((p_yr_adal / p_yr_say_den) * 100)) if p_yr_say_den > 0 else 0
+                po_pct = int(round((p_yr_onl / p_yr_say_den) * 100)) if p_yr_say_den > 0 else 0
+                py_pct = int(round((p_yr_yth / p_yr_y_den) * 100)) if p_yr_y_den > 0 else 0
+                pk_pct = int(round((p_yr_kds / p_yr_k_den) * 100)) if p_yr_k_den > 0 else 0
+
+                annual_parish_rows.append({
+                    "Parish (Lipay Norte – Hongkong)": short_p,
+                    "Total Weeks Submitted (Jan–Dec)": p_yr_subs,
+                    "Annual Mass (Total | Avg %)": f"{p_yr_mass} ({pm_pct}%)",
+                    "Annual Pampamilya (Total | Avg %)": f"{p_yr_pamp} ({pp_pct}%)",
+                    "Annual Adal (Total | Avg %)": f"{p_yr_adal} ({pa_pct}%)",
+                    "Annual Online (Total | Avg %)": f"{p_yr_onl} ({po_pct}%)",
+                    "Annual Youth (Total | Avg %)": f"{p_yr_yth} ({py_pct}%)",
+                    "Annual Kids (Total | Avg %)": f"{p_yr_kds} ({pk_pct}%)",
+                    "Annual HC | Visitors": f"HC:{p_yr_hc} | Vis:{p_yr_vis}",
+                    "Annual Outreach (HV | MW | IND)": f"HV:{p_yr_hv} | MW:{p_yr_mw} | IND:{p_yr_ind}",
+                    "Annual Passing Status (≥75% Mass)": "🟢 PASSED (≥75%)" if (p_yr_subs > 0 and pm_pct >= 75) else ("🟡 Below 75%" if p_yr_subs > 0 else "⏳ No Data"),
+                })
+            df_annual_parishes = pd.DataFrame(annual_parish_rows)
+
+            yk1, yk2, yk3, yk4 = st.columns(4)
+            yk1.metric(f"📅 Whole-Year Reports ({selected_year})", yr_sub_tot)
+            yk2.metric("⛪ Annual Mass Attendance & Avg %", f"{yr_mass_tot} ({yr_mass_pct}%)")
+            yk3.metric("👨‍👩‍👧‍👦 Annual Pampamilya & Adal Avg %", f"{yr_pamp_pct}% | {yr_adal_pct}%")
+            yk4.metric("🏠 Annual Outreach (HV | MW | IND)", f"{yr_hv_tot} | {yr_mw_tot} | {yr_ind_tot}")
+
+            st.markdown(f"##### 🏛️ A. Whole-Year Computation Per Parish (Lipay Norte hanggang Hongkong — Jan to Dec {selected_year})")
+            st.dataframe(df_annual_parishes, use_container_width=True, hide_index=True)
+
+            st.markdown(f"##### 🗓️ B. Whole-Year Computation Per Month (January to December {selected_year})")
+            st.dataframe(df_annual_months, use_container_width=True, hide_index=True)
+
+            # Build Multi-Sheet Whole-Year Excel Workbook (.xlsx) for 1-Click Download at the bottom!
+            whole_year_excel_buf = io.BytesIO()
+            with pd.ExcelWriter(whole_year_excel_buf, engine="openpyxl") as writer:
+                df_annual_parishes.to_excel(writer, index=False, sheet_name="ANNUAL BY PARISH (JAN-DEC)")
+                df_annual_months.to_excel(writer, index=False, sheet_name="ANNUAL BY MONTH (JAN-DEC)")
+                df_pass_matrix.to_excel(writer, index=False, sheet_name=f"PASSING 75PCT ({view_month[:3].upper()})")
+                for m_iter in MONTHS_2027:
+                    df_m_sheet = monthly_dfs_map.get(m_iter)
+                    if df_m_sheet is not None:
+                        df_m_sheet.to_excel(writer, index=False, sheet_name=f"{m_iter.upper()[:12]}")
+
+            dl_yr_c1, dl_yr_c2 = st.columns(2)
+            with dl_yr_c1:
+                st.download_button(
+                    label=f"📥 Download Whole-Year Consolidated Excel Workbook (January–December {selected_year} .xlsx — All 12 Months & Parishes)",
+                    data=whole_year_excel_buf.getvalue(),
+                    file_name=f"CTG_Whole_Year_Consolidation_Jan_to_Dec_{selected_year}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary",
+                    use_container_width=True,
+                    key=f"dl_whole_year_xlsx_{selected_year}"
+                )
+            with dl_yr_c2:
+                st.download_button(
+                    label=f"📥 Download Whole-Year Parish Computation (.csv — Lipay Norte to Hongkong)",
+                    data=df_annual_parishes.to_csv(index=False).encode("utf-8-sig"),
+                    file_name=f"CTG_Whole_Year_Parish_Computation_{selected_year}.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                    key=f"dl_whole_year_csv_{selected_year}"
+                )
+
+    if is_master:
+        with pwr_tabs_list[7]:
             st.markdown("### 🏆 Church of the Temple of God – Parish Ministry Performance Report (Master Admin Exclusive)")
             st.caption(
                 "Awtomatikong binubuo mula sa Attendance Percentages ng lahat ng 10 Parokya at kinukuha ang **House Visitation**, "
@@ -10142,13 +10718,17 @@ def render_outreach_visitation_missionary_page():
 # ⚙️ SIDEBAR CONTROL PANEL
 # =====================================================================
 with st.sidebar:
+    if st.session_state.user_role != "Master Admin":
+        record_parish_leader_active_presence(st.session_state.assigned_parish)
     _ldr_profiles_sb = load_leadership_and_priests_profiles()
     if st.session_state.user_role == "Master Admin":
         _sb_av_html = _build_profile_avatar_html("", "#10B981", 78, "⛪")
+        _sb_act_html = _build_green_active_badge_html(small=True)
         st.markdown(
             f"<div style='background:linear-gradient(145deg, rgba(15,23,42,0.96), rgba(30,41,59,0.92));"
             f"border:1.5px solid #10B981;border-radius:14px;padding:14px 10px;text-align:center;margin-bottom:10px;'>"
             f"{_sb_av_html}<br>"
+            f"{_sb_act_html}"
             f"<span style='background:#065F46;color:#D1FAE5;font-size:0.70rem;font-weight:700;padding:2px 9px;border-radius:10px;'>"
             f"Church of the Temple of God</span>"
             f"<div style='font-size:0.98rem;font-weight:800;color:#F8FAFC;margin-top:6px;'>CTG Ministries Database</div>"
@@ -10167,14 +10747,17 @@ with st.sidebar:
             _my_sb_title = "House Church"
         _my_sb_name = _my_sb_prof.get("name", f"{_my_sb_title} ({st.session_state.assigned_parish})")
         _sb_av_html = _build_profile_avatar_html(_my_sb_prof.get("photo_b64", ""), "#10B981", 78, "⛪")
+        _sb_act_html = _build_green_active_badge_html(small=True)
+        _sb_parish_disp = "MALANAS HOUSE CHURCH" if st.session_state.assigned_parish == "MALANAS PARISH" else st.session_state.assigned_parish
         st.markdown(
             f"<div style='background:linear-gradient(145deg, rgba(15,23,42,0.96), rgba(30,41,59,0.92));"
             f"border:1.5px solid #10B981;border-radius:14px;padding:14px 10px;text-align:center;margin-bottom:10px;'>"
             f"{_sb_av_html}<br>"
+            f"{_sb_act_html}"
             f"<span style='background:#065F46;color:#D1FAE5;font-size:0.70rem;font-weight:700;padding:2px 9px;border-radius:10px;'>"
             f"{_my_sb_title}</span>"
             f"<div style='font-size:0.98rem;font-weight:800;color:#F8FAFC;margin-top:6px;'>{_my_sb_name}</div>"
-            f"<div style='font-size:0.78rem;color:#38BDF8;font-weight:700;margin-top:2px;'>📍 {st.session_state.assigned_parish}</div>"
+            f"<div style='font-size:0.78rem;color:#38BDF8;font-weight:700;margin-top:2px;'>📍 {_sb_parish_disp}</div>"
             f"<div style='font-size:0.72rem;color:#94A3B8;margin-top:2px;'>Role: {st.session_state.user_role}</div>"
             f"</div>",
             unsafe_allow_html=True
@@ -10208,7 +10791,9 @@ with st.sidebar:
                             "position": sb_in_pos or _def_role_sb,
                             "parish": p_k_sb,
                             "photo_b64": new_sb_b64,
-                            "drive_link": new_sb_link
+                            "drive_link": new_sb_link,
+                            "is_active_online": True,
+                            "last_active_ph": get_philippine_datetime_str()
                         })
                     save_leadership_and_priests_profiles(_ldr_profiles_sb)
                     st.success("✅ Na-update na ang iyong Profile!")
