@@ -772,6 +772,15 @@ def apply_dynamic_app_styles():
                 min-width: 100% !important;
                 flex: 1 1 100% !important;
             }}
+            /* Panatilihing magkakatabi ang Back - Home - Next buttons sa Smartphone */
+            [data-testid="stHorizontalBlock"] [data-testid="stHorizontalBlock"] {{
+                flex-wrap: nowrap !important;
+                gap: 0.4rem !important;
+            }}
+            [data-testid="stHorizontalBlock"] [data-testid="stHorizontalBlock"] [data-testid="column"] {{
+                min-width: 31% !important;
+                flex: 1 1 31% !important;
+            }}
             .stButton > button, .stDownloadButton > button {{
                 min-height: 44px !important;
                 font-size: 0.94rem !important;
@@ -7157,45 +7166,51 @@ def render_weekly_report_page():
     cur_page_idx = int(st.session_state["pwr_active_subpage_idx"])
 
     def _render_pwr_page_navigator(pos_suffix: str):
-        """Nagre-render ng magkakatabing [⬅️ Back] [🏠 Home] [Next ➡️] at [📂 Pumili ng Pahina / Section na Bubuksan] sa right side."""
+        """Nagre-render sa ibaba ng pahina ng magkakatabing [⬅️ Back] [🏠 Home] [Next ➡️] at [📂 Pumili ng Pahina / Section na Bubuksan]
+        na naka-optimize para sa Desktop, Tablet, at Smartphone."""
         c_idx = int(st.session_state.get("pwr_active_subpage_idx", 0))
-        nav_c1, nav_c2, nav_c3, nav_c4 = st.columns([0.72, 0.72, 0.72, 2.84])
-        with nav_c1:
-            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
-            if st.button(
-                "⬅️ Back",
-                key=f"pwr_btn_back_{pos_suffix}",
-                use_container_width=True,
-                disabled=(c_idx <= 0),
-                help=f"Bumalik sa: {pwr_subpages[c_idx - 1]}" if c_idx > 0 else "Nasa unang pahina (Home) ka na"
-            ):
-                st.session_state["pwr_active_subpage_idx"] = max(0, c_idx - 1)
-                st.rerun()
-        with nav_c2:
-            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
-            if st.button(
-                "🏠 Home",
-                key=f"pwr_btn_home_{pos_suffix}",
-                use_container_width=True,
-                type="primary" if c_idx == 0 else "secondary",
-                disabled=(c_idx == 0),
-                help="Bumalik sa Home Page"
-            ):
-                st.session_state["pwr_active_subpage_idx"] = 0
-                st.rerun()
-        with nav_c3:
-            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
-            if st.button(
-                "Next ➡️",
-                key=f"pwr_btn_next_{pos_suffix}",
-                use_container_width=True,
-                type="primary" if c_idx < max_subpage_idx else "secondary",
-                disabled=(c_idx >= max_subpage_idx),
-                help=f"Susunod: {pwr_subpages[c_idx + 1]}" if c_idx < max_subpage_idx else "Nasa huling pahina ka na"
-            ):
-                st.session_state["pwr_active_subpage_idx"] = min(max_subpage_idx, c_idx + 1)
-                st.rerun()
-        with nav_c4:
+        nav_left_btns, nav_right_sel = st.columns([2.15, 2.85])
+        with nav_left_btns:
+            st.markdown(
+                f"<div style='font-size:0.86rem;font-weight:600;margin-bottom:4px;opacity:0.92;'>"
+                f"🧭 Page {c_idx + 1} / {len(pwr_subpages)} Controller:"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+            b_c1, b_c2, b_c3 = st.columns(3)
+            with b_c1:
+                if st.button(
+                    "⬅️ Back",
+                    key=f"pwr_btn_back_{pos_suffix}",
+                    use_container_width=True,
+                    disabled=(c_idx <= 0),
+                    help=f"Bumalik sa: {pwr_subpages[c_idx - 1]}" if c_idx > 0 else "Nasa unang pahina (Home) ka na"
+                ):
+                    st.session_state["pwr_active_subpage_idx"] = max(0, c_idx - 1)
+                    st.rerun()
+            with b_c2:
+                if st.button(
+                    "🏠 Home",
+                    key=f"pwr_btn_home_{pos_suffix}",
+                    use_container_width=True,
+                    type="primary" if c_idx == 0 else "secondary",
+                    disabled=(c_idx == 0),
+                    help="Bumalik sa Home Page"
+                ):
+                    st.session_state["pwr_active_subpage_idx"] = 0
+                    st.rerun()
+            with b_c3:
+                if st.button(
+                    "Next ➡️",
+                    key=f"pwr_btn_next_{pos_suffix}",
+                    use_container_width=True,
+                    type="primary" if c_idx < max_subpage_idx else "secondary",
+                    disabled=(c_idx >= max_subpage_idx),
+                    help=f"Susunod: {pwr_subpages[c_idx + 1]}" if c_idx < max_subpage_idx else "Nasa huling pahina ka na"
+                ):
+                    st.session_state["pwr_active_subpage_idx"] = min(max_subpage_idx, c_idx + 1)
+                    st.rerun()
+        with nav_right_sel:
             sel_key = f"pwr_subpage_select_{pos_suffix}"
             st.session_state[sel_key] = c_idx
 
@@ -7900,12 +7915,7 @@ def render_weekly_report_page():
                 _render_verification_editor_panel()
 
 
-    # =====================================================================
-    # 📄 NEXT PAGES (PAGES 2..6): WALANG HOME HEADER SA ITAAS; DIREKTANG NAVIGATION BAR + TABLE / SECTION
-    # =====================================================================
-    else:
-        _render_pwr_page_navigator("top")
-        st.divider()
+
 
     db_live = load_weekly_monitoring_records()
     months_to_display = MONTHS_2027 if show_all_months else [view_month]
