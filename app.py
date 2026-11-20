@@ -297,7 +297,28 @@ def load_saved_parish_upload_folder_url() -> str:
         return data["PARISH_UPLOAD_FOLDER_URL"].strip()
     return get_secret("PARISH_UPLOAD_FOLDER_URL", PARISH_UPLOAD_FOLDER_URL)
 
-def save_cloud_url_config(new_url: str = None, weekly_folder_url: str = None, parish_upload_url: str = None, refresh_tok: str = None):
+def load_saved_pwr_consolidation_url() -> str:
+    if "custom_secrets" in st.session_state and st.session_state.custom_secrets.get("PWR_2027_CONSOLIDATION_URL"):
+        return st.session_state.custom_secrets["PWR_2027_CONSOLIDATION_URL"].strip()
+    data = load_saved_config()
+    if data.get("PWR_2027_CONSOLIDATION_URL"):
+        return data["PWR_2027_CONSOLIDATION_URL"].strip()
+    return MASTER_PWR_2027_CONSOLIDATION_URL
+
+def get_active_pwr_consolidation_file_id() -> str:
+    u = load_saved_pwr_consolidation_url()
+    m = re.search(r"/d/([a-zA-Z0-9-_]+)", str(u))
+    if m:
+        return m.group(1)
+    return MASTER_PWR_2027_CONSOLIDATION_FILE_ID
+
+def save_cloud_url_config(
+    new_url: str = None,
+    weekly_folder_url: str = None,
+    parish_upload_url: str = None,
+    refresh_tok: str = None,
+    pwr_consolidation_url: str = None
+):
     try:
         existing = load_saved_config()
         if new_url is not None:
@@ -308,6 +329,8 @@ def save_cloud_url_config(new_url: str = None, weekly_folder_url: str = None, pa
             existing["PARISH_UPLOAD_FOLDER_URL"] = parish_upload_url.strip()
         if refresh_tok is not None:
             existing["GMAIL_REFRESH_TOKEN"] = refresh_tok.strip()
+        if pwr_consolidation_url is not None:
+            existing["PWR_2027_CONSOLIDATION_URL"] = pwr_consolidation_url.strip()
         with open(LOCAL_CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(existing, f, indent=2)
     except Exception:
@@ -2278,8 +2301,11 @@ def generate_next_family_id_for_parish(parish_name: str, df_members: pd.DataFram
 
     return f"{prefix}{max_num + 1:04d}"
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def fetch_live_excel_bytes(spreadsheet_url: str, force_cloud: bool = False) -> tuple[bytes, str]:
+    """Always prioritizes fetching the latest CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx from Google Drive first
+    so that any adjustments made directly in Google Drive automatically appear in the app,
+    falling back to local cached files only when Google Drive is unreachable."""
     candidate_local_files = [
         "CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx",
         LOCAL_EXCEL_CACHE,
@@ -2287,16 +2313,6 @@ def fetch_live_excel_bytes(spreadsheet_url: str, force_cloud: bool = False) -> t
         "CTG_HEADS_TOTAL_UPDATED FIXED.xlsx",
         "CTG_HEADS_TOTAL_UPDATED_FIXED.xlsx",
     ]
-    if not force_cloud:
-        for cand_path in candidate_local_files:
-            if cand_path and os.path.exists(cand_path):
-                try:
-                    with open(cand_path, "rb") as f:
-                        local_b = f.read()
-                    if _is_valid_census_excel_bytes(local_b):
-                        return local_b, os.path.basename(cand_path)
-                except Exception:
-                    pass
 
     service = get_google_drive_service()
     doc_id = _resolve_master_census_excel_file_id(service, spreadsheet_url)
@@ -2310,9 +2326,23 @@ def fetch_live_excel_bytes(spreadsheet_url: str, force_cloud: bool = False) -> t
                             f.write(content)
                     except Exception:
                         pass
-                return content, "CTG Ministry Hub app_Storage / CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx (Live API Sync)"
+                return content, "CTG Ministry Hub app_Storage / CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx (Live Google Drive API Sync)"
         except Exception:
-            pass
+            try:
+                content_exp = service.files().export_media(
+                    fileId=doc_id,
+                    mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                ).execute()
+                if _is_valid_census_excel_bytes(content_exp):
+                    for save_p in ["CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx", LOCAL_EXCEL_CACHE]:
+                        try:
+                            with open(save_p, "wb") as f:
+                                f.write(content_exp)
+                        except Exception:
+                            pass
+                    return content_exp, "CTG Ministry Hub app_Storage / CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx (Live Google Sheets Export Sync)"
+            except Exception:
+                pass
 
     if doc_id and len(doc_id) > 15:
         download_urls = [
@@ -2705,6 +2735,55 @@ def build_printable_members_html_report(df: pd.DataFrame, report_title: str, par
 </body>
 </html>"""
     return html_doc.encode("utf-8")
+
+def batch_update_members_in_excel_and_sync(
+    spreadsheet_url: str,
+    edited_rows: list[dict]
+) -> tuple[bool, str]:
+    """Updates multiple modified member records across Parish Census sheets and HEAD OF FAMILY MASTER in one atomic pass
+    and syncs the updated workbook directly back to Google Drive (CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx)."""
+    if not edited_rows:
+        return False, "Walang binagong rekord."
+    applied_count = 0
+    last_msg = ""
+    for row_d in edited_rows:
+        p_val = str(row_d.get("Parish", "")).strip()
+        fid_val = str(row_d.get("Family ID", "")).strip()
+        orig_name = str(row_d.get("_orig_full_name") or row_d.get("Full Name", "")).strip()
+        if not p_val or not orig_name:
+            continue
+        ok_one, last_msg = update_member_in_excel_and_sync(
+            spreadsheet_url=spreadsheet_url,
+            parish=p_val,
+            family_id=fid_val,
+            full_name=orig_name,
+            new_status=str(row_d.get("Status", "")).strip(),
+            new_category=str(row_d.get("Category", "")).strip(),
+            new_remarks=str(row_d.get("Remarks", "")).strip(),
+            full_edit_payload={
+                "Full Name": str(row_d.get("Full Name", orig_name)).strip(),
+                "Head of Family": str(row_d.get("Head of Family", "")).strip(),
+                "No.": str(row_d.get("No.", "1")).strip(),
+                "Relationship": str(row_d.get("Relationship", "")).strip(),
+                "Sex": str(row_d.get("Sex", "")).strip(),
+                "Birthdate": str(row_d.get("Birthdate", "")).strip(),
+                "Age": str(row_d.get("Age", "")).strip(),
+                "Category": str(row_d.get("Category", "")).strip(),
+                "Civil Status": str(row_d.get("Civil Status", "")).strip(),
+                "Student/Working": str(row_d.get("Student/Working", "")).strip(),
+                "Contact No.": str(row_d.get("Contact No.", "")).strip(),
+                "Church Member": str(row_d.get("Church Member", "")).strip(),
+                "Status": str(row_d.get("Status", "")).strip(),
+                "Baptized": str(row_d.get("Baptized", "")).strip(),
+                "Baptism Date": str(row_d.get("Baptism Date", "")).strip(),
+                "Current Address (If living separately)": str(row_d.get("Current Address (If living separately)", "")).strip(),
+                "Remarks": str(row_d.get("Remarks", "")).strip(),
+            }
+        )
+        if ok_one:
+            applied_count += 1
+    st.cache_data.clear()
+    return (applied_count > 0), f"Matagumpay na na-update at na-sync sa Google Drive ang {applied_count} miyembro! ({last_msg})"
 
 def update_member_in_excel_and_sync(
     spreadsheet_url: str, parish_name: str, family_id: str, full_name: str,
@@ -4954,40 +5033,34 @@ def _build_clean_pwr_2027_consolidation_workbook() -> openpyxl.Workbook:
     wb.remove(default_ws)
     return wb
 
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def fetch_pwr_2027_consolidation_workbook_bytes(force_drive: bool = False) -> bytes:
-    """Fetches and caches CTG_PWR_2027_CONSOLIDATION.xlsx (or CTG_PWR_2027_FULL_YEAR_CHARTS_UPDATED.xlsx) from local cache or Google Drive (1tOdW8FRpyESStVzQVf6RGpS-YTnexG_u)."""
+    """Always prioritizes fetching the latest CTG_PWR_2027_CONSOLIDATION.xlsx from Google Drive first
+    so that any adjustments made directly in Google Drive automatically reflect in the app."""
+    active_fid = get_active_pwr_consolidation_file_id()
     candidate_paths = [
         LOCAL_PWR_2027_CONSOLIDATION_CACHE,
         LOCAL_PWR_2027_FULL_YEAR_ALT_NAME,
         "/working_dir/c_4ba5b8bae83ebd4f/user_uploaded_files/ttl=63d/user_uploaded/CTG_PWR_2027_CONSOLIDATION.xlsx"
     ]
-    if not force_drive:
-        for cp in candidate_paths:
-            if os.path.exists(cp) and os.path.getsize(cp) > 5000:
-                try:
-                    with open(cp, "rb") as f:
-                        return f.read()
-                except Exception:
-                    pass
 
-    # Try downloading from Google Drive API using file ID 1tOdW8FRpyESStVzQVf6RGpS-YTnexG_u
+    # 1. Always try Google Drive API first so adjustments in Google Drive immediately sync to the app
     try:
         service = get_google_drive_service()
-        if service:
+        if service and active_fid:
             try:
-                raw_b = service.files().get_media(fileId=MASTER_PWR_2027_CONSOLIDATION_FILE_ID, supportsAllDrives=True).execute()
-                if raw_b and len(raw_b) > 5000:
+                raw_b = service.files().get_media(fileId=active_fid, supportsAllDrives=True).execute()
+                if raw_b and len(raw_b) > 5000 and raw_b[:2] == b"PK":
                     with open(LOCAL_PWR_2027_CONSOLIDATION_CACHE, "wb") as f:
                         f.write(raw_b)
                     return raw_b
             except Exception:
                 try:
                     raw_b = service.files().export_media(
-                        fileId=MASTER_PWR_2027_CONSOLIDATION_FILE_ID,
+                        fileId=active_fid,
                         mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     ).execute()
-                    if raw_b and len(raw_b) > 5000:
+                    if raw_b and len(raw_b) > 5000 and raw_b[:2] == b"PK":
                         with open(LOCAL_PWR_2027_CONSOLIDATION_CACHE, "wb") as f:
                             f.write(raw_b)
                         return raw_b
@@ -4996,19 +5069,21 @@ def fetch_pwr_2027_consolidation_workbook_bytes(force_drive: bool = False) -> by
     except Exception:
         pass
 
-    # Try public export download URL fallback
-    for exp_u in [
-        f"https://docs.google.com/spreadsheets/d/{MASTER_PWR_2027_CONSOLIDATION_FILE_ID}/export?format=xlsx",
-        f"https://drive.google.com/uc?export=download&id={MASTER_PWR_2027_CONSOLIDATION_FILE_ID}",
-    ]:
-        try:
-            r = requests.get(exp_u, timeout=10)
-            if r.status_code == 200 and len(r.content) > 5000 and r.content[:2] == b"PK":
-                with open(LOCAL_PWR_2027_CONSOLIDATION_CACHE, "wb") as f:
-                    f.write(r.content)
-                return r.content
-        except Exception:
-            pass
+    # 2. Try public Google Drive / Google Sheets export download URLs
+    if active_fid:
+        for exp_u in [
+            f"https://docs.google.com/spreadsheets/d/{active_fid}/export?format=xlsx",
+            f"https://drive.usercontent.google.com/download?id={active_fid}&export=download&confirm=t",
+            f"https://drive.google.com/uc?export=download&id={active_fid}",
+        ]:
+            try:
+                r = requests.get(exp_u, timeout=10)
+                if r.status_code == 200 and len(r.content) > 5000 and r.content[:2] == b"PK":
+                    with open(LOCAL_PWR_2027_CONSOLIDATION_CACHE, "wb") as f:
+                        f.write(r.content)
+                    return r.content
+            except Exception:
+                pass
 
     for cp in candidate_paths:
         if os.path.exists(cp) and os.path.getsize(cp) > 5000:
@@ -5129,29 +5204,144 @@ def update_pwr_2027_consolidation_excel_on_drive(
     except Exception:
         pass
 
-    # Upload / sync directly to Google Drive file 1tOdW8FRpyESStVzQVf6RGpS-YTnexG_u
+    # Also update Column H (# OF WEEKS) ONLY if a Parish+Month has Church Event week(s) (-1 week per Church Event)
+    try:
+        db_cur_for_ev = sync_all_from_db if isinstance(sync_all_from_db, dict) else load_weekly_monitoring_records()
+        for m_iter in MONTHS_2027:
+            m_up = m_iter.upper()
+            if m_up not in wb.sheetnames:
+                continue
+            ws_ev = wb[m_up]
+            base_m_wks = PWR_2027_MONTH_WEEKS_COUNT.get(m_up, 4)
+            for p_full in PARISH_ORDER:
+                _, h_row_ev = PWR_2027_PARISH_SECTION_HEADERS[p_full]
+                ev_cnt = 0
+                for w_i, w_lbl in enumerate(WEEKS_2027[:base_m_wks]):
+                    rec_ev = db_cur_for_ev.get(f"{p_full.upper()}__{m_up}__{w_lbl}", {})
+                    if bool(rec_ev.get("church_event_locked")) or "(CHURCH EVENT)" in str(rec_ev.get("priest", "")).upper():
+                        ev_cnt += 1
+                        # Clear the W-n cell for Church Event week so it is not included in the report sum
+                        for act_idx in range(8):
+                            ws_ev.cell(h_row_ev + 2 + act_idx, 2 + w_i).value = None
+                eff_wks_h = max(1, base_m_wks - ev_cnt)
+                for act_idx in range(8):
+                    ws_ev.cell(h_row_ev + 2 + act_idx, 8).value = eff_wks_h
+    except Exception:
+        pass
+
+    out_buf = io.BytesIO()
+    wb.save(out_buf)
+    updated_bytes = out_buf.getvalue()
+    try:
+        with open(LOCAL_PWR_2027_CONSOLIDATION_CACHE, "wb") as f:
+            f.write(updated_bytes)
+    except Exception:
+        pass
+
+    active_fid = get_active_pwr_consolidation_file_id()
     drive_synced = False
     drive_msg = "Na-save sa local cache (CTG_PWR_2027_CONSOLIDATION.xlsx)."
     try:
         service = get_google_drive_service()
-        if service and MediaIoBaseUpload is not None:
+        if service and MediaIoBaseUpload is not None and active_fid:
             media = MediaIoBaseUpload(
                 io.BytesIO(updated_bytes),
                 mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 resumable=False
             )
             service.files().update(
-                fileId=MASTER_PWR_2027_CONSOLIDATION_FILE_ID,
+                fileId=active_fid,
                 media_body=media,
                 supportsAllDrives=True
             ).execute()
             drive_synced = True
-            drive_msg = "Matagumpay na na-sync sa Google Drive (CTG_PWR_2027_CONSOLIDATION.xlsx — 1tOdW8FRpyESStVzQVf6RGpS-YTnexG_u)!"
+            drive_msg = f"Matagumpay na na-sync sa Google Drive (CTG_PWR_2027_CONSOLIDATION.xlsx — {active_fid})!"
     except Exception as e_drv:
         drive_msg = f"Na-save sa app database (Google Drive API sync notice: {str(e_drv)[:80]})"
 
     st.cache_data.clear()
     return drive_synced, drive_msg
+
+def pull_and_sync_pwr_2027_consolidation_from_drive_to_app(year_val: int = 2027) -> tuple[int, str]:
+    """Pulls the latest CTG_PWR_2027_CONSOLIDATION.xlsx from Google Drive and updates db_live (LOCAL_WEEKLY_REPORTS_DB)
+    so that any adjustments made directly in Google Drive are immediately visible to all Parish Leaders and Master Admin."""
+    try:
+        st.cache_data.clear()
+        raw_b = fetch_pwr_2027_consolidation_workbook_bytes(force_drive=True)
+        if not raw_b or len(raw_b) < 5000:
+            return 0, "Walang nabasang workbook mula sa Google Drive."
+        wb = openpyxl.load_workbook(io.BytesIO(raw_b), data_only=True)
+        db = load_weekly_monitoring_records()
+        updated_slots = 0
+
+        for m_iter in MONTHS_2027:
+            m_up = m_iter.upper()
+            if m_up not in wb.sheetnames:
+                continue
+            ws = wb[m_up]
+            m_wks_valid = get_weeks_for_month_year(m_iter, year_val)
+            for p_full in PARISH_ORDER:
+                p_sec_lbl, h_row = PWR_2027_PARISH_SECTION_HEADERS[p_full]
+                den_p = get_parish_member_denominators(p_full)
+                # Read Column J (Total Members) if adjusted in Google Drive
+                j_mass = ws.cell(h_row + 2, 10).value
+                j_youth = ws.cell(h_row + 5, 10).value
+                j_kids = ws.cell(h_row + 6, 10).value
+                say_den = int(j_mass) if isinstance(j_mass, (int, float)) and int(j_mass) > 0 else den_p["say"]
+                y_den = int(j_youth) if isinstance(j_youth, (int, float)) and int(j_youth) >= 0 else den_p["youth"]
+                k_den = int(j_kids) if isinstance(j_kids, (int, float)) and int(j_kids) >= 0 else den_p["kids"]
+
+                for w_i, w_lbl in enumerate(WEEKS_2027):
+                    if w_lbl not in m_wks_valid:
+                        continue
+                    col_idx = 2 + w_i
+                    w_vals = {}
+                    has_any_num = False
+                    for act_idx, act_name in enumerate(PWR_2027_ACTIVITIES_8):
+                        if p_full == "HONGKONG PARISH" and act_idx >= 3:
+                            continue
+                        cell_v = ws.cell(h_row + 2 + act_idx, col_idx).value
+                        if isinstance(cell_v, (int, float)):
+                            w_vals[act_name] = int(cell_v)
+                            if int(cell_v) > 0:
+                                has_any_num = True
+                    r_key = f"{p_full.upper()}__{m_up}__{w_lbl}"
+                    ex_rec = db.get(r_key, {}).copy()
+                    # If Google Drive has numbers for this week, update db_live so leaders immediately see the Google Drive adjustment
+                    if has_any_num:
+                        ex_rec.update({
+                            "has_data": True,
+                            "no_report_locked": False,
+                            "church_event_locked": False,
+                            "parish": p_full,
+                            "month": m_iter,
+                            "week": w_lbl,
+                            "report_date": ex_rec.get("report_date") or get_week_date_for_month_year(m_iter, w_lbl, year_val),
+                            "total_members_say": say_den,
+                            "total_members_y": y_den,
+                            "total_members_k": k_den,
+                            "mass_a": int(w_vals.get("Mass", ex_rec.get("mass_a", 0))),
+                            "mass_y": 0 if "Mass" in w_vals else int(ex_rec.get("mass_y", 0)),
+                            "pampamilya_a": int(w_vals.get("Pampamilya", ex_rec.get("pampamilya_a", 0))),
+                            "pampamilya_y": 0 if "Pampamilya" in w_vals else int(ex_rec.get("pampamilya_y", 0)),
+                            "online_a": int(w_vals.get("Online Ministry", ex_rec.get("online_a", 0))),
+                            "online_y": 0 if "Online Ministry" in w_vals else int(ex_rec.get("online_y", 0)),
+                            "youth_y": int(w_vals.get("Youth Fellowship", ex_rec.get("youth_y", 0))),
+                            "kids_k": int(w_vals.get("Kids Fellowship", ex_rec.get("kids_k", 0))),
+                            "adal_a": int(w_vals.get("Adal ti Evangelio", ex_rec.get("adal_a", 0))),
+                            "adal_y": 0 if "Adal ti Evangelio" in w_vals else int(ex_rec.get("adal_y", 0)),
+                            "house_visitation": str(w_vals.get("HOUSE VISIT", ex_rec.get("house_visitation", "0"))),
+                            "indoctrination": str(w_vals.get("INDUCTRINATION", ex_rec.get("indoctrination", "0"))),
+                            "updated_at": get_philippine_datetime_str(),
+                        })
+                        db[r_key] = ex_rec
+                        updated_slots += 1
+
+        with open(LOCAL_WEEKLY_REPORTS_DB, "w", encoding="utf-8") as f:
+            json.dump(db, f, ensure_ascii=False, indent=2)
+        return updated_slots, f"Matagumpay na na-sync mula sa Google Drive Excel ang {updated_slots} weekly records!"
+    except Exception as e_pull:
+        return 0, f"Pull sync notice: {str(e_pull)[:90]}"
 
 def save_weekly_monitoring_record(parish: str, month: str, week_num: str, report_date: str, extracted_data: dict, drive_link: str = "") -> tuple[bool, str]:
     db = load_weekly_monitoring_records()
@@ -7639,11 +7829,126 @@ def is_record_marked_no_report(rec: dict) -> bool:
     """Sinusuri kung ang partikular na Parish + Month + Week record ay nilagyan ng '(No Report)'."""
     if not isinstance(rec, dict):
         return False
+    if bool(rec.get("church_event_locked")):
+        return False
     if bool(rec.get("no_report_locked")):
         return True
     if str(rec.get("priest", "")).strip().upper() == "(NO REPORT)" or str(rec.get("submitted_at_ph", "")).strip().upper() == "(NO REPORT)":
         return True
     return False
+
+def is_record_marked_church_event(rec: dict) -> bool:
+    """Sinusuri kung ang partikular na Parish + Month + Week ay nilagyan ng '(Church Event)' (kaya hindi kasama sa regular report at -1 week sa # OF WEEKS)."""
+    if not isinstance(rec, dict):
+        return False
+    if bool(rec.get("church_event_locked")):
+        return True
+    p_up = str(rec.get("priest", "")).strip().upper()
+    s_up = str(rec.get("submitted_at_ph", "")).strip().upper()
+    return ("(CHURCH EVENT" in p_up) or ("(CHURCH EVENT" in s_up)
+
+def get_church_event_weeks_count_for_parish_month(parish_name: str, month_name: str, year_val: int = 2027, db_in: dict = None) -> int:
+    """Binibilang kung ilang linggo sa isang Buwan at Parokya ang nakamarka bilang '(Church Event)'."""
+    db_use = db_in if isinstance(db_in, dict) else load_weekly_monitoring_records()
+    m_wks = get_weeks_for_month_year(month_name, year_val)
+    ev_cnt = 0
+    for w_lbl in m_wks:
+        rec = db_use.get(f"{parish_name.upper()}__{month_name.upper()}__{w_lbl}", {})
+        if is_record_marked_church_event(rec):
+            ev_cnt += 1
+    return ev_cnt
+
+def get_effective_reporting_weeks_count_for_parish_month(parish_name: str, month_name: str, year_val: int = 2027, db_in: dict = None) -> int:
+    """Awtomatikong binabawasan ng 1 week ang # OF WEEKS sa bawat linggong may '(Church Event)' sa buwang iyon."""
+    base_wks = len(get_weeks_for_month_year(month_name, year_val))
+    ev_cnt = get_church_event_weeks_count_for_parish_month(parish_name, month_name, year_val, db_in)
+    return max(1, base_wks - ev_cnt)
+
+def set_parish_church_event_status(
+    parish_name: str,
+    month_name: str,
+    week_label: str,
+    year_val: int = 2027,
+    mark_church_event: bool = True,
+    event_title: str = "Church Event"
+) -> bool:
+    """Master Admin Control para lagyan o alisan ng '🏛️ (Church Event)' ang partikular na Parokya, Buwan, at Linggo,
+    at awtomatikong bawasan ng 1 week (-1 Week) ang # OF WEEKS sa App at sa Google Drive Excel."""
+    db = load_weekly_monitoring_records()
+    key = f"{parish_name.upper()}__{month_name.upper()}__{week_label}"
+    rec = db.get(key, {})
+    if not mark_church_event:
+        if key in db and is_record_marked_church_event(rec):
+            db.pop(key, None)
+            try:
+                with open(LOCAL_WEEKLY_REPORTS_DB, "w", encoding="utf-8") as f:
+                    json.dump(db, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
+            try:
+                update_pwr_2027_consolidation_excel_on_drive(month_name, parish_name, sync_all_from_db=db)
+            except Exception:
+                pass
+        return True
+
+    clean_ev = str(event_title or "Church Event").strip() or "Church Event"
+    wk_dt = get_week_date_for_month_year(month_name, week_label, year_val)
+    denoms = get_parish_member_denominators(parish_name)
+    ev_tag = f"(Church Event: {clean_ev})"
+    ev_payload = {
+        "has_data": False,
+        "no_report_locked": False,
+        "church_event_locked": True,
+        "church_event_title": clean_ev,
+        "parish": parish_name,
+        "month": month_name,
+        "week": week_label,
+        "report_date": wk_dt,
+        "total_members_say": denoms["say"],
+        "total_members_y": denoms["youth"],
+        "total_members_k": denoms["kids"],
+        "mass_a": 0, "mass_y": 0, "pampamilya_a": 0, "pampamilya_y": 0,
+        "online_a": 0, "online_y": 0, "youth_y": 0, "kids_k": 0,
+        "adal_a": 0, "adal_y": 0,
+        "house_visitation": ev_tag,
+        "hv_names": ev_tag,
+        "hv_remarks": ev_tag,
+        "missionary_work": ev_tag,
+        "mw_names": ev_tag,
+        "mw_remarks": ev_tag,
+        "indoctrination": ev_tag,
+        "ind_names": ev_tag,
+        "ind_remarks": ev_tag,
+        "priest": ev_tag,
+        "sakristan": ev_tag,
+        "epistula": ev_tag,
+        "evangelio": ev_tag,
+        "casasaad": ev_tag,
+        "candle_holder": ev_tag,
+        "usher": ev_tag,
+        "marshal": ev_tag,
+        "adal_evangelio": ev_tag,
+        "adal_preacher": ev_tag,
+        "tema_misa": ev_tag,
+        "misa_preacher": ev_tag,
+        "tema_pampamilya": ev_tag,
+        "pampamilya_preacher": ev_tag,
+        "mass_remarks": f"{ev_tag} — Hindi kasama sa regular weekly report (-1 Week sa # OF WEEKS).",
+        "remarks": f"{ev_tag} — Hindi kasama sa regular weekly report (-1 Week sa # OF WEEKS).",
+        "updated_at": get_philippine_datetime_str(),
+        "submitted_at_ph": "(Church Event)"
+    }
+    db[key] = ev_payload
+    try:
+        with open(LOCAL_WEEKLY_REPORTS_DB, "w", encoding="utf-8") as f:
+            json.dump(db, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+    try:
+        update_pwr_2027_consolidation_excel_on_drive(month_name, parish_name, sync_all_from_db=db)
+    except Exception:
+        pass
+    return True
 
 def set_parish_no_report_status(parish_name: str, month_name: str, week_label: str, year_val: int = 2027, mark_no_report: bool = True, force_overwrite: bool = False) -> bool:
     """Master Admin Control para lagyan o alisan ng '(No Report)' ang partikular na Parokya, Buwan, at Linggo sa App at sa Excel file."""
@@ -9183,12 +9488,13 @@ def render_weekly_report_page():
     with top_f5:
         st.write("")
         if st.button("🔄 Auto-Sync Data Mula sa Google Drive", use_container_width=True, type="primary"):
-            with st.spinner(f"Binabasa ang mga Excel files mula sa Google Drive Folder para sa {view_month} {selected_year} ({view_week})..."):
+            with st.spinner(f"Binabasa at sini-sync ang mga in-adjust na Excel files mula sa Google Drive para sa {view_month} {selected_year} ({view_week})..."):
                 folder_url = st.session_state.custom_secrets.get("WEEKLY_REPORT_FOLDER_URL", ACTIVE_WEEKLY_FOLDER_URL)
                 cnt, msg = sync_weekly_reports_from_google_drive_folder(folder_url, view_month, view_week)
+                cnt_c, msg_c = pull_and_sync_pwr_2027_consolidation_from_drive_to_app(int(selected_year))
                 st.session_state["pwr_form_rev"] = st.session_state.get("pwr_form_rev", 0) + 1
                 st.cache_data.clear()
-                st.success(msg)
+                st.success(f"{msg} | {msg_c}")
                 time.sleep(0.5)
                 st.rerun()
     with top_f6:
@@ -9209,11 +9515,15 @@ def render_weekly_report_page():
             if is_week_record_completed(db_all_init.get(f"{p_b.upper()}__{view_month.upper()}__{wk_opt}", {}))
         )
         wk_sat_date = get_week_date_for_month_year(view_month, wk_opt, int(selected_year))
+        ev_cnt_wk = sum(
+            1 for p_b in parishes_for_badge
+            if is_record_marked_church_event(db_all_init.get(f"{p_b.upper()}__{view_month.upper()}__{wk_opt}", {}))
+        )
         no_rep_cnt_wk = sum(
             1 for p_b in parishes_for_badge
             if is_record_marked_no_report(db_all_init.get(f"{p_b.upper()}__{view_month.upper()}__{wk_opt}", {}))
         )
-        badge_icon = "✅" if done_cnt_wk > 0 else ("❌" if no_rep_cnt_wk > 0 else "⏳")
+        badge_icon = "✅" if done_cnt_wk > 0 else ("🏛️" if ev_cnt_wk > 0 else ("❌" if no_rep_cnt_wk > 0 else "⏳"))
         is_active_wk = (not show_all_weeks_of_month and view_week == wk_opt)
         btn_lbl = f"{'👉 ' if is_active_wk else ''}{badge_icon} {wk_opt} ({wk_sat_date})"
         with wk_cols[idx_w]:
@@ -9247,8 +9557,7 @@ def render_weekly_report_page():
             "📝 Remarks (Mass / Adal / House Church / Visitors)",
             "📊 Parish Weekly Report Data (Attendance)",
             f"📅 Buong Buwan ng {view_month.upper()} {selected_year} — Monitoring & Summary",
-            "🏅 Passing Ministry Areas (≥75% Passing)",
-            f"📊 PWR Performance & Consolidation ({my_parish})"
+            "🏅 Passing Ministry Areas (≥75% Passing)"
         ])
 
     with pwr_tabs_list[0]:
@@ -9349,6 +9658,143 @@ def render_weekly_report_page():
                     if marked_nr_parishes:
                         joined_nr_p = ", ".join(marked_nr_parishes)
                         st.caption(f"📋 **Kasalukuyang may `(No Report)` sa {nr_target_month} ({nr_target_week}):** `{joined_nr_p}`")
+
+                    st.markdown("---")
+                    st.markdown("##### 🏛️ Master Admin `(Church Event)` Controller (Awtomatikong Binabawasan ng `-1 Week` ang `# OF WEEKS` sa Report Computation)")
+                    st.caption("Kapag may **Church Event** sa isang Parokya (o sa Lahat ng Parokya) sa partikular na Buwan at Linggo, lagyan ito ng **`(Church Event)`** dito. Awtomatikong hindi na ito isasama sa required report at **babawasan ng 1 week (`-1 Week`)** ang `# OF WEEKS` sa buwang iyon.")
+                    ev_c1, ev_c2, ev_c3, ev_c4 = st.columns([1.3, 0.9, 0.9, 1.2])
+                    ev_parish_opts = PARISH_ORDER + ["LAHAT NG PAROKYA (All 10 Parishes)"]
+                    if "ev_ctrl_parish" not in st.session_state or st.session_state["ev_ctrl_parish"] not in ev_parish_opts:
+                        st.session_state["ev_ctrl_parish"] = focused_parish_for_sheets if focused_parish_for_sheets in PARISH_ORDER else "LAHAT NG PAROKYA (All 10 Parishes)"
+                    if "ev_ctrl_month" not in st.session_state or st.session_state["ev_ctrl_month"] not in MONTHS_2027:
+                        st.session_state["ev_ctrl_month"] = view_month
+                    with ev_c1:
+                        ev_target_parish = st.selectbox("🏛️ Parokya na May Church Event:", ev_parish_opts, key="ev_ctrl_parish")
+                    with ev_c2:
+                        ev_target_month = st.selectbox("📅 Buwan ng Event:", MONTHS_2027, key="ev_ctrl_month")
+                    ev_valid_weeks = get_weeks_for_month_year(ev_target_month, int(selected_year))
+                    if "ev_ctrl_week" not in st.session_state or st.session_state["ev_ctrl_week"] not in ev_valid_weeks:
+                        st.session_state["ev_ctrl_week"] = view_week if view_week in ev_valid_weeks else ev_valid_weeks[0]
+                    with ev_c3:
+                        ev_target_week = st.selectbox("🗓️ Linggo ng Event:", ev_valid_weeks, key="ev_ctrl_week")
+                    with ev_c4:
+                        ev_title_input = st.text_input("🏷️ Pangalan ng Church Event:", value="Church Event", key="ev_ctrl_title")
+
+                    ev_btn_1, ev_btn_2 = st.columns(2)
+                    with ev_btn_1:
+                        if st.button(f"🏛️ Lagyan ng '(Church Event)' & Bawasan ng 1 Week ({ev_target_parish} • {ev_target_month} {ev_target_week})", type="primary", use_container_width=True, key="btn_apply_church_event"):
+                            if "LAHAT NG PAROKYA" in ev_target_parish:
+                                for p_item_ev in PARISH_ORDER:
+                                    set_parish_church_event_status(p_item_ev, ev_target_month, ev_target_week, int(selected_year), mark_church_event=True, event_title=ev_title_input)
+                            else:
+                                set_parish_church_event_status(ev_target_parish, ev_target_month, ev_target_week, int(selected_year), mark_church_event=True, event_title=ev_title_input)
+                                st.session_state["_next_editor_parish"] = ev_target_parish
+                            st.session_state["_next_mon_view_month"] = ev_target_month
+                            st.session_state["_next_mon_view_week"] = ev_target_week
+                            st.success(f"🏛️ Nalagyan na ng '(Church Event: {ev_title_input})' ang {ev_target_parish} para sa {ev_target_month} {selected_year} ({ev_target_week}) at awtomatikong binawasan ng 1 week ang # OF WEEKS!")
+                            time.sleep(0.4)
+                            st.rerun()
+                    with ev_btn_2:
+                        if st.button(f"♻️ Alisin ang '(Church Event)' & Ibalik ang Week Count ({ev_target_parish} • {ev_target_month} {ev_target_week})", use_container_width=True, key="btn_clear_church_event"):
+                            if "LAHAT NG PAROKYA" in ev_target_parish:
+                                for p_item_ev in PARISH_ORDER:
+                                    set_parish_church_event_status(p_item_ev, ev_target_month, ev_target_week, int(selected_year), mark_church_event=False)
+                            else:
+                                set_parish_church_event_status(ev_target_parish, ev_target_month, ev_target_week, int(selected_year), mark_church_event=False)
+                                st.session_state["_next_editor_parish"] = ev_target_parish
+                            st.session_state["_next_mon_view_month"] = ev_target_month
+                            st.session_state["_next_mon_view_week"] = ev_target_week
+                            st.success(f"♻️ Inalis na ang '(Church Event)' sa {ev_target_parish} para sa {ev_target_month} {selected_year} ({ev_target_week}) at naibalik na ang # OF WEEKS!")
+                            time.sleep(0.4)
+                            st.rerun()
+
+                    marked_ev_parishes = [
+                        f"{p_m.replace('PARISH', '').strip()} (# OF WEEKS: {get_effective_reporting_weeks_count_for_parish_month(p_m, ev_target_month, int(selected_year), db_all_init)}/{len(ev_valid_weeks)})"
+                        for p_m in PARISH_ORDER
+                        if is_record_marked_church_event(db_all_init.get(f"{p_m.upper()}__{ev_target_month.upper()}__{ev_target_week}", {}))
+                    ]
+                    if marked_ev_parishes:
+                        st.info(f"🏛️ **Kasalukuyang may `(Church Event)` sa {ev_target_month} ({ev_target_week}):** `{', '.join(marked_ev_parishes)}`")
+
+                with st.expander("🔗 Master Admin: I-update ang mga Google Drive File Links para sa Weekly Report & Consolidation Excel", expanded=False):
+                    st.caption("Habang inaayos mo ang mga Excel files sa Google Drive, dito mo maaaring palitan o i-update ang mga Google Drive links para sa **Master Consolidation Excel (`CTG_PWR_2027_CONSOLIDATION.xlsx`)**, **Weekly Report Master Folder**, **Parish Upload Folder**, o partikular na **Weekly Report Excel File**. Kapag nag-adjust ka sa Google Drive, pindutin ang **Pull & Sync** upang agad na makita ng bawat Parish Leader.")
+                    lnk_u1, lnk_u2, lnk_u3 = st.columns(3)
+                    with lnk_u1:
+                        in_pwr_cons_url = st.text_input(
+                            "📊 Master Consolidation Excel Link (Jan–Dec 2027):",
+                            value=load_saved_pwr_consolidation_url(),
+                            key="adm_upd_pwr_cons_url"
+                        ).strip()
+                    with lnk_u2:
+                        in_wk_folder_url = st.text_input(
+                            "📁 2027 Weekly Report Master Folder Link:",
+                            value=st.session_state.custom_secrets.get("WEEKLY_REPORT_FOLDER_URL", ACTIVE_WEEKLY_FOLDER_URL),
+                            key="adm_upd_wk_folder_url"
+                        ).strip()
+                    with lnk_u3:
+                        in_up_folder_url = st.text_input(
+                            "📤 Parish Upload Folder Link (Upload Here!):",
+                            value=st.session_state.custom_secrets.get("PARISH_UPLOAD_FOLDER_URL", ACTIVE_PARISH_UPLOAD_URL),
+                            key="adm_upd_parish_up_url"
+                        ).strip()
+
+                    lu_b1, lu_b2 = st.columns(2)
+                    with lu_b1:
+                        if st.button("💾 I-save ang mga Bagong Google Drive Links & I-update ang App", type="primary", use_container_width=True, key="btn_save_adm_wk_links"):
+                            st.session_state.custom_secrets["PWR_2027_CONSOLIDATION_URL"] = in_pwr_cons_url
+                            st.session_state.custom_secrets["WEEKLY_REPORT_FOLDER_URL"] = in_wk_folder_url
+                            st.session_state.custom_secrets["PARISH_UPLOAD_FOLDER_URL"] = in_up_folder_url
+                            save_cloud_url_config(
+                                weekly_folder_url=in_wk_folder_url,
+                                parish_upload_url=in_up_folder_url,
+                                pwr_consolidation_url=in_pwr_cons_url
+                            )
+                            if in_pwr_cons_url:
+                                add_link_to_drive_registry(
+                                    "CTG_PWR_2027_CONSOLIDATION.xlsx (Active Master Consolidation)",
+                                    "Master Weekly Report Excel (PWR)",
+                                    "All Months",
+                                    "All Weeks",
+                                    "Lahat ng Parokya (Master)",
+                                    in_pwr_cons_url
+                                )
+                            st.cache_data.clear()
+                            st.success("✅ Matagumpay na na-update ang mga Google Drive Links para sa Weekly Report at Consolidation!")
+                            time.sleep(0.5)
+                            st.rerun()
+                    with lu_b2:
+                        if st.button("🔄 I-pull at I-sync sa App ang mga In-adjust na Data Mula sa Google Drive", use_container_width=True, key="btn_pull_adm_wk_drive"):
+                            with st.spinner("Binabasa ang pinakabagong datos mula sa Google Drive Excel..."):
+                                cnt_p, msg_p = pull_and_sync_pwr_2027_consolidation_from_drive_to_app(int(selected_year))
+                                cnt_f, msg_f = sync_weekly_reports_from_google_drive_folder(in_wk_folder_url or ACTIVE_WEEKLY_FOLDER_URL, view_month, view_week)
+                                st.cache_data.clear()
+                                st.success(f"✅ {msg_p} | {msg_f}")
+                                time.sleep(0.5)
+                                st.rerun()
+
+                    # Edit or replace any saved Weekly Report link in-place
+                    reg_all_wk = load_saved_drive_links_registry()
+                    if reg_all_wk:
+                        st.markdown("###### ✏️ I-edit o Palitan ang Naka-save na Google Drive File Link sa Registry")
+                        reg_labels = [f"#{i+1}: {it.get('label')} ({it.get('month', 'All')} - {it.get('week', 'All')})" for i, it in enumerate(reg_all_wk)]
+                        sel_reg_idx = st.selectbox("Piliin ang Link na I-a-update:", range(len(reg_all_wk)), format_func=lambda idx: reg_labels[idx], key="adm_edit_reg_idx")
+                        sel_reg_item = reg_all_wk[sel_reg_idx]
+                        er_c1, er_c2, er_c3 = st.columns([1.3, 1.9, 0.8])
+                        with er_c1:
+                            new_reg_lbl = st.text_input("Label ng File:", value=str(sel_reg_item.get("label", "")), key="adm_edit_reg_lbl").strip()
+                        with er_c2:
+                            new_reg_url = st.text_input("Bagong Google Drive Link URL:", value=str(sel_reg_item.get("url", "")), key="adm_edit_reg_url").strip()
+                        with er_c3:
+                            st.write("")
+                            if st.button("💾 Update Link", use_container_width=True, key="btn_adm_upd_reg_item"):
+                                reg_all_wk[sel_reg_idx]["label"] = new_reg_lbl or sel_reg_item.get("label", "")
+                                reg_all_wk[sel_reg_idx]["url"] = new_reg_url
+                                reg_all_wk[sel_reg_idx]["added_at"] = get_philippine_datetime_str()
+                                save_drive_links_registry(reg_all_wk)
+                                st.cache_data.clear()
+                                st.success("✅ Na-update na ang Google Drive link sa listahan!")
+                                time.sleep(0.4)
+                                st.rerun()
         if is_master:
             st.divider()
 
@@ -9391,8 +9837,16 @@ def render_weekly_report_page():
                 existing_up_rec = db_all_init.get(f"{target_parish.upper()}__{sel_month.upper()}__{sel_week}", {})
                 has_submitted_up = is_week_record_completed(existing_up_rec)
                 is_marked_nr_up = is_record_marked_no_report(existing_up_rec)
-                is_up_locked = bool(up_dl_info["is_past_deadline"])
-                if is_marked_nr_up:
+                is_marked_ev_up = is_record_marked_church_event(existing_up_rec)
+                is_up_locked = bool(up_dl_info["is_past_deadline"]) or is_marked_ev_up
+                if is_marked_ev_up:
+                    ev_t_up = str(existing_up_rec.get("church_event_title") or "Church Event")
+                    eff_w_up = get_effective_reporting_weeks_count_for_parish_month(target_parish, sel_month, int(selected_year), db_all_init)
+                    st.info(
+                        f"🏛️ **(Church Event: {ev_t_up}) — Ang {target_parish} para sa {sel_month} {selected_year} ({sel_week}, Sabado: `{up_dl_info['saturday_date_str']}`) ay nakatala bilang Church Event.** "
+                        f"Hindi na ito kasama sa regular na Weekly Report at awtomatikong binawasan na ng 1 week ang `# OF WEEKS` (`{eff_w_up} Weeks` para sa {sel_month})."
+                    )
+                elif is_marked_nr_up:
                     st.error(
                         f"⛔ **(No Report) — Ang {target_parish} para sa {sel_month} {selected_year} ({sel_week}, Petsa ng Sabado: `{up_dl_info['saturday_date_str']}`) ay naka-marka bilang `(No Report)`.** "
                         f"Ang opisyal na araw ng pasahan ay tuwing **Sabado (Saturday)** hanggang **Lunes ng Hatinggabi (`{up_dl_info['monday_deadline_str']}`)**."
@@ -9818,8 +10272,13 @@ def render_weekly_report_page():
             area_pcts_month = {m_lbl: [] for m_lbl, _, _, _ in ministry_area_defs}
             parish_passed_any = False
 
+            eff_wks_parish = get_effective_reporting_weeks_count_for_parish_month(p_item, view_month, int(selected_year), db_live)
             for wk_lbl in active_month_weeks:
                 rec_w = db_live.get(f"{p_item.upper()}__{view_month.upper()}__{wk_lbl}", {})
+                if is_record_marked_church_event(rec_w):
+                    ev_lbl_w = str(rec_w.get("church_event_title") or "Church Event")
+                    row_dict[wk_lbl] = f"🏛️ ({ev_lbl_w} — -1 Wk)"
+                    continue
                 has_w = is_week_record_completed(rec_w)
                 passed_in_wk = []
                 if has_w:
@@ -9847,7 +10306,7 @@ def render_weekly_report_page():
             if parish_passed_any:
                 parishes_with_any_pass += 1
 
-            # Summarize how many weeks each Ministry Area passed (>= 75%) in this month
+            # Summarize how many weeks each Ministry Area passed (>= 75%) in this month (using eff_wks_parish after subtracting Church Event weeks)
             weeks_count_summary = []
             monthly_avg_passed = []
             for m_lbl, _, _, _ in ministry_area_defs:
@@ -9855,14 +10314,14 @@ def render_weekly_report_page():
                     continue
                 w_list = area_weeks_passed[m_lbl]
                 if len(w_list) > 0:
-                    weeks_count_summary.append(f"✅ {m_lbl}: {len(w_list)}/{len(active_month_weeks)} Weeks")
+                    weeks_count_summary.append(f"✅ {m_lbl}: {len(w_list)}/{eff_wks_parish} Weeks")
                 p_list = area_pcts_month[m_lbl]
                 if p_list:
                     avg_m_pct = int(round(sum(p_list) / len(p_list)))
                     if avg_m_pct >= 75:
                         monthly_avg_passed.append(f"🏅 {m_lbl} ({avg_m_pct}% Avg)")
 
-            row_dict[f"Ilang Weeks Nakapasa (Out of {len(active_month_weeks)} Weeks)"] = " | ".join(weeks_count_summary) if weeks_count_summary else "Wala pang ≥75%"
+            row_dict[f"Ilang Weeks Nakapasa (Active Weeks)"] = " | ".join(weeks_count_summary) if weeks_count_summary else "Wala pang ≥75%"
             row_dict["Monthly Passing Average (≥75%)"] = " • ".join(monthly_avg_passed) if monthly_avg_passed else "—"
             pass_matrix_rows.append(row_dict)
 
@@ -9921,515 +10380,521 @@ def render_weekly_report_page():
         )
 
     # =====================================================================
-    # 📊 TAB 6: MODULE 2 — WEEKLY PERFORMANCE REPORTS (PWR 2027 MONTHLY & WHOLE-YEAR CONSOLIDATION)
-    # Exact Image 1 (Monthly Sheets) & Image 2 (CONSOLIDATED AS OF 2027) Layout + Google Drive Sync (1tOdW8FRpyESStVzQVf6RGpS-YTnexG_u)
+    # 📊 TAB 6 (MASTER ADMIN EXCLUSIVE): MODULE 2 — WEEKLY PERFORMANCE REPORTS (PWR 2027 MONTHLY & WHOLE-YEAR CONSOLIDATION)
+    # Exact Image 1 (Monthly Sheets) & Image 2 (CONSOLIDATED AS OF 2027) Layout + Two-Way Google Drive Sync
     # =====================================================================
-    with pwr_tabs_list[6]:
-        st.markdown(
-            f"<div style='background:linear-gradient(135deg, #1E3A8A 0%, #0F172A 100%);"
-            f"border:1px solid rgba(59,130,246,0.5);border-radius:14px;padding:16px 20px;margin-bottom:14px;'>"
-            f"<div style='font-size:1.22rem;font-weight:800;color:#F8FAFC;'>"
-            f"📊 CHURCH OF THE TEMPLE OF GOD PERFORMANCE {selected_year} — Monthly & Whole-Year Consolidation (`CTG_PWR_2027_CONSOLIDATION.xlsx`)"
-            f"</div>"
-            f"<div style='font-size:0.85rem;color:#BFDBFE;margin-top:4px;'>"
-            f"Direktang naka-konekta sa Google Drive Excel Template (<a href='{MASTER_PWR_2027_CONSOLIDATION_URL}' target='_blank' style='color:#93C5FD;font-weight:700;'>Buksan ang CTG_PWR_2027_CONSOLIDATION.xlsx sa Google Drive</a>). "
-            f"Ang lahat ng datos na isinumite ng mga Parish Leaders para sa <b>W-1 hanggang W-5 (Columns B–F)</b> ay awtomatikong inilalagay sa tamang Parokya at Buwan nang <b>hindi binubura ang mga Excel Formula sa Columns G, H, I, J, at K</b>."
-            f"</div></div>",
-            unsafe_allow_html=True
-        )
+    if is_master:
+        with pwr_tabs_list[6]:
+            st.markdown(
+                f"<div style='background:linear-gradient(135deg, #1E3A8A 0%, #0F172A 100%);"
+                f"border:1px solid rgba(59,130,246,0.5);border-radius:14px;padding:16px 20px;margin-bottom:14px;'>"
+                f"<div style='font-size:1.22rem;font-weight:800;color:#F8FAFC;'>"
+                f"📊 CHURCH OF THE TEMPLE OF GOD PERFORMANCE {selected_year} — Monthly & Whole-Year Consolidation (`CTG_PWR_2027_CONSOLIDATION.xlsx`)"
+                f"</div>"
+                f"<div style='font-size:0.85rem;color:#BFDBFE;margin-top:4px;'>"
+                f"Direktang naka-konekta sa Google Drive Excel Template (<a href='{MASTER_PWR_2027_CONSOLIDATION_URL}' target='_blank' style='color:#93C5FD;font-weight:700;'>Buksan ang CTG_PWR_2027_CONSOLIDATION.xlsx sa Google Drive</a>). "
+                f"Ang lahat ng datos na isinumite ng mga Parish Leaders para sa <b>W-1 hanggang W-5 (Columns B–F)</b> ay awtomatikong inilalagay sa tamang Parokya at Buwan nang <b>hindi binubura ang mga Excel Formula sa Columns G, H, I, J, at K</b>."
+                f"</div></div>",
+                unsafe_allow_html=True
+            )
 
-        # Load current workbook bytes (cached via @st.cache_data) & overlay live submitted leader records from db_live
-        raw_pwr_wb_bytes = fetch_pwr_2027_consolidation_workbook_bytes(force_drive=False)
-        try:
-            wb_pwr_live = openpyxl.load_workbook(io.BytesIO(raw_pwr_wb_bytes), data_only=False)
-        except Exception:
-            wb_pwr_live = _build_clean_pwr_2027_consolidation_workbook()
+            # Load current workbook bytes (cached via @st.cache_data) & overlay live submitted leader records from db_live
+            raw_pwr_wb_bytes = fetch_pwr_2027_consolidation_workbook_bytes(force_drive=False)
+            try:
+                wb_pwr_live = openpyxl.load_workbook(io.BytesIO(raw_pwr_wb_bytes), data_only=False)
+            except Exception:
+                wb_pwr_live = _build_clean_pwr_2027_consolidation_workbook()
 
-        def _compute_parish_month_8_activities_rows(m_name: str, p_full_name: str) -> list[dict]:
-            """Computes the exact 8 activity rows for (m_name, p_full_name) combining Excel sheet values + live submitted db_live records,
-            evaluating TOTAL (Col G), # OF WEEKS (Col H), AVERAGE (Col I), TOTAL MEMBERS (Col J), and PERCENTAGE (Col K) using the exact Excel formulas."""
-            m_up = m_name.strip().upper()
-            p_sec_lbl, h_row = PWR_2027_PARISH_SECTION_HEADERS[p_full_name]
-            num_wks_default = PWR_2027_MONTH_WEEKS_COUNT.get(m_up, 4)
-            j_defaults = PWR_2027_DEFAULT_TOTAL_MEMBERS_COL_J.get(p_full_name, [10]*7 + [None])
-            ws_m = wb_pwr_live[m_up] if m_up in wb_pwr_live.sheetnames else None
+            def _compute_parish_month_8_activities_rows(m_name: str, p_full_name: str) -> list[dict]:
+                """Computes the exact 8 activity rows for (m_name, p_full_name) combining Excel sheet values + live submitted db_live records,
+                evaluating TOTAL (Col G), # OF WEEKS (Col H), AVERAGE (Col I), TOTAL MEMBERS (Col J), and PERCENTAGE (Col K) using the exact Excel formulas."""
+                m_up = m_name.strip().upper()
+                p_sec_lbl, h_row = PWR_2027_PARISH_SECTION_HEADERS[p_full_name]
+                num_wks_default = PWR_2027_MONTH_WEEKS_COUNT.get(m_up, 4)
+                ev_weeks_cnt = get_church_event_weeks_count_for_parish_month(p_full_name, m_name, int(selected_year), db_live)
+                eff_wks_after_events = max(1, num_wks_default - ev_weeks_cnt)
+                j_defaults = PWR_2027_DEFAULT_TOTAL_MEMBERS_COL_J.get(p_full_name, [10]*7 + [None])
+                ws_m = wb_pwr_live[m_up] if m_up in wb_pwr_live.sheetnames else None
 
-            rows_out = []
-            for act_idx, act_name in enumerate(PWR_2027_ACTIVITIES_8):
-                r_excel = h_row + 2 + act_idx
-                is_hk_blank = (p_full_name == "HONGKONG PARISH" and act_idx >= 3)
-                disp_act_name = "" if is_hk_blank else act_name
+                rows_out = []
+                for act_idx, act_name in enumerate(PWR_2027_ACTIVITIES_8):
+                    r_excel = h_row + 2 + act_idx
+                    is_hk_blank = (p_full_name == "HONGKONG PARISH" and act_idx >= 3)
+                    disp_act_name = "" if is_hk_blank else act_name
 
-                # Read # OF WEEKS (Col H) and TOTAL MEMBERS (Col J) from Excel template
-                wks_h = num_wks_default
-                tot_mem_j = j_defaults[act_idx]
-                if ws_m is not None:
-                    h_cell = ws_m.cell(r_excel, 8).value
-                    if isinstance(h_cell, (int, float)) and int(h_cell) > 0:
-                        wks_h = int(h_cell)
-                    j_cell = ws_m.cell(r_excel, 10).value
-                    if isinstance(j_cell, (int, float)):
-                        tot_mem_j = int(j_cell)
-                    elif j_cell is None:
-                        tot_mem_j = j_defaults[act_idx]
-
-                # If live records in db_live updated total_members_say/y/k, keep template's exact Total Members unless missing
-                w_counts = []
-                for w_i, w_lbl in enumerate(WEEKS_2027):
-                    val_w = None
-                    # 1. Check Excel sheet cell (Col B..F = 2..6)
+                    # Read # OF WEEKS (Col H) and TOTAL MEMBERS (Col J), applying automatic -1 week per Church Event
+                    wks_h = eff_wks_after_events
+                    tot_mem_j = j_defaults[act_idx]
                     if ws_m is not None:
-                        c_v = ws_m.cell(r_excel, 2 + w_i).value
-                        if isinstance(c_v, (int, float)):
-                            val_w = int(c_v)
-                    # 2. Overlay from live submitted weekly reports in db_live
-                    rec_db = db_live.get(f"{p_full_name.upper()}__{m_up}__{w_lbl}", {})
-                    if is_week_record_completed(rec_db) and not is_hk_blank:
-                        act_map = extract_activity_counts_from_weekly_record(rec_db)
-                        if act_name in act_map:
-                            val_w = int(act_map[act_name])
-                    w_counts.append(val_w)
+                        if ev_weeks_cnt == 0:
+                            h_cell = ws_m.cell(r_excel, 8).value
+                            if isinstance(h_cell, (int, float)) and int(h_cell) > 0:
+                                wks_h = int(h_cell)
+                        j_cell = ws_m.cell(r_excel, 10).value
+                        if isinstance(j_cell, (int, float)):
+                            tot_mem_j = int(j_cell)
+                        elif j_cell is None:
+                            tot_mem_j = j_defaults[act_idx]
 
-                # Excel Formula evaluation:
-                # Col G (TOTAL) = SUM(B:F) (in Excel, SUM of empty cells is 0)
-                numeric_w = [v for v in w_counts if isinstance(v, (int, float))]
-                total_g = int(sum(numeric_w)) if numeric_w else 0
-                # Col I (AVERAGE) = IF(OR(NOT(ISNUMBER(G)),H="",H=0),"",G/H)
-                avg_i = round(total_g / float(wks_h), 1) if (wks_h and wks_h > 0) else 0.0
-                # Col K (PERCENTAGE) = IF(OR(NOT(ISNUMBER(I)),J="",J=0),"",I/J)
-                if tot_mem_j is not None and isinstance(tot_mem_j, (int, float)) and tot_mem_j > 0:
-                    pct_k_num = (avg_i / float(tot_mem_j)) * 100.0
-                    pct_k_str = f"{int(round(pct_k_num))}%"
-                elif tot_mem_j == 0 and not is_hk_blank and act_name != "INDUCTRINATION":
-                    pct_k_num = 0.0
-                    pct_k_str = "0%"
-                else:
-                    pct_k_num = None
-                    pct_k_str = ""
+                    w_counts = []
+                    for w_i, w_lbl in enumerate(WEEKS_2027):
+                        rec_db = db_live.get(f"{p_full_name.upper()}__{m_up}__{w_lbl}", {})
+                        if is_record_marked_church_event(rec_db):
+                            w_counts.append(None)
+                            continue
+                        val_w = None
+                        # 1. Check Excel sheet cell (Col B..F = 2..6)
+                        if ws_m is not None:
+                            c_v = ws_m.cell(r_excel, 2 + w_i).value
+                            if isinstance(c_v, (int, float)):
+                                val_w = int(c_v)
+                        # 2. Overlay from live submitted weekly reports in db_live
+                        if is_week_record_completed(rec_db) and not is_hk_blank:
+                            act_map = extract_activity_counts_from_weekly_record(rec_db)
+                            if act_name in act_map:
+                                val_w = int(act_map[act_name])
+                        w_counts.append(val_w)
 
-                rows_out.append({
-                    "act_idx": act_idx,
-                    "excel_row": r_excel,
-                    "is_blank_row": is_hk_blank,
-                    "ACTIVITY": disp_act_name,
-                    "W-1": w_counts[0],
-                    "W-2": w_counts[1],
-                    "W-3": w_counts[2],
-                    "W-4": w_counts[3],
-                    "W-5": w_counts[4],
-                    "TOTAL": total_g,
-                    "# OF WEEKS": wks_h,
-                    "AVERAGE": avg_i,
-                    "TOTAL MEMBERS": tot_mem_j,
-                    "PERCENTAGE_NUM": pct_k_num,
-                    "PERCENTAGE": pct_k_str,
-                })
-            return rows_out
+                    # Excel Formula evaluation:
+                    # Col G (TOTAL) = SUM(B:F) (in Excel, SUM of empty cells is 0)
+                    numeric_w = [v for v in w_counts if isinstance(v, (int, float))]
+                    total_g = int(sum(numeric_w)) if numeric_w else 0
+                    # Col I (AVERAGE) = IF(OR(NOT(ISNUMBER(G)),H="",H=0),"",G/H)
+                    avg_i = round(total_g / float(wks_h), 1) if (wks_h and wks_h > 0) else 0.0
+                    # Col K (PERCENTAGE) = IF(OR(NOT(ISNUMBER(I)),J="",J=0),"",I/J)
+                    if tot_mem_j is not None and isinstance(tot_mem_j, (int, float)) and tot_mem_j > 0:
+                        pct_k_num = (avg_i / float(tot_mem_j)) * 100.0
+                        pct_k_str = f"{int(round(pct_k_num))}%"
+                    elif tot_mem_j == 0 and not is_hk_blank and act_name != "INDUCTRINATION":
+                        pct_k_num = 0.0
+                        pct_k_str = "0%"
+                    else:
+                        pct_k_num = None
+                        pct_k_str = ""
 
-        def _render_image1_monthly_parish_html_table(p_full_name: str, act_rows: list[dict]) -> str:
-            """Renders the exact Image 1 (Screenshot 2026-11-20 at 10.04.17 AM.png) table for a Parish."""
-            p_sec_lbl, _ = PWR_2027_PARISH_SECTION_HEADERS[p_full_name]
-            tr_list = []
-            for r_it in act_rows:
-                act_lbl = r_it["ACTIVITY"]
-                w_cells = ""
-                for wk_k in ["W-1", "W-2", "W-3", "W-4", "W-5"]:
-                    wv = r_it[wk_k]
-                    w_disp = "" if wv is None else str(int(wv))
-                    w_cells += (
-                        f"<td style='background-color:#FEF9E7;color:#111827;text-align:center;"
-                        f"border:1px solid #9CA3AF;padding:6px 8px;font-weight:600;width:7%;'>{w_disp}</td>"
+                    rows_out.append({
+                        "act_idx": act_idx,
+                        "excel_row": r_excel,
+                        "is_blank_row": is_hk_blank,
+                        "ACTIVITY": disp_act_name,
+                        "W-1": w_counts[0],
+                        "W-2": w_counts[1],
+                        "W-3": w_counts[2],
+                        "W-4": w_counts[3],
+                        "W-5": w_counts[4],
+                        "TOTAL": total_g,
+                        "# OF WEEKS": wks_h,
+                        "AVERAGE": avg_i,
+                        "TOTAL MEMBERS": tot_mem_j,
+                        "PERCENTAGE_NUM": pct_k_num,
+                        "PERCENTAGE": pct_k_str,
+                    })
+                return rows_out
+
+            def _render_image1_monthly_parish_html_table(p_full_name: str, act_rows: list[dict]) -> str:
+                """Renders the exact Image 1 (Screenshot 2026-11-20 at 10.04.17 AM.png) table for a Parish."""
+                p_sec_lbl, _ = PWR_2027_PARISH_SECTION_HEADERS[p_full_name]
+                tr_list = []
+                for r_it in act_rows:
+                    act_lbl = r_it["ACTIVITY"]
+                    w_cells = ""
+                    for wk_k in ["W-1", "W-2", "W-3", "W-4", "W-5"]:
+                        wv = r_it[wk_k]
+                        w_disp = "" if wv is None else str(int(wv))
+                        w_cells += (
+                            f"<td style='background-color:#FEF9E7;color:#111827;text-align:center;"
+                            f"border:1px solid #9CA3AF;padding:6px 8px;font-weight:600;width:7%;'>{w_disp}</td>"
+                        )
+                    tot_disp = str(r_it["TOTAL"])
+                    wks_disp = str(r_it["# OF WEEKS"])
+                    avg_disp = f"{r_it['AVERAGE']:.1f}"
+                    tm_v = r_it["TOTAL MEMBERS"]
+                    tm_disp = "" if tm_v is None else str(int(tm_v))
+                    pct_disp = r_it["PERCENTAGE"]
+                    tr_list.append(
+                        f"<tr>"
+                        f"<td style='background-color:#FFFFFF;color:#111827;text-align:left;border:1px solid #9CA3AF;padding:6px 10px;font-weight:500;width:20%;'>{act_lbl}</td>"
+                        f"{w_cells}"
+                        f"<td style='background-color:#E5E7EB;color:#111827;text-align:right;border:1px solid #9CA3AF;padding:6px 10px;font-weight:600;width:8%;'>{tot_disp}</td>"
+                        f"<td style='background-color:#E5E7EB;color:#111827;text-align:right;border:1px solid #9CA3AF;padding:6px 10px;font-weight:600;width:9%;'>{wks_disp}</td>"
+                        f"<td style='background-color:#E5E7EB;color:#111827;text-align:right;border:1px solid #9CA3AF;padding:6px 10px;font-weight:600;width:9%;'>{avg_disp}</td>"
+                        f"<td style='background-color:#E5E7EB;color:#111827;text-align:right;border:1px solid #9CA3AF;padding:6px 10px;font-weight:600;width:11%;'>{tm_disp}</td>"
+                        f"<td style='background-color:#E5E7EB;color:#111827;text-align:right;border:1px solid #9CA3AF;padding:6px 10px;font-weight:700;width:9%;'>{pct_disp}</td>"
+                        f"</tr>"
                     )
-                tot_disp = str(r_it["TOTAL"])
-                wks_disp = str(r_it["# OF WEEKS"])
-                avg_disp = f"{r_it['AVERAGE']:.1f}"
-                tm_v = r_it["TOTAL MEMBERS"]
-                tm_disp = "" if tm_v is None else str(int(tm_v))
-                pct_disp = r_it["PERCENTAGE"]
-                tr_list.append(
-                    f"<tr>"
-                    f"<td style='background-color:#FFFFFF;color:#111827;text-align:left;border:1px solid #9CA3AF;padding:6px 10px;font-weight:500;width:20%;'>{act_lbl}</td>"
-                    f"{w_cells}"
-                    f"<td style='background-color:#E5E7EB;color:#111827;text-align:right;border:1px solid #9CA3AF;padding:6px 10px;font-weight:600;width:8%;'>{tot_disp}</td>"
-                    f"<td style='background-color:#E5E7EB;color:#111827;text-align:right;border:1px solid #9CA3AF;padding:6px 10px;font-weight:600;width:9%;'>{wks_disp}</td>"
-                    f"<td style='background-color:#E5E7EB;color:#111827;text-align:right;border:1px solid #9CA3AF;padding:6px 10px;font-weight:600;width:9%;'>{avg_disp}</td>"
-                    f"<td style='background-color:#E5E7EB;color:#111827;text-align:right;border:1px solid #9CA3AF;padding:6px 10px;font-weight:600;width:11%;'>{tm_disp}</td>"
-                    f"<td style='background-color:#E5E7EB;color:#111827;text-align:right;border:1px solid #9CA3AF;padding:6px 10px;font-weight:700;width:9%;'>{pct_disp}</td>"
-                    f"</tr>"
+                rows_joined = "".join(tr_list)
+                return (
+                    f"<div style='margin-bottom:18px;border:1px solid #9CA3AF;background:#FFFFFF;border-radius:4px;overflow-x:auto;'>"
+                    f"<div style='background-color:#C88A88;color:#FFFFFF;text-align:center;font-weight:800;font-size:1.25rem;"
+                    f"padding:8px 12px;letter-spacing:0.6px;border-bottom:1px solid #9CA3AF;'>{p_sec_lbl}</div>"
+                    f"<table style='width:100%;border-collapse:collapse;font-family:Arial,sans-serif;font-size:0.86rem;'>"
+                    f"<thead>"
+                    f"<tr style='background-color:#EFEFEF;color:#111827;font-weight:700;'>"
+                    f"<th style='border:1px solid #9CA3AF;padding:8px 10px;text-align:center;'>ACTIVITY</th>"
+                    f"<th style='border:1px solid #9CA3AF;padding:8px 6px;text-align:center;'>W-1</th>"
+                    f"<th style='border:1px solid #9CA3AF;padding:8px 6px;text-align:center;'>W-2</th>"
+                    f"<th style='border:1px solid #9CA3AF;padding:8px 6px;text-align:center;'>W-3</th>"
+                    f"<th style='border:1px solid #9CA3AF;padding:8px 6px;text-align:center;'>W-4</th>"
+                    f"<th style='border:1px solid #9CA3AF;padding:8px 6px;text-align:center;'>W-5</th>"
+                    f"<th style='border:1px solid #9CA3AF;padding:8px 8px;text-align:center;'>TOTAL</th>"
+                    f"<th style='border:1px solid #9CA3AF;padding:8px 8px;text-align:center;'># OF WEEKS</th>"
+                    f"<th style='border:1px solid #9CA3AF;padding:8px 8px;text-align:center;'>AVERAGE</th>"
+                    f"<th style='border:1px solid #9CA3AF;padding:8px 8px;text-align:center;'>TOTAL MEMBERS</th>"
+                    f"<th style='border:1px solid #9CA3AF;padding:8px 8px;text-align:center;'>PERCENTAGE</th>"
+                    f"</tr></thead>"
+                    f"<tbody>{rows_joined}</tbody>"
+                    f"</table></div>"
                 )
-            rows_joined = "".join(tr_list)
-            return (
-                f"<div style='margin-bottom:18px;border:1px solid #9CA3AF;background:#FFFFFF;border-radius:4px;overflow-x:auto;'>"
-                f"<div style='background-color:#C88A88;color:#FFFFFF;text-align:center;font-weight:800;font-size:1.25rem;"
-                f"padding:8px 12px;letter-spacing:0.6px;border-bottom:1px solid #9CA3AF;'>{p_sec_lbl}</div>"
-                f"<table style='width:100%;border-collapse:collapse;font-family:Arial,sans-serif;font-size:0.86rem;'>"
-                f"<thead>"
-                f"<tr style='background-color:#EFEFEF;color:#111827;font-weight:700;'>"
-                f"<th style='border:1px solid #9CA3AF;padding:8px 10px;text-align:center;'>ACTIVITY</th>"
-                f"<th style='border:1px solid #9CA3AF;padding:8px 6px;text-align:center;'>W-1</th>"
-                f"<th style='border:1px solid #9CA3AF;padding:8px 6px;text-align:center;'>W-2</th>"
-                f"<th style='border:1px solid #9CA3AF;padding:8px 6px;text-align:center;'>W-3</th>"
-                f"<th style='border:1px solid #9CA3AF;padding:8px 6px;text-align:center;'>W-4</th>"
-                f"<th style='border:1px solid #9CA3AF;padding:8px 6px;text-align:center;'>W-5</th>"
-                f"<th style='border:1px solid #9CA3AF;padding:8px 8px;text-align:center;'>TOTAL</th>"
-                f"<th style='border:1px solid #9CA3AF;padding:8px 8px;text-align:center;'># OF WEEKS</th>"
-                f"<th style='border:1px solid #9CA3AF;padding:8px 8px;text-align:center;'>AVERAGE</th>"
-                f"<th style='border:1px solid #9CA3AF;padding:8px 8px;text-align:center;'>TOTAL MEMBERS</th>"
-                f"<th style='border:1px solid #9CA3AF;padding:8px 8px;text-align:center;'>PERCENTAGE</th>"
-                f"</tr></thead>"
-                f"<tbody>{rows_joined}</tbody>"
-                f"</table></div>"
-            )
 
-        # =================================================================
-        # 1. ROLE-BASED DATA ENTRY & GOOGLE DRIVE SYNC (W-1 TO W-5 EDITOR)
-        # =================================================================
-        with st.expander("✍️ 1. Role-Based Weekly Performance Data Entry (W-1 to W-5) & Direct Google Drive Excel Sync", expanded=False):
-            st.caption(
-                "Pumili ng **Buwan (January–December)** at **Parokya**. Tanging ang **Columns B hanggang F (`W-1` to `W-5`)** lamang ang maaaring i-edit upang maprotektahan ang mga Excel formula sa **Columns G (`TOTAL`), H (`# OF WEEKS`), I (`AVERAGE`), J (`TOTAL MEMBERS`), at K (`PERCENTAGE`)**."
-            )
-            ed_c1, ed_c2, ed_c3 = st.columns([1.1, 1.3, 1.4])
-            with ed_c1:
-                pwr_ed_month = st.selectbox(
-                    "📅 Select Month (January–December):",
-                    MONTHS_2027,
-                    index=MONTHS_2027.index(view_month) if view_month in MONTHS_2027 else 0,
-                    key="mod2_pwr_ed_month"
+            # =================================================================
+            # 1. ROLE-BASED DATA ENTRY & GOOGLE DRIVE SYNC (W-1 TO W-5 EDITOR)
+            # =================================================================
+            with st.expander("✍️ 1. Role-Based Weekly Performance Data Entry (W-1 to W-5) & Direct Google Drive Excel Sync", expanded=False):
+                st.caption(
+                    "Pumili ng **Buwan (January–December)** at **Parokya**. Tanging ang **Columns B hanggang F (`W-1` to `W-5`)** lamang ang maaaring i-edit upang maprotektahan ang mga Excel formula sa **Columns G (`TOTAL`), H (`# OF WEEKS`), I (`AVERAGE`), J (`TOTAL MEMBERS`), at K (`PERCENTAGE`)**."
                 )
-            with ed_c2:
-                if is_master:
-                    pwr_ed_parish = st.selectbox(
-                        "🏛️ Select Parish (Master Admin View):",
-                        PARISH_ORDER,
-                        index=PARISH_ORDER.index(focused_parish_for_sheets) if focused_parish_for_sheets in PARISH_ORDER else 0,
-                        key="mod2_pwr_ed_parish"
+                ed_c1, ed_c2, ed_c3 = st.columns([1.1, 1.3, 1.4])
+                with ed_c1:
+                    pwr_ed_month = st.selectbox(
+                        "📅 Select Month (January–December):",
+                        MONTHS_2027,
+                        index=MONTHS_2027.index(view_month) if view_month in MONTHS_2027 else 0,
+                        key="mod2_pwr_ed_month"
                     )
-                else:
-                    pwr_ed_parish = my_parish
-                    st.info(f"🔒 **Parish Admin View:** `{my_parish}`")
-            with ed_c3:
-                st.write("")
-                if st.button("🔄 Sync All Submitted Leader Data (Jan–Dec) to Google Drive Excel", use_container_width=True, key="btn_mod2_sync_all_db"):
-                    with st.spinner("Inilalagay ang lahat ng isinumiteng datos ng 10 Parokya (Jan–Dec) sa CTG_PWR_2027_CONSOLIDATION.xlsx..."):
-                        ok_all, msg_all = update_pwr_2027_consolidation_excel_on_drive("", "", sync_all_from_db=db_live)
-                        st.success(f"✅ {msg_all}")
+                with ed_c2:
+                    if is_master:
+                        pwr_ed_parish = st.selectbox(
+                            "🏛️ Select Parish (Master Admin View):",
+                            PARISH_ORDER,
+                            index=PARISH_ORDER.index(focused_parish_for_sheets) if focused_parish_for_sheets in PARISH_ORDER else 0,
+                            key="mod2_pwr_ed_parish"
+                        )
+                    else:
+                        pwr_ed_parish = my_parish
+                        st.info(f"🔒 **Parish Admin View:** `{my_parish}`")
+                with ed_c3:
+                    st.write("")
+                    if st.button("🔄 Sync All Submitted Leader Data (Jan–Dec) to Google Drive Excel", use_container_width=True, key="btn_mod2_sync_all_db"):
+                        with st.spinner("Inilalagay ang lahat ng isinumiteng datos ng 10 Parokya (Jan–Dec) sa CTG_PWR_2027_CONSOLIDATION.xlsx..."):
+                            ok_all, msg_all = update_pwr_2027_consolidation_excel_on_drive("", "", sync_all_from_db=db_live)
+                            st.success(f"✅ {msg_all}")
+                            time.sleep(0.5)
+                            st.rerun()
+
+                cur_ed_rows = _compute_parish_month_8_activities_rows(pwr_ed_month, pwr_ed_parish)
+                ed_df_in = pd.DataFrame([
+                    {
+                        "ACTIVITY": r["ACTIVITY"],
+                        "W-1": int(r["W-1"]) if r["W-1"] is not None else 0,
+                        "W-2": int(r["W-2"]) if r["W-2"] is not None else 0,
+                        "W-3": int(r["W-3"]) if r["W-3"] is not None else 0,
+                        "W-4": int(r["W-4"]) if r["W-4"] is not None else 0,
+                        "W-5": int(r["W-5"]) if r["W-5"] is not None else 0,
+                        "TOTAL (Formula Col G)": r["TOTAL"],
+                        "# OF WEEKS (Col H)": r["# OF WEEKS"],
+                        "AVERAGE (Formula Col I)": r["AVERAGE"],
+                        "TOTAL MEMBERS (Col J)": int(r["TOTAL MEMBERS"]) if r["TOTAL MEMBERS"] is not None else 0,
+                        "PERCENTAGE (Formula Col K)": r["PERCENTAGE"],
+                    }
+                    for r in cur_ed_rows if r["ACTIVITY"]
+                ])
+
+                edited_pwr_df = st.data_editor(
+                    ed_df_in,
+                    use_container_width=True,
+                    hide_index=True,
+                    disabled=[
+                        "ACTIVITY",
+                        "TOTAL (Formula Col G)",
+                        "# OF WEEKS (Col H)",
+                        "AVERAGE (Formula Col I)",
+                        "TOTAL MEMBERS (Col J)",
+                        "PERCENTAGE (Formula Col K)",
+                    ],
+                    key=f"mod2_data_editor_{pwr_ed_month}_{pwr_ed_parish}"
+                )
+
+                if st.button(f"💾 Save Report ({pwr_ed_parish} — {pwr_ed_month.upper()} {selected_year}) & Sync to Google Drive Excel", type="primary", use_container_width=True, key="btn_mod2_save_report"):
+                    with st.spinner(f"Sine-save ang Columns B–F (W-1 to W-5) para sa {pwr_ed_parish} ({pwr_ed_month.upper()}) sa Google Drive..."):
+                        matrix_to_save = {}
+                        for _, erow in edited_pwr_df.iterrows():
+                            a_name = str(erow["ACTIVITY"]).strip()
+                            matrix_to_save[a_name] = [
+                                int(erow["W-1"]) if pd.notna(erow["W-1"]) and int(erow["W-1"]) > 0 else None,
+                                int(erow["W-2"]) if pd.notna(erow["W-2"]) and int(erow["W-2"]) > 0 else None,
+                                int(erow["W-3"]) if pd.notna(erow["W-3"]) and int(erow["W-3"]) > 0 else None,
+                                int(erow["W-4"]) if pd.notna(erow["W-4"]) and int(erow["W-4"]) > 0 else None,
+                                int(erow["W-5"]) if pd.notna(erow["W-5"]) and int(erow["W-5"]) > 0 else None,
+                            ]
+                        # Also sync non-zero weekly numbers into db_live so all app views stay 100% consistent
+                        m_wks_valid = get_weeks_for_month_year(pwr_ed_month, int(selected_year))
+                        den_p_ed = get_parish_member_denominators(pwr_ed_parish)
+                        for w_idx, w_lbl in enumerate(WEEKS_2027):
+                            if w_lbl not in m_wks_valid:
+                                continue
+                            w_vals_for_wk = {act_k: (vals[w_idx] or 0) for act_k, vals in matrix_to_save.items()}
+                            if any(v > 0 for v in w_vals_for_wk.values()):
+                                r_key = f"{pwr_ed_parish.upper()}__{pwr_ed_month.upper()}__{w_lbl}"
+                                ex_rec = db_live.get(r_key, {}).copy()
+                                ex_rec.update({
+                                    "has_data": True,
+                                    "no_report": False,
+                                    "parish": pwr_ed_parish,
+                                    "month": pwr_ed_month,
+                                    "week": w_lbl,
+                                    "report_date": ex_rec.get("report_date") or get_week_date_for_month_year(pwr_ed_month, w_lbl, int(selected_year)),
+                                    "total_members_say": ex_rec.get("total_members_say") or den_p_ed["say"],
+                                    "total_members_y": ex_rec.get("total_members_y") or den_p_ed["youth"],
+                                    "total_members_k": ex_rec.get("total_members_k") or den_p_ed["kids"],
+                                    "mass_a": int(w_vals_for_wk.get("Mass", 0)),
+                                    "mass_y": 0,
+                                    "pampamilya_a": int(w_vals_for_wk.get("Pampamilya", 0)),
+                                    "pampamilya_y": 0,
+                                    "online_a": int(w_vals_for_wk.get("Online Ministry", 0)),
+                                    "online_y": 0,
+                                    "youth_y": int(w_vals_for_wk.get("Youth Fellowship", 0)),
+                                    "kids_k": int(w_vals_for_wk.get("Kids Fellowship", 0)),
+                                    "adal_a": int(w_vals_for_wk.get("Adal ti Evangelio", 0)),
+                                    "adal_y": 0,
+                                    "house_visitation": str(int(w_vals_for_wk.get("HOUSE VISIT", 0))),
+                                    "indoctrination": str(int(w_vals_for_wk.get("INDUCTRINATION", 0))),
+                                    "updated_at": get_philippine_datetime_str(),
+                                })
+                                db_live[r_key] = ex_rec
+                        try:
+                            with open(LOCAL_WEEKLY_REPORTS_DB, "w", encoding="utf-8") as f:
+                                json.dump(db_live, f, ensure_ascii=False, indent=2)
+                        except Exception:
+                            pass
+                        ok_sync, sync_status_msg = update_pwr_2027_consolidation_excel_on_drive(
+                            pwr_ed_month, pwr_ed_parish, weekly_activity_matrix=matrix_to_save
+                        )
+                        st.success(f"✅ Na-save na ang Report para sa **{pwr_ed_parish}** ({pwr_ed_month.upper()} {selected_year})! ({sync_status_msg})")
                         time.sleep(0.5)
                         st.rerun()
 
-            cur_ed_rows = _compute_parish_month_8_activities_rows(pwr_ed_month, pwr_ed_parish)
-            ed_df_in = pd.DataFrame([
-                {
-                    "ACTIVITY": r["ACTIVITY"],
-                    "W-1": int(r["W-1"]) if r["W-1"] is not None else 0,
-                    "W-2": int(r["W-2"]) if r["W-2"] is not None else 0,
-                    "W-3": int(r["W-3"]) if r["W-3"] is not None else 0,
-                    "W-4": int(r["W-4"]) if r["W-4"] is not None else 0,
-                    "W-5": int(r["W-5"]) if r["W-5"] is not None else 0,
-                    "TOTAL (Formula Col G)": r["TOTAL"],
-                    "# OF WEEKS (Col H)": r["# OF WEEKS"],
-                    "AVERAGE (Formula Col I)": r["AVERAGE"],
-                    "TOTAL MEMBERS (Col J)": int(r["TOTAL MEMBERS"]) if r["TOTAL MEMBERS"] is not None else 0,
-                    "PERCENTAGE (Formula Col K)": r["PERCENTAGE"],
-                }
-                for r in cur_ed_rows if r["ACTIVITY"]
-            ])
+            # =================================================================
+            # 2. MONTHLY PERFORMANCE SHEETS (EXACT IMAGE 1 LAYOUT — EXPANDABLE ▶ JANUARY TO ▶ DECEMBER)
+            # =================================================================
+            st.markdown(f"#### 📂 2. Monthly Performance Report Sheets (`▶` Pindutin ang Buwan para Makita ang Layout Tulad ng Nasa Excel Image 1)")
+            target_parishes_for_monthly_view = PARISH_ORDER if is_master else [my_parish]
+            all_year_computed_cache = {}  # {month_upper: {parish_full: act_rows_list}}
 
-            edited_pwr_df = st.data_editor(
-                ed_df_in,
-                use_container_width=True,
-                hide_index=True,
-                disabled=[
-                    "ACTIVITY",
-                    "TOTAL (Formula Col G)",
-                    "# OF WEEKS (Col H)",
-                    "AVERAGE (Formula Col I)",
-                    "TOTAL MEMBERS (Col J)",
-                    "PERCENTAGE (Formula Col K)",
-                ],
-                key=f"mod2_data_editor_{pwr_ed_month}_{pwr_ed_parish}"
-            )
+            for m_iter in MONTHS_2027:
+                m_up = m_iter.upper()
+                all_year_computed_cache[m_up] = {}
+                month_active_parishes_cnt = 0
+                for p_full in PARISH_ORDER:
+                    p_rows_m = _compute_parish_month_8_activities_rows(m_iter, p_full)
+                    all_year_computed_cache[m_up][p_full] = p_rows_m
+                    if any(r["TOTAL"] > 0 for r in p_rows_m):
+                        month_active_parishes_cnt += 1
 
-            if st.button(f"💾 Save Report ({pwr_ed_parish} — {pwr_ed_month.upper()} {selected_year}) & Sync to Google Drive Excel", type="primary", use_container_width=True, key="btn_mod2_save_report"):
-                with st.spinner(f"Sine-save ang Columns B–F (W-1 to W-5) para sa {pwr_ed_parish} ({pwr_ed_month.upper()}) sa Google Drive..."):
-                    matrix_to_save = {}
-                    for _, erow in edited_pwr_df.iterrows():
-                        a_name = str(erow["ACTIVITY"]).strip()
-                        matrix_to_save[a_name] = [
-                            int(erow["W-1"]) if pd.notna(erow["W-1"]) and int(erow["W-1"]) > 0 else None,
-                            int(erow["W-2"]) if pd.notna(erow["W-2"]) and int(erow["W-2"]) > 0 else None,
-                            int(erow["W-3"]) if pd.notna(erow["W-3"]) and int(erow["W-3"]) > 0 else None,
-                            int(erow["W-4"]) if pd.notna(erow["W-4"]) and int(erow["W-4"]) > 0 else None,
-                            int(erow["W-5"]) if pd.notna(erow["W-5"]) and int(erow["W-5"]) > 0 else None,
-                        ]
-                    # Also sync non-zero weekly numbers into db_live so all app views stay 100% consistent
-                    m_wks_valid = get_weeks_for_month_year(pwr_ed_month, int(selected_year))
-                    den_p_ed = get_parish_member_denominators(pwr_ed_parish)
-                    for w_idx, w_lbl in enumerate(WEEKS_2027):
-                        if w_lbl not in m_wks_valid:
-                            continue
-                        w_vals_for_wk = {act_k: (vals[w_idx] or 0) for act_k, vals in matrix_to_save.items()}
-                        if any(v > 0 for v in w_vals_for_wk.values()):
-                            r_key = f"{pwr_ed_parish.upper()}__{pwr_ed_month.upper()}__{w_lbl}"
-                            ex_rec = db_live.get(r_key, {}).copy()
-                            ex_rec.update({
-                                "has_data": True,
-                                "no_report": False,
-                                "parish": pwr_ed_parish,
-                                "month": pwr_ed_month,
-                                "week": w_lbl,
-                                "report_date": ex_rec.get("report_date") or get_week_date_for_month_year(pwr_ed_month, w_lbl, int(selected_year)),
-                                "total_members_say": ex_rec.get("total_members_say") or den_p_ed["say"],
-                                "total_members_y": ex_rec.get("total_members_y") or den_p_ed["youth"],
-                                "total_members_k": ex_rec.get("total_members_k") or den_p_ed["kids"],
-                                "mass_a": int(w_vals_for_wk.get("Mass", 0)),
-                                "mass_y": 0,
-                                "pampamilya_a": int(w_vals_for_wk.get("Pampamilya", 0)),
-                                "pampamilya_y": 0,
-                                "online_a": int(w_vals_for_wk.get("Online Ministry", 0)),
-                                "online_y": 0,
-                                "youth_y": int(w_vals_for_wk.get("Youth Fellowship", 0)),
-                                "kids_k": int(w_vals_for_wk.get("Kids Fellowship", 0)),
-                                "adal_a": int(w_vals_for_wk.get("Adal ti Evangelio", 0)),
-                                "adal_y": 0,
-                                "house_visitation": str(int(w_vals_for_wk.get("HOUSE VISIT", 0))),
-                                "indoctrination": str(int(w_vals_for_wk.get("INDUCTRINATION", 0))),
-                                "updated_at": get_philippine_datetime_str(),
-                            })
-                            db_live[r_key] = ex_rec
-                    try:
-                        with open(LOCAL_WEEKLY_REPORTS_DB, "w", encoding="utf-8") as f:
-                            json.dump(db_live, f, ensure_ascii=False, indent=2)
-                    except Exception:
-                        pass
-                    ok_sync, sync_status_msg = update_pwr_2027_consolidation_excel_on_drive(
-                        pwr_ed_month, pwr_ed_parish, weekly_activity_matrix=matrix_to_save
+                exp_badge = f"✅ {month_active_parishes_cnt} Parishes with Data" if month_active_parishes_cnt > 0 else "0 Submitted"
+                with st.expander(f"▶ {m_up} {selected_year} — CHURCH OF THE TEMPLE OF GOD PERFORMANCE {selected_year}  •  [{exp_badge}]", expanded=(m_iter == view_month)):
+                    sheet_header_html = (
+                        f"<div style='background:#FFFFFF;color:#111827;padding:14px 18px;border:1px solid #9CA3AF;border-radius:4px;margin-bottom:10px;font-family:Arial,sans-serif;'>"
+                        f"<div style='text-align:center;font-size:1.35rem;font-weight:800;letter-spacing:0.5px;color:#000000;margin-bottom:10px;'>"
+                        f"CHURCH OF THE TEMPLE OF GOD PERFORMANCE {selected_year}"
+                        f"</div>"
+                        f"<div style='display:flex;align-items:baseline;gap:24px;flex-wrap:wrap;'>"
+                        f"<span style='font-size:1.22rem;font-weight:700;color:#000000;'>{m_up} {selected_year}</span>"
+                        f"<span style='font-size:0.78rem;color:#1F2937;'>W-1 to W-5: retain each month’s original reporting weeks. # OF WEEKS is preserved.</span>"
+                        f"</div></div>"
                     )
-                    st.success(f"✅ Na-save na ang Report para sa **{pwr_ed_parish}** ({pwr_ed_month.upper()} {selected_year})! ({sync_status_msg})")
-                    time.sleep(0.5)
-                    st.rerun()
+                    st.markdown(sheet_header_html, unsafe_allow_html=True)
+                    for p_full in target_parishes_for_monthly_view:
+                        p_html = _render_image1_monthly_parish_html_table(p_full, all_year_computed_cache[m_up][p_full])
+                        st.markdown(p_html, unsafe_allow_html=True)
 
-        # =================================================================
-        # 2. MONTHLY PERFORMANCE SHEETS (EXACT IMAGE 1 LAYOUT — EXPANDABLE ▶ JANUARY TO ▶ DECEMBER)
-        # =================================================================
-        st.markdown(f"#### 📂 2. Monthly Performance Report Sheets (`▶` Pindutin ang Buwan para Makita ang Layout Tulad ng Nasa Excel Image 1)")
-        target_parishes_for_monthly_view = PARISH_ORDER if is_master else [my_parish]
-        all_year_computed_cache = {}  # {month_upper: {parish_full: act_rows_list}}
+            st.divider()
 
-        for m_iter in MONTHS_2027:
-            m_up = m_iter.upper()
-            all_year_computed_cache[m_up] = {}
-            month_active_parishes_cnt = 0
-            for p_full in PARISH_ORDER:
-                p_rows_m = _compute_parish_month_8_activities_rows(m_iter, p_full)
-                all_year_computed_cache[m_up][p_full] = p_rows_m
-                if any(r["TOTAL"] > 0 for r in p_rows_m):
-                    month_active_parishes_cnt += 1
+            # =================================================================
+            # 3. WHOLE-YEAR CONSOLIDATED PARISH WEEKLY REPORT (CONSOLIDATED AS OF 2027 — EXACT IMAGE 2 LAYOUT)
+            # =================================================================
+            st.markdown(f"#### 🗓️ 3. Whole-Year Consolidated Parish Weekly Report (`CONSOLIDATED AS OF 2027` — January–December {selected_year})")
+            st.caption("Eksaktong sumusunod sa format at mga formula ng **`CONSOLIDATED AS OF 2027`** sheet (Image 2), kung saan makikita ang **`%`** at **`AVERAGE`** mula **JANUARY hanggang DECEMBER**, ang **`AVERAGE OF MONTHS (% | AVERAGE)`**, at **`TOTAL MEMBERS`**.")
 
-            exp_badge = f"✅ {month_active_parishes_cnt} Parishes with Data" if month_active_parishes_cnt > 0 else "0 Submitted"
-            with st.expander(f"▶ {m_up} {selected_year} — CHURCH OF THE TEMPLE OF GOD PERFORMANCE {selected_year}  •  [{exp_badge}]", expanded=(m_iter == view_month)):
-                sheet_header_html = (
-                    f"<div style='background:#FFFFFF;color:#111827;padding:14px 18px;border:1px solid #9CA3AF;border-radius:4px;margin-bottom:10px;font-family:Arial,sans-serif;'>"
-                    f"<div style='text-align:center;font-size:1.35rem;font-weight:800;letter-spacing:0.5px;color:#000000;margin-bottom:10px;'>"
-                    f"CHURCH OF THE TEMPLE OF GOD PERFORMANCE {selected_year}"
-                    f"</div>"
-                    f"<div style='display:flex;align-items:baseline;gap:24px;flex-wrap:wrap;'>"
-                    f"<span style='font-size:1.22rem;font-weight:700;color:#000000;'>{m_up} {selected_year}</span>"
-                    f"<span style='font-size:0.78rem;color:#1F2937;'>W-1 to W-5: retain each month’s original reporting weeks. # OF WEEKS is preserved.</span>"
-                    f"</div></div>"
+            cons_banner_html = (
+                f"<div style='background:#FFFFFF;color:#111827;padding:12px 16px;border:2px solid #14532D;border-radius:4px;margin-bottom:12px;text-align:center;font-family:Arial,sans-serif;'>"
+                f"<div style='font-size:1.22rem;font-weight:800;color:#000000;'>CHURCH OF THE TEMPLE OF GOD</div>"
+                f"<div style='font-size:0.90rem;font-weight:800;color:#111827;margin-top:4px;'>CONSOLIDATED PARISH WEEKLY REPORT</div>"
+                f"<div style='font-size:0.84rem;font-weight:800;color:#111827;margin-top:2px;'>JANUARY–DECEMBER {selected_year}</div>"
+                f"</div>"
+            )
+            st.markdown(cons_banner_html, unsafe_allow_html=True)
+
+            month_upper_12 = [m.upper() for m in MONTHS_2027]
+            cross_parish_summary_metrics = []
+
+            for p_full in target_parishes_for_monthly_view:
+                p_sec_lbl, _ = PWR_2027_PARISH_SECTION_HEADERS[p_full]
+                # July's Column J is used by CONSOLIDATED AS OF 2027 for TOTAL MEMBERS (=IF(ISNUMBER(JULY!J7),JULY!J7,""))
+                july_rows_p = all_year_computed_cache["JULY"][p_full]
+
+                month_th_top = "".join(
+                    f"<th colspan='2' style='border:1px solid #9CA3AF;padding:6px 4px;text-align:center;background-color:#C88A88;color:#000000;font-weight:800;font-size:0.74rem;'>{m_u}</th>"
+                    for m_u in month_upper_12
                 )
-                st.markdown(sheet_header_html, unsafe_allow_html=True)
-                for p_full in target_parishes_for_monthly_view:
-                    p_html = _render_image1_monthly_parish_html_table(p_full, all_year_computed_cache[m_up][p_full])
-                    st.markdown(p_html, unsafe_allow_html=True)
+                month_th_sub = "".join(
+                    "<th style='border:1px solid #9CA3AF;padding:4px 4px;text-align:center;background-color:#C88A88;color:#000000;font-weight:800;font-size:0.70rem;'>%</th>"
+                    "<th style='border:1px solid #9CA3AF;padding:4px 4px;text-align:center;background-color:#C88A88;color:#000000;font-weight:800;font-size:0.70rem;'>AVERAGE</th>"
+                    for _ in range(13)  # 12 months + AVERAGE OF MONTHS
+                )
 
-        st.divider()
+                body_trs_cons = []
+                parish_overall_pct_accum = []
+                parish_overall_avg_accum = []
 
-        # =================================================================
-        # 3. WHOLE-YEAR CONSOLIDATED PARISH WEEKLY REPORT (CONSOLIDATED AS OF 2027 — EXACT IMAGE 2 LAYOUT)
-        # =================================================================
-        st.markdown(f"#### 🗓️ 3. Whole-Year Consolidated Parish Weekly Report (`CONSOLIDATED AS OF 2027` — January–December {selected_year})")
-        st.caption("Eksaktong sumusunod sa format at mga formula ng **`CONSOLIDATED AS OF 2027`** sheet (Image 2), kung saan makikita ang **`%`** at **`AVERAGE`** mula **JANUARY hanggang DECEMBER**, ang **`AVERAGE OF MONTHS (% | AVERAGE)`**, at **`TOTAL MEMBERS`**.")
+                for act_idx, act_name in enumerate(PWR_2027_ACTIVITIES_8):
+                    is_hk_blank = (p_full == "HONGKONG PARISH" and act_idx >= 3)
+                    disp_act = "" if is_hk_blank else act_name
+                    month_cells_html = ""
+                    act_pct_vals = []
+                    act_avg_vals = []
 
-        cons_banner_html = (
-            f"<div style='background:#FFFFFF;color:#111827;padding:12px 16px;border:2px solid #14532D;border-radius:4px;margin-bottom:12px;text-align:center;font-family:Arial,sans-serif;'>"
-            f"<div style='font-size:1.22rem;font-weight:800;color:#000000;'>CHURCH OF THE TEMPLE OF GOD</div>"
-            f"<div style='font-size:0.90rem;font-weight:800;color:#111827;margin-top:4px;'>CONSOLIDATED PARISH WEEKLY REPORT</div>"
-            f"<div style='font-size:0.84rem;font-weight:800;color:#111827;margin-top:2px;'>JANUARY–DECEMBER {selected_year}</div>"
-            f"</div>"
-        )
-        st.markdown(cons_banner_html, unsafe_allow_html=True)
+                    for m_u in month_upper_12:
+                        r_m_act = all_year_computed_cache[m_u][p_full][act_idx]
+                        if is_hk_blank:
+                            month_cells_html += (
+                                "<td style='border:1px solid #D1D5DB;padding:5px 6px;text-align:right;background:#FFFFFF;color:#111827;'></td>"
+                                "<td style='border:1px solid #D1D5DB;padding:5px 6px;text-align:right;background:#FFFFFF;color:#111827;'></td>"
+                            )
+                        else:
+                            avg_val = r_m_act["AVERAGE"]
+                            pct_num = r_m_act["PERCENTAGE_NUM"]
+                            pct_txt = f"{int(round(pct_num))}%" if pct_num is not None else ""
+                            avg_txt = f"{avg_val:.1f}"
+                            if pct_num is not None:
+                                act_pct_vals.append(pct_num)
+                            act_avg_vals.append(avg_val)
+                            month_cells_html += (
+                                f"<td style='border:1px solid #D1D5DB;padding:5px 6px;text-align:right;background:#FFFFFF;color:#111827;font-size:0.76rem;'>{pct_txt}</td>"
+                                f"<td style='border:1px solid #D1D5DB;padding:5px 6px;text-align:right;background:#FFFFFF;color:#111827;font-size:0.76rem;'>{avg_txt}</td>"
+                            )
 
-        month_upper_12 = [m.upper() for m in MONTHS_2027]
-        cross_parish_summary_metrics = []
-
-        for p_full in target_parishes_for_monthly_view:
-            p_sec_lbl, _ = PWR_2027_PARISH_SECTION_HEADERS[p_full]
-            # July's Column J is used by CONSOLIDATED AS OF 2027 for TOTAL MEMBERS (=IF(ISNUMBER(JULY!J7),JULY!J7,""))
-            july_rows_p = all_year_computed_cache["JULY"][p_full]
-
-            month_th_top = "".join(
-                f"<th colspan='2' style='border:1px solid #9CA3AF;padding:6px 4px;text-align:center;background-color:#C88A88;color:#000000;font-weight:800;font-size:0.74rem;'>{m_u}</th>"
-                for m_u in month_upper_12
-            )
-            month_th_sub = "".join(
-                "<th style='border:1px solid #9CA3AF;padding:4px 4px;text-align:center;background-color:#C88A88;color:#000000;font-weight:800;font-size:0.70rem;'>%</th>"
-                "<th style='border:1px solid #9CA3AF;padding:4px 4px;text-align:center;background-color:#C88A88;color:#000000;font-weight:800;font-size:0.70rem;'>AVERAGE</th>"
-                for _ in range(13)  # 12 months + AVERAGE OF MONTHS
-            )
-
-            body_trs_cons = []
-            parish_overall_pct_accum = []
-            parish_overall_avg_accum = []
-
-            for act_idx, act_name in enumerate(PWR_2027_ACTIVITIES_8):
-                is_hk_blank = (p_full == "HONGKONG PARISH" and act_idx >= 3)
-                disp_act = "" if is_hk_blank else act_name
-                month_cells_html = ""
-                act_pct_vals = []
-                act_avg_vals = []
-
-                for m_u in month_upper_12:
-                    r_m_act = all_year_computed_cache[m_u][p_full][act_idx]
                     if is_hk_blank:
-                        month_cells_html += (
-                            "<td style='border:1px solid #D1D5DB;padding:5px 6px;text-align:right;background:#FFFFFF;color:#111827;'></td>"
-                            "<td style='border:1px solid #D1D5DB;padding:5px 6px;text-align:right;background:#FFFFFF;color:#111827;'></td>"
-                        )
-                    else:
-                        avg_val = r_m_act["AVERAGE"]
-                        pct_num = r_m_act["PERCENTAGE_NUM"]
-                        pct_txt = f"{int(round(pct_num))}%" if pct_num is not None else ""
-                        avg_txt = f"{avg_val:.1f}"
-                        if pct_num is not None:
-                            act_pct_vals.append(pct_num)
-                        act_avg_vals.append(avg_val)
-                        month_cells_html += (
-                            f"<td style='border:1px solid #D1D5DB;padding:5px 6px;text-align:right;background:#FFFFFF;color:#111827;font-size:0.76rem;'>{pct_txt}</td>"
-                            f"<td style='border:1px solid #D1D5DB;padding:5px 6px;text-align:right;background:#FFFFFF;color:#111827;font-size:0.76rem;'>{avg_txt}</td>"
-                        )
-
-                if is_hk_blank:
-                    avg_months_pct_txt = ""
-                    avg_months_avg_txt = ""
-                    tot_mem_cons_txt = ""
-                else:
-                    if act_pct_vals:
-                        mean_pct = sum(act_pct_vals) / len(act_pct_vals)
-                        avg_months_pct_txt = f"{int(round(mean_pct))}%"
-                        parish_overall_pct_accum.append(mean_pct)
-                    else:
                         avg_months_pct_txt = ""
-                    if act_avg_vals:
-                        mean_avg = sum(act_avg_vals) / len(act_avg_vals)
-                        avg_months_avg_txt = f"{mean_avg:.1f}"
-                        parish_overall_avg_accum.append(mean_avg)
+                        avg_months_avg_txt = ""
+                        tot_mem_cons_txt = ""
                     else:
-                        avg_months_avg_txt = "0.0"
-                    tm_jul = july_rows_p[act_idx]["TOTAL MEMBERS"]
-                    if tm_jul is None and act_name not in ["HOUSE VISIT", "INDUCTRINATION"]:
-                        tm_jul = all_year_computed_cache["JANUARY"][p_full][act_idx]["TOTAL MEMBERS"]
-                    tot_mem_cons_txt = "" if (tm_jul is None or act_name in ["HOUSE VISIT", "INDUCTRINATION"]) else str(int(tm_jul))
+                        if act_pct_vals:
+                            mean_pct = sum(act_pct_vals) / len(act_pct_vals)
+                            avg_months_pct_txt = f"{int(round(mean_pct))}%"
+                            parish_overall_pct_accum.append(mean_pct)
+                        else:
+                            avg_months_pct_txt = ""
+                        if act_avg_vals:
+                            mean_avg = sum(act_avg_vals) / len(act_avg_vals)
+                            avg_months_avg_txt = f"{mean_avg:.1f}"
+                            parish_overall_avg_accum.append(mean_avg)
+                        else:
+                            avg_months_avg_txt = "0.0"
+                        tm_jul = july_rows_p[act_idx]["TOTAL MEMBERS"]
+                        if tm_jul is None and act_name not in ["HOUSE VISIT", "INDUCTRINATION"]:
+                            tm_jul = all_year_computed_cache["JANUARY"][p_full][act_idx]["TOTAL MEMBERS"]
+                        tot_mem_cons_txt = "" if (tm_jul is None or act_name in ["HOUSE VISIT", "INDUCTRINATION"]) else str(int(tm_jul))
 
-                body_trs_cons.append(
+                    body_trs_cons.append(
+                        f"<tr>"
+                        f"<td style='border:1px solid #D1D5DB;padding:5px 8px;background:#FFFFFF;color:#111827;width:90px;'></td>"
+                        f"<td style='border:1px solid #D1D5DB;padding:5px 8px;background:#FFFFFF;color:#111827;font-weight:500;font-size:0.78rem;white-space:nowrap;'>{disp_act}</td>"
+                        f"{month_cells_html}"
+                        f"<td style='border:1px solid #D1D5DB;padding:5px 6px;text-align:right;background:#F9FAFB;color:#111827;font-weight:700;font-size:0.76rem;'>{avg_months_pct_txt}</td>"
+                        f"<td style='border:1px solid #D1D5DB;padding:5px 6px;text-align:right;background:#F9FAFB;color:#111827;font-weight:700;font-size:0.76rem;'>{avg_months_avg_txt}</td>"
+                        f"<td style='border:1px solid #D1D5DB;padding:5px 8px;text-align:right;background:#FFFFFF;color:#111827;font-weight:600;font-size:0.76rem;'>{tot_mem_cons_txt}</td>"
+                        f"</tr>"
+                    )
+
+                cross_parish_summary_metrics.append({
+                    "Parish": p_sec_lbl,
+                    "Annual Mean Attendance %": round(sum(parish_overall_pct_accum) / len(parish_overall_pct_accum), 1) if parish_overall_pct_accum else 0.0,
+                    "Annual Mean Weekly Count": round(sum(parish_overall_avg_accum) / len(parish_overall_avg_accum), 1) if parish_overall_avg_accum else 0.0,
+                })
+
+                cons_table_html = (
+                    f"<div style='margin-bottom:18px;border:1px solid #9CA3AF;background:#FFFFFF;border-radius:4px;overflow-x:auto;'>"
+                    f"<table style='width:100%;border-collapse:collapse;font-family:Arial,sans-serif;'>"
+                    f"<thead>"
                     f"<tr>"
-                    f"<td style='border:1px solid #D1D5DB;padding:5px 8px;background:#FFFFFF;color:#111827;width:90px;'></td>"
-                    f"<td style='border:1px solid #D1D5DB;padding:5px 8px;background:#FFFFFF;color:#111827;font-weight:500;font-size:0.78rem;white-space:nowrap;'>{disp_act}</td>"
-                    f"{month_cells_html}"
-                    f"<td style='border:1px solid #D1D5DB;padding:5px 6px;text-align:right;background:#F9FAFB;color:#111827;font-weight:700;font-size:0.76rem;'>{avg_months_pct_txt}</td>"
-                    f"<td style='border:1px solid #D1D5DB;padding:5px 6px;text-align:right;background:#F9FAFB;color:#111827;font-weight:700;font-size:0.76rem;'>{avg_months_avg_txt}</td>"
-                    f"<td style='border:1px solid #D1D5DB;padding:5px 8px;text-align:right;background:#FFFFFF;color:#111827;font-weight:600;font-size:0.76rem;'>{tot_mem_cons_txt}</td>"
+                    f"<th rowspan='2' style='border:1px solid #9CA3AF;padding:8px 10px;text-align:center;background-color:#C88A88;color:#000000;font-weight:800;font-size:0.78rem;min-width:95px;'>{p_sec_lbl}</th>"
+                    f"<th rowspan='2' style='border:1px solid #9CA3AF;padding:8px 10px;text-align:center;background-color:#C88A88;color:#000000;font-weight:800;font-size:0.78rem;min-width:120px;'>ACTIVITY</th>"
+                    f"{month_th_top}"
+                    f"<th colspan='2' style='border:1px solid #9CA3AF;padding:6px 6px;text-align:center;background-color:#C88A88;color:#000000;font-weight:800;font-size:0.74rem;min-width:110px;'>AVERAGE OF MONTHS</th>"
+                    f"<th rowspan='2' style='border:1px solid #9CA3AF;padding:8px 8px;text-align:center;background-color:#C88A88;color:#000000;font-weight:800;font-size:0.74rem;min-width:85px;'>TOTAL MEMBERS</th>"
                     f"</tr>"
+                    f"<tr>{month_th_sub}</tr>"
+                    f"</thead>"
+                    f"<tbody>{''.join(body_trs_cons)}</tbody>"
+                    f"</table></div>"
                 )
+                st.markdown(cons_table_html, unsafe_allow_html=True)
 
-            cross_parish_summary_metrics.append({
-                "Parish": p_sec_lbl,
-                "Annual Mean Attendance %": round(sum(parish_overall_pct_accum) / len(parish_overall_pct_accum), 1) if parish_overall_pct_accum else 0.0,
-                "Annual Mean Weekly Count": round(sum(parish_overall_avg_accum) / len(parish_overall_avg_accum), 1) if parish_overall_avg_accum else 0.0,
-            })
+            st.divider()
 
-            cons_table_html = (
-                f"<div style='margin-bottom:18px;border:1px solid #9CA3AF;background:#FFFFFF;border-radius:4px;overflow-x:auto;'>"
-                f"<table style='width:100%;border-collapse:collapse;font-family:Arial,sans-serif;'>"
-                f"<thead>"
-                f"<tr>"
-                f"<th rowspan='2' style='border:1px solid #9CA3AF;padding:8px 10px;text-align:center;background-color:#C88A88;color:#000000;font-weight:800;font-size:0.78rem;min-width:95px;'>{p_sec_lbl}</th>"
-                f"<th rowspan='2' style='border:1px solid #9CA3AF;padding:8px 10px;text-align:center;background-color:#C88A88;color:#000000;font-weight:800;font-size:0.78rem;min-width:120px;'>ACTIVITY</th>"
-                f"{month_th_top}"
-                f"<th colspan='2' style='border:1px solid #9CA3AF;padding:6px 6px;text-align:center;background-color:#C88A88;color:#000000;font-weight:800;font-size:0.74rem;min-width:110px;'>AVERAGE OF MONTHS</th>"
-                f"<th rowspan='2' style='border:1px solid #9CA3AF;padding:8px 8px;text-align:center;background-color:#C88A88;color:#000000;font-weight:800;font-size:0.74rem;min-width:85px;'>TOTAL MEMBERS</th>"
-                f"</tr>"
-                f"<tr>{month_th_sub}</tr>"
-                f"</thead>"
-                f"<tbody>{''.join(body_trs_cons)}</tbody>"
-                f"</table></div>"
+            # =================================================================
+            # 4. INTERACTIVE ANALYTICS DASHBOARD (WEEKLY TREND, ACTIVITY AVERAGES & MASTER ADMIN CONSOLIDATION CHARTS)
+            # =================================================================
+            st.markdown(f"#### 📈 4. Interactive Analytics Dashboard ({view_month.upper()} {selected_year} & Whole-Year Cross-Parish Comparison)")
+            chart_parish_focus = focused_parish_for_sheets if (is_master and focused_parish_for_sheets in PARISH_ORDER) else (PARISH_ORDER[0] if is_master else my_parish)
+            focus_rows_chart = all_year_computed_cache[view_month.upper()][chart_parish_focus]
+            valid_focus_rows = [r for r in focus_rows_chart if r["ACTIVITY"]]
+
+            ch_col1, ch_col2 = st.columns(2)
+            with ch_col1:
+                st.markdown(f"##### 📉 Weekly Trend (`W-1` to `W-5` — {chart_parish_focus}, {view_month.upper()} {selected_year})")
+                trend_dict = {"Week": ["W-1", "W-2", "W-3", "W-4", "W-5"]}
+                for r_c in valid_focus_rows:
+                    trend_dict[r_c["ACTIVITY"]] = [int(r_c[wk] or 0) for wk in ["W-1", "W-2", "W-3", "W-4", "W-5"]]
+                df_trend_chart = pd.DataFrame(trend_dict).set_index("Week")
+                st.line_chart(df_trend_chart, use_container_width=True)
+
+            with ch_col2:
+                st.markdown(f"##### 📊 Activity Averages (`AVERAGE` Col I — {chart_parish_focus}, {view_month.upper()} {selected_year})")
+                df_avg_chart = pd.DataFrame({
+                    "Activity": [r_c["ACTIVITY"] for r_c in valid_focus_rows],
+                    "Monthly Average Attendance": [float(r_c["AVERAGE"]) for r_c in valid_focus_rows],
+                }).set_index("Activity")
+                st.bar_chart(df_avg_chart, use_container_width=True)
+
+            if is_master and cross_parish_summary_metrics:
+                st.markdown(f"##### 🏆 Master Admin Cross-Parish Comparison (`CONSOLIDATED AS OF {selected_year}` — All 10 Parishes)")
+                df_cross_p = pd.DataFrame(cross_parish_summary_metrics).set_index("Parish")
+                cp_c1, cp_c2 = st.columns(2)
+                with cp_c1:
+                    st.caption("Annual Mean Attendance Percentage (%) by Parish")
+                    st.bar_chart(df_cross_p[["Annual Mean Attendance %"]], use_container_width=True)
+                with cp_c2:
+                    st.caption("Annual Mean Weekly Attendance Count by Parish")
+                    st.bar_chart(df_cross_p[["Annual Mean Weekly Count"]], use_container_width=True)
+
+            st.divider()
+
+            # =================================================================
+            # 5. 1-CLICK WHOLE-YEAR EXCEL DOWNLOAD (PRESERVING ALL FORMULAS IN COLS G–K & CONSOLIDATED AS OF 2027)
+            # =================================================================
+            # Populate Columns B-F in a copy of wb_pwr_live from all_year_computed_cache while keeping all formulas intact
+            for m_u, p_map_u in all_year_computed_cache.items():
+                if m_u in wb_pwr_live.sheetnames:
+                    ws_u = wb_pwr_live[m_u]
+                    for p_full, r_list_u in p_map_u.items():
+                        for r_item in r_list_u:
+                            r_ex = r_item["excel_row"]
+                            for w_i, wk_k in enumerate(["W-1", "W-2", "W-3", "W-4", "W-5"]):
+                                wv = r_item[wk_k]
+                                ws_u.cell(r_ex, 2 + w_i).value = int(wv) if wv is not None else None
+
+            dl_buf_pwr = io.BytesIO()
+            wb_pwr_live.save(dl_buf_pwr)
+            st.download_button(
+                label=f"📥 Download Whole-Year Consolidated Excel Workbook (CTG_PWR_2027_CONSOLIDATION.xlsx — January to December {selected_year} with Formulas)",
+                data=dl_buf_pwr.getvalue(),
+                file_name=f"CTG_PWR_{selected_year}_CONSOLIDATION.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary",
+                use_container_width=True,
+                key=f"dl_mod2_full_year_xlsx_{selected_year}"
             )
-            st.markdown(cons_table_html, unsafe_allow_html=True)
-
-        st.divider()
-
-        # =================================================================
-        # 4. INTERACTIVE ANALYTICS DASHBOARD (WEEKLY TREND, ACTIVITY AVERAGES & MASTER ADMIN CONSOLIDATION CHARTS)
-        # =================================================================
-        st.markdown(f"#### 📈 4. Interactive Analytics Dashboard ({view_month.upper()} {selected_year} & Whole-Year Cross-Parish Comparison)")
-        chart_parish_focus = focused_parish_for_sheets if (is_master and focused_parish_for_sheets in PARISH_ORDER) else (PARISH_ORDER[0] if is_master else my_parish)
-        focus_rows_chart = all_year_computed_cache[view_month.upper()][chart_parish_focus]
-        valid_focus_rows = [r for r in focus_rows_chart if r["ACTIVITY"]]
-
-        ch_col1, ch_col2 = st.columns(2)
-        with ch_col1:
-            st.markdown(f"##### 📉 Weekly Trend (`W-1` to `W-5` — {chart_parish_focus}, {view_month.upper()} {selected_year})")
-            trend_dict = {"Week": ["W-1", "W-2", "W-3", "W-4", "W-5"]}
-            for r_c in valid_focus_rows:
-                trend_dict[r_c["ACTIVITY"]] = [int(r_c[wk] or 0) for wk in ["W-1", "W-2", "W-3", "W-4", "W-5"]]
-            df_trend_chart = pd.DataFrame(trend_dict).set_index("Week")
-            st.line_chart(df_trend_chart, use_container_width=True)
-
-        with ch_col2:
-            st.markdown(f"##### 📊 Activity Averages (`AVERAGE` Col I — {chart_parish_focus}, {view_month.upper()} {selected_year})")
-            df_avg_chart = pd.DataFrame({
-                "Activity": [r_c["ACTIVITY"] for r_c in valid_focus_rows],
-                "Monthly Average Attendance": [float(r_c["AVERAGE"]) for r_c in valid_focus_rows],
-            }).set_index("Activity")
-            st.bar_chart(df_avg_chart, use_container_width=True)
-
-        if is_master and cross_parish_summary_metrics:
-            st.markdown(f"##### 🏆 Master Admin Cross-Parish Comparison (`CONSOLIDATED AS OF {selected_year}` — All 10 Parishes)")
-            df_cross_p = pd.DataFrame(cross_parish_summary_metrics).set_index("Parish")
-            cp_c1, cp_c2 = st.columns(2)
-            with cp_c1:
-                st.caption("Annual Mean Attendance Percentage (%) by Parish")
-                st.bar_chart(df_cross_p[["Annual Mean Attendance %"]], use_container_width=True)
-            with cp_c2:
-                st.caption("Annual Mean Weekly Attendance Count by Parish")
-                st.bar_chart(df_cross_p[["Annual Mean Weekly Count"]], use_container_width=True)
-
-        st.divider()
-
-        # =================================================================
-        # 5. 1-CLICK WHOLE-YEAR EXCEL DOWNLOAD (PRESERVING ALL FORMULAS IN COLS G–K & CONSOLIDATED AS OF 2027)
-        # =================================================================
-        # Populate Columns B-F in a copy of wb_pwr_live from all_year_computed_cache while keeping all formulas intact
-        for m_u, p_map_u in all_year_computed_cache.items():
-            if m_u in wb_pwr_live.sheetnames:
-                ws_u = wb_pwr_live[m_u]
-                for p_full, r_list_u in p_map_u.items():
-                    for r_item in r_list_u:
-                        r_ex = r_item["excel_row"]
-                        for w_i, wk_k in enumerate(["W-1", "W-2", "W-3", "W-4", "W-5"]):
-                            wv = r_item[wk_k]
-                            ws_u.cell(r_ex, 2 + w_i).value = int(wv) if wv is not None else None
-
-        dl_buf_pwr = io.BytesIO()
-        wb_pwr_live.save(dl_buf_pwr)
-        st.download_button(
-            label=f"📥 Download Whole-Year Consolidated Excel Workbook (CTG_PWR_2027_CONSOLIDATION.xlsx — January to December {selected_year} with Formulas)",
-            data=dl_buf_pwr.getvalue(),
-            file_name=f"CTG_PWR_{selected_year}_CONSOLIDATION.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary",
-            use_container_width=True,
-            key=f"dl_mod2_full_year_xlsx_{selected_year}"
-        )
 
     if is_master:
         with pwr_tabs_list[7]:
@@ -12111,6 +12576,58 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
     st.divider()
 
     if not final_df.empty:
+        with st.expander("✏️ Live Parish Census Table Editor & Two-Way Google Drive Sync (Auto-Adjust sa Google Drive at sa App)", expanded=False):
+            st.caption(
+                "Kapag may in-adjust ka sa talahanayan sa ibaba at pinindot ang **Save & Sync**, awtomatikong maa-adjust ang file sa **Google Drive (`CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx`)**. "
+                "At kung may in-adjust naman nang direkta sa Google Drive Excel file, pindutin ang **Pull & Sync Mula sa Google Drive** upang agad na ma-update ang records dito sa App."
+            )
+            cs_btn1, cs_btn2 = st.columns(2)
+            with cs_btn1:
+                if st.button("🔄 I-pull ang Pinakabagong Adjustments Mula sa Google Drive Excel", use_container_width=True, key="btn_pull_census_drive"):
+                    with st.spinner("Binabasa ang pinakabagong CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx mula sa Google Drive..."):
+                        st.cache_data.clear()
+                        b_fresh, lbl_fresh = fetch_live_excel_bytes(ACTIVE_SPREADSHEET_URL, force_cloud=True)
+                        st.success(f"✅ Na-update na ang App mula sa Google Drive ({lbl_fresh})!")
+                        time.sleep(0.5)
+                        st.rerun()
+            edit_cols_order = [
+                "Parish", "Family ID", "Head of Family", "No.", "Full Name", "Relationship",
+                "Sex", "Birthdate", "Age", "Category", "Civil Status", "Student/Working",
+                "Contact No.", "Church Member", "Status", "Baptized", "Baptism Date",
+                "Current Address (If living separately)", "Remarks"
+            ]
+            avail_edit_cols = [c for c in edit_cols_order if c in final_df.columns]
+            df_for_live_edit = final_df[avail_edit_cols].copy().reset_index(drop=True)
+            edited_census_table = st.data_editor(
+                df_for_live_edit,
+                use_container_width=True,
+                hide_index=True,
+                disabled=["Parish", "Family ID"],
+                key=f"live_census_editor_{selected_parish}_{selected_family_id}"
+            )
+            with cs_btn2:
+                if st.button("💾 I-save ang mga In-adjust na Records sa App & I-sync sa Google Drive Excel", type="primary", use_container_width=True, key="btn_push_census_drive"):
+                    changed_payloads = []
+                    for idx_r in range(len(df_for_live_edit)):
+                        orig_r = df_for_live_edit.iloc[idx_r]
+                        new_r = edited_census_table.iloc[idx_r]
+                        row_changed = any(str(orig_r[c]).strip() != str(new_r[c]).strip() for c in avail_edit_cols)
+                        if row_changed:
+                            d_item = {c: str(new_r[c]).strip() for c in avail_edit_cols}
+                            d_item["_orig_full_name"] = str(orig_r["Full Name"]).strip()
+                            changed_payloads.append(d_item)
+                    if not changed_payloads:
+                        st.info("Walang binagong cell sa talahanayan.")
+                    else:
+                        with st.spinner(f"Sine-save at sini-sync sa Google Drive ang {len(changed_payloads)} in-adjust na rekord..."):
+                            ok_b, msg_b = batch_update_members_in_excel_and_sync(ACTIVE_SPREADSHEET_URL, changed_payloads)
+                            if ok_b:
+                                st.success(f"✅ {msg_b}")
+                                time.sleep(0.6)
+                                st.rerun()
+                            else:
+                                st.error(msg_b)
+
         with st.expander("⚡ Quick Member Status, Category & Remarks Updater (Auto-Sync sa Excel & Google Drive)", expanded=False):
             st.caption("Pumili ng miyembro mula sa listahan sa ibaba upang direktang baguhin ang kanyang Status (hal. Active → Inactive, o maglagay ng 'tanggal na' / 'patay na' sa Remarks), Category, o Remarks.")
             member_options = [
