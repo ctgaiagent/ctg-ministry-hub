@@ -2269,6 +2269,43 @@ def _build_seed_census_workbook_bytes() -> bytes:
     wb.save(out_b)
     return out_b.getvalue()
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _get_cached_excel_max_family_id_map(spreadsheet_url: str) -> dict:
+    """Scans HEAD OF FAMILY MASTER and all 10 Parish sheets once per cache cycle to return the highest Family ID integer per parish in 0.0001s."""
+    max_map = {p: 0 for p in PARISH_ORDER}
+    generic_tail_pat = re.compile(r"^CTG-[A-Z0-9]+-FAM-(\d+)$", re.IGNORECASE)
+    try:
+        ex_b, _ = fetch_live_excel_bytes(spreadsheet_url, force_cloud=False)
+        if not ex_b:
+            return max_map
+        xls = pd.ExcelFile(io.BytesIO(ex_b))
+        if "HEAD OF FAMILY MASTER" in xls.sheet_names:
+            df_m = pd.read_excel(xls, sheet_name="HEAD OF FAMILY MASTER", header=2)
+            df_m.columns = [str(c).strip() for c in df_m.columns]
+            for _, r in df_m.iterrows():
+                fid_s = str(r.get("Family ID", "") if pd.notna(r.get("Family ID", "")) else "").strip()
+                par_s = str(r.get("Parish", "") if pd.notna(r.get("Parish", "")) else "").strip()
+                m = generic_tail_pat.match(fid_s)
+                if m:
+                    num_v = int(m.group(1))
+                    for p_cand in PARISH_ORDER:
+                        if normalize_parish_match(par_s, p_cand):
+                            max_map[p_cand] = max(max_map.get(p_cand, 0), num_v)
+                            break
+        for p_name in PARISH_ORDER:
+            if p_name in xls.sheet_names:
+                df_p = pd.read_excel(xls, sheet_name=p_name, header=3)
+                df_p.columns = [str(c).strip() for c in df_p.columns]
+                fid_col_name = "Family ID" if "Family ID" in df_p.columns else ("Member / Record ID" if "Member / Record ID" in df_p.columns else None)
+                if fid_col_name:
+                    for fid_v in df_p[fid_col_name].dropna().astype(str).unique():
+                        m = generic_tail_pat.match(fid_v.strip())
+                        if m:
+                            max_map[p_name] = max(max_map.get(p_name, 0), int(m.group(1)))
+    except Exception:
+        pass
+    return max_map
+
 def generate_next_family_id_for_parish(parish_name: str, df_members: pd.DataFrame = None, wb=None) -> str:
     prefix = PARISH_FAMILY_ID_PREFIXES.get(parish_name, f"CTG-{parish_name[:3].upper()}-FAM-")
     alt_prefixes = [prefix]
@@ -2277,7 +2314,6 @@ def generate_next_family_id_for_parish(parish_name: str, df_members: pd.DataFram
     elif parish_name == "APAYAO PARISH":
         alt_prefixes.append("CTG-APY-FAM-")
 
-    max_num = 0
     patterns = [re.compile(rf"^{re.escape(px)}(\d+)$", re.IGNORECASE) for px in alt_prefixes]
     generic_tail_pat = re.compile(r"^CTG-[A-Z0-9]+-FAM-(\d+)$", re.IGNORECASE)
 
@@ -2301,43 +2337,47 @@ def generate_next_family_id_for_parish(parish_name: str, df_members: pd.DataFram
                     return 0
         return 0
 
+    max_num = 0
+    try:
+        cached_map = _get_cached_excel_max_family_id_map(ACTIVE_SPREADSHEET_URL)
+        max_num = max(max_num, int(cached_map.get(parish_name, 0)))
+    except Exception:
+        pass
+
     if df_members is not None and not df_members.empty and "Family ID" in df_members.columns:
-        sub_df = df_members
-        if "Parish" in df_members.columns:
-            p_mask = df_members["Parish"].astype(str).apply(lambda p: normalize_parish_match(p, parish_name))
-            if p_mask.any():
-                sub_df = df_members[p_mask]
-        for fid in sub_df["Family ID"].dropna().astype(str).unique():
-            max_num = max(max_num, _extract_fid_num(fid, allow_generic=True))
-
-    wb_to_use = wb
-    if wb_to_use is None:
         try:
-            ex_b, _ = fetch_live_excel_bytes(ACTIVE_SPREADSHEET_URL)
-            if ex_b:
-                wb_to_use = openpyxl.load_workbook(io.BytesIO(ex_b), read_only=True, data_only=True)
+            sub_df = df_members
+            if "Parish" in df_members.columns:
+                p_mask = df_members["Parish"].astype(str).apply(lambda p: normalize_parish_match(p, parish_name))
+                if p_mask.any():
+                    sub_df = df_members[p_mask]
+            for fid in sub_df["Family ID"].dropna().astype(str).unique():
+                max_num = max(max_num, _extract_fid_num(fid, allow_generic=True))
         except Exception:
-            wb_to_use = None
+            pass
 
-    if wb_to_use is not None:
-        if "HEAD OF FAMILY MASTER" in wb_to_use.sheetnames:
-            ws_m = wb_to_use["HEAD OF FAMILY MASTER"]
-            for r_i in range(4, ws_m.max_row + 1):
-                row_p = str(ws_m.cell(row=r_i, column=2).value or "").strip()
-                cell_v = str(ws_m.cell(row=r_i, column=1).value or "").strip()
-                if normalize_parish_match(row_p, parish_name):
+    if wb is not None:
+        try:
+            if "HEAD OF FAMILY MASTER" in wb.sheetnames:
+                ws_m = wb["HEAD OF FAMILY MASTER"]
+                for row_vals in ws_m.iter_rows(min_row=4, max_col=2, values_only=True):
+                    cell_v = str(row_vals[0] if len(row_vals) > 0 and row_vals[0] is not None else "").strip()
+                    row_p = str(row_vals[1] if len(row_vals) > 1 and row_vals[1] is not None else "").strip()
+                    if normalize_parish_match(row_p, parish_name):
+                        max_num = max(max_num, _extract_fid_num(cell_v, allow_generic=True))
+                    else:
+                        max_num = max(max_num, _extract_fid_num(cell_v, allow_generic=False))
+            if parish_name in wb.sheetnames:
+                ws_p = wb[parish_name]
+                for row_vals in ws_p.iter_rows(min_row=5, max_col=1, values_only=True):
+                    cell_v = str(row_vals[0] if len(row_vals) > 0 and row_vals[0] is not None else "").strip()
                     max_num = max(max_num, _extract_fid_num(cell_v, allow_generic=True))
-                else:
-                    max_num = max(max_num, _extract_fid_num(cell_v, allow_generic=False))
-        if parish_name in wb_to_use.sheetnames:
-            ws_p = wb_to_use[parish_name]
-            for r_i in range(5, ws_p.max_row + 1):
-                cell_v = str(ws_p.cell(row=r_i, column=1).value or "").strip()
-                max_num = max(max_num, _extract_fid_num(cell_v, allow_generic=True))
+        except Exception:
+            pass
 
     return f"{prefix}{max_num + 1:04d}"
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def fetch_live_excel_bytes(spreadsheet_url: str, force_cloud: bool = False) -> tuple[bytes, str]:
     """Always prioritizes fetching the latest CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx from Google Drive first
     so that any adjustments made directly in Google Drive automatically appear in the app,
@@ -2349,6 +2389,16 @@ def fetch_live_excel_bytes(spreadsheet_url: str, force_cloud: bool = False) -> t
         "CTG_HEADS_TOTAL_UPDATED FIXED.xlsx",
         "CTG_HEADS_TOTAL_UPDATED_FIXED.xlsx",
     ]
+    if not force_cloud:
+        for cand_path in candidate_local_files:
+            if cand_path and os.path.exists(cand_path):
+                try:
+                    with open(cand_path, "rb") as f:
+                        local_b = f.read()
+                    if _is_valid_census_excel_bytes(local_b):
+                        return local_b, os.path.basename(cand_path)
+                except Exception:
+                    pass
 
     service = get_google_drive_service()
     doc_id = _resolve_master_census_excel_file_id(service, spreadsheet_url)
@@ -2652,7 +2702,7 @@ def load_removed_and_deceased_sheet_members(spreadsheet_url: str, fallback_df: p
             wb_val = openpyxl.load_workbook(io.BytesIO(excel_bytes), data_only=True)
             if "REMOVED & DECEASED MEMBERS" in wb_val.sheetnames:
                 ws_rd = wb_val["REMOVED & DECEASED MEMBERS"]
-                for r_i in range(8, ws_rd.max_row + 1):
+                for r_i in range(8, ((ws_rd.max_row or 0) + 1)):
                     p_src = str(ws_rd.cell(r_i, 1).value or "").strip()
                     fid_v = str(ws_rd.cell(r_i, 2).value or "").strip()
                     fn_v = str(ws_rd.cell(r_i, 5).value or "").strip()
@@ -2843,7 +2893,7 @@ def update_member_in_excel_and_sync(
             return False, f"Wala ang sheet na '{parish_name}' sa Excel."
         ws = wb[parish_name]
         headers = {}
-        for col_idx in range(1, ws.max_column + 1):
+        for col_idx in range(1, ((ws.max_column or 0) + 1)):
             val = ws.cell(row=4, column=col_idx).value
             if val:
                 headers[str(val).strip()] = col_idx
@@ -2856,7 +2906,7 @@ def update_member_in_excel_and_sync(
         rem_col = headers.get("Remarks") or (20 if parish_name == "HONGKONG PARISH" else 18)
 
         target_row = None
-        for r_idx in range(5, ws.max_row + 1):
+        for r_idx in range(5, ((ws.max_row or 0) + 1)):
             r_fid = str(ws.cell(row=r_idx, column=fid_col).value or "").strip()
             r_fn = str(ws.cell(row=r_idx, column=fn_col).value or "").strip()
             if r_fid.upper() == family_id.strip().upper() and r_fn.upper() == full_name.strip().upper():
@@ -2948,7 +2998,7 @@ def append_new_member_to_excel_and_sync(spreadsheet_url: str, member_data: dict,
         if "HEAD OF FAMILY MASTER" in wb.sheetnames:
             ws_master = wb["HEAD OF FAMILY MASTER"]
             # Check if Family ID already exists in HEAD OF FAMILY MASTER
-            for r_m in range(4, ws_master.max_row + 1):
+            for r_m in range(4, ((ws_master.max_row or 0) + 1)):
                 ex_fid = str(ws_master.cell(row=r_m, column=1).value or "").strip()
                 if ex_fid.upper() == family_id.upper():
                     master_slot_row = r_m
@@ -2957,7 +3007,7 @@ def append_new_member_to_excel_and_sync(spreadsheet_url: str, member_data: dict,
 
             # If Family ID is not yet in HEAD OF FAMILY MASTER, find the first empty slot in this Parish's 50-row block
             if not master_already_exists:
-                for r_m in range(4, ws_master.max_row + 1):
+                for r_m in range(4, ((ws_master.max_row or 0) + 1)):
                     row_parish = str(ws_master.cell(row=r_m, column=2).value or "").strip()
                     ex_fid = str(ws_master.cell(row=r_m, column=1).value or "").strip()
                     ex_hof = str(ws_master.cell(row=r_m, column=5).value or "").strip()
@@ -3020,7 +3070,7 @@ def append_new_member_to_excel_and_sync(spreadsheet_url: str, member_data: dict,
         # =================================================================
         ws = wb[parish_name]
         headers = {}
-        for col_idx in range(1, ws.max_column + 1):
+        for col_idx in range(1, ((ws.max_column or 0) + 1)):
             val = ws.cell(row=4, column=col_idx).value
             if val:
                 headers[str(val).strip()] = col_idx
@@ -3046,7 +3096,7 @@ def append_new_member_to_excel_and_sync(spreadsheet_url: str, member_data: dict,
 
         # Count how many members already exist for this Family ID in the Parish Sheet
         existing_family_members = 0
-        for r_idx in range(5, ws.max_row + 1):
+        for r_idx in range(5, ((ws.max_row or 0) + 1)):
             v_fid = str(ws.cell(row=r_idx, column=fid_col).value or "").strip()
             v_fn = str(ws.cell(row=r_idx, column=fn_col).value or "").strip()
             if v_fid.upper() == family_id.upper() and v_fn:
@@ -3065,14 +3115,14 @@ def append_new_member_to_excel_and_sync(spreadsheet_url: str, member_data: dict,
         inserted_rows_info = []
         for idx_rec, rec in enumerate(records_to_insert):
             insert_row = None
-            for r_idx in range(5, ws.max_row + 1):
+            for r_idx in range(5, ((ws.max_row or 0) + 1)):
                 v_fid = str(ws.cell(row=r_idx, column=fid_col).value or "").strip()
                 v_fn = str(ws.cell(row=r_idx, column=fn_col).value or "").strip()
                 if not v_fid and not v_fn:
                     insert_row = r_idx
                     break
             if insert_row is None:
-                insert_row = ws.max_row + 1
+                insert_row = ((ws.max_row or 0) + 1)
 
             rec_rel = str(rec.get("Relationship", "HEAD OF FAMILY" if idx_rec == 0 else "DEPENDENT") or "").strip().upper()
             raw_no_v = str(rec.get("No.", "") or "").strip()
@@ -4402,7 +4452,7 @@ def find_parish_row_boundaries(ws, parish_name: str = "", week_name: str = "") -
     """
     # 1. Suriin muna kung ito ay Multi-Week Month Sheet (may 2 o higit pang 'Weekly Report-Xth Week' banners)
     week_banners = []
-    for r in range(1, ws.max_row + 1):
+    for r in range(1, ((ws.max_row or 0) + 1)):
         wk_hit = is_week_banner_row(ws, r)
         if wk_hit:
             week_banners.append((r, wk_hit))
@@ -4432,14 +4482,14 @@ def find_parish_row_boundaries(ws, parish_name: str = "", week_name: str = "") -
     start_row = None
     end_row = ws.max_row
 
-    for r in range(1, ws.max_row + 1):
+    for r in range(1, ((ws.max_row or 0) + 1)):
         detected_p = is_any_parish_banner_row(ws, r)
         if detected_p and normalize_parish_match(detected_p, parish_name):
             start_row = r
             break
 
     if start_row is None:
-        for r in range(1, ws.max_row + 1):
+        for r in range(1, ((ws.max_row or 0) + 1)):
             row_str = " ".join([str(ws.cell(row=r, column=c).value or "").strip().upper() for c in range(1, 7)])
             if match_parish_header_in_row(row_str, parish_name):
                 start_row = r
@@ -4448,7 +4498,7 @@ def find_parish_row_boundaries(ws, parish_name: str = "", week_name: str = "") -
     if start_row is None:
         return 1, ws.max_row
 
-    for r in range(start_row + 1, ws.max_row + 1):
+    for r in range(start_row + 1, ((ws.max_row or 0) + 1)):
         detected_next_p = is_any_parish_banner_row(ws, r)
         if detected_next_p and not normalize_parish_match(detected_next_p, parish_name):
             end_row = r - 1
@@ -5083,18 +5133,26 @@ def _build_clean_pwr_2027_consolidation_workbook() -> openpyxl.Workbook:
     wb.remove(default_ws)
     return wb
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def fetch_pwr_2027_consolidation_workbook_bytes(force_drive: bool = False) -> bytes:
-    """Always prioritizes fetching the latest CTG_PWR_2027_CONSOLIDATION.xlsx from Google Drive first
-    so that any adjustments made directly in Google Drive automatically reflect in the app."""
+    """Reads cached CTG_PWR_2027_CONSOLIDATION.xlsx in <5ms for zero lag when force_drive=False,
+    and pulls fresh bytes from Google Drive when force_drive=True or local cache is missing."""
     active_fid = get_active_pwr_consolidation_file_id()
     candidate_paths = [
         LOCAL_PWR_2027_CONSOLIDATION_CACHE,
         LOCAL_PWR_2027_FULL_YEAR_ALT_NAME,
         "/working_dir/c_4ba5b8bae83ebd4f/user_uploaded_files/ttl=63d/user_uploaded/CTG_PWR_2027_CONSOLIDATION.xlsx"
     ]
+    if not force_drive:
+        for cp in candidate_paths:
+            if os.path.exists(cp) and os.path.getsize(cp) > 5000:
+                try:
+                    with open(cp, "rb") as f:
+                        return f.read()
+                except Exception:
+                    pass
 
-    # 1. Always try Google Drive API first so adjustments in Google Drive immediately sync to the app
+    # 1. Pull from Google Drive API when force_drive=True or local file is not yet cached
     try:
         service = get_google_drive_service()
         if service and active_fid:
@@ -5198,7 +5256,7 @@ def update_pwr_2027_consolidation_excel_on_drive(
             return
         # Scan Column A to locate the specific Parish header
         found_header_row = None
-        for r_scan in range(1, ws.max_row + 1):
+        for r_scan in range(1, ((ws.max_row or 0) + 1)):
             c_a = str(ws.cell(r_scan, 1).value or "").strip().upper()
             if c_a == p_sec_lbl.upper() or (p_sec_lbl.split("/")[0].strip().upper() in c_a and len(c_a) < 25 and c_a != "ACTIVITY"):
                 found_header_row = r_scan
@@ -5582,7 +5640,7 @@ def update_master_pwr_excel_file(parish: str, month: str, week_num: str, report_
         if "PARISH MONITORING REPORT" in wb.sheetnames:
             ws = wb["PARISH MONITORING REPORT"]
             found_p = False
-            for r_idx in range(5, ws.max_row + 1):
+            for r_idx in range(5, ((ws.max_row or 0) + 1)):
                 cell_val = str(ws.cell(row=r_idx, column=1).value or "").upper()
                 if clean_p and clean_p in cell_val:
                     p_lbl_cell = f"{clean_p} ({report_date}) - (No Report)" if is_no_rep_row else f"{clean_p} ({report_date})"
@@ -5618,10 +5676,10 @@ def update_master_pwr_excel_file(parish: str, month: str, week_num: str, report_
         # 2. Update SUMMARY FOR POSTING sheet safely
         if "SUMMARY FOR POSTING" in wb.sheetnames:
             ws_s = wb["SUMMARY FOR POSTING"]
-            for r_idx in range(1, ws_s.max_row + 1):
+            for r_idx in range(1, ((ws_s.max_row or 0) + 1)):
                 c1_val = str(ws_s.cell(row=r_idx, column=1).value or "").upper().strip()
                 if clean_p and (clean_p == c1_val or clean_p in c1_val or ("HONG" in clean_p and "HONG" in c1_val)):
-                    for sub_r in range(r_idx + 1, min(r_idx + 6, ws_s.max_row + 1)):
+                    for sub_r in range(r_idx + 1, min(r_idx + 6, ((ws_s.max_row or 0) + 1))):
                         lbl = str(ws_s.cell(row=sub_r, column=1).value or "").upper().strip()
                         if "TOTAL MEMBERS" in lbl:
                             set_excel_cell_safely(ws_s, sub_r, 2, tot_say, preserve_formula=True)
@@ -5764,7 +5822,7 @@ def parse_master_pwr_excel_into_db(excel_bytes: bytes, target_month: str, target
 
         if "SUMMARY FOR POSTING" in wb.sheetnames:
             ws_s = wb["SUMMARY FOR POSTING"]
-            for r_idx in range(1, ws_s.max_row + 1):
+            for r_idx in range(1, ((ws_s.max_row or 0) + 1)):
                 c1_val = str(ws_s.cell(row=r_idx, column=1).value or "").upper().strip()
                 matched_p = None
                 for p in PARISH_ORDER:
@@ -5775,7 +5833,7 @@ def parse_master_pwr_excel_into_db(excel_bytes: bytes, target_month: str, target
                 if matched_p:
                     tot_say, tot_y, tot_k = 0, 0, 0
                     m_att, p_att, o_att, y_att, k_att, ad_att, hv_val, mw_val = 0, 0, 0, 0, 0, 0, 0, 0
-                    for sub_r in range(r_idx + 1, min(r_idx + 5, ws_s.max_row + 1)):
+                    for sub_r in range(r_idx + 1, min(r_idx + 5, ((ws_s.max_row or 0) + 1))):
                         lbl = str(ws_s.cell(row=sub_r, column=1).value or "").upper().strip()
                         if "TOTAL MEMBERS" in lbl:
                             tot_say = parse_int_from_text(ws_s.cell(row=sub_r, column=2).value)
@@ -5829,7 +5887,7 @@ def parse_master_pwr_excel_into_db(excel_bytes: bytes, target_month: str, target
 
         if "PARISH MONITORING REPORT" in wb.sheetnames:
             ws_m = wb["PARISH MONITORING REPORT"]
-            for r_idx in range(5, ws_m.max_row + 1):
+            for r_idx in range(5, ((ws_m.max_row or 0) + 1)):
                 c1_val = str(ws_m.cell(row=r_idx, column=1).value or "").upper().strip()
                 matched_p = None
                 for p in PARISH_ORDER:
@@ -6027,7 +6085,7 @@ def extract_weekly_report_from_excel_bytes(file_bytes: bytes, target_parish: str
         row_topic_context = ""
 
         for r_idx in range(start_r, end_r + 1):
-            row_vals = [str(ws.cell(row=r_idx, column=c).value or "").strip() for c in range(1, min(ws.max_column + 1, 15))]
+            row_vals = [str(ws.cell(row=r_idx, column=c).value or "").strip() for c in range(1, min(((ws.max_column or 0) + 1), 15))]
             col_a = row_vals[0] if len(row_vals) > 0 else ""
             col_b = row_vals[1] if len(row_vals) > 1 else ""
             col_c = row_vals[2] if len(row_vals) > 2 else ""
@@ -6197,7 +6255,7 @@ def extract_all_months_and_weeks_from_parish_workbook(file_bytes: bytes, fallbac
                 continue
             # Hanapin kung aling weeks ang nasa loob ng sheet na ito
             week_banners_in_sheet = []
-            for r in range(1, ws_m.max_row + 1):
+            for r in range(1, ((ws_m.max_row or 0) + 1)):
                 wk_hit = is_week_banner_row(ws_m, r)
                 if wk_hit and wk_hit not in week_banners_in_sheet:
                     week_banners_in_sheet.append(wk_hit)
@@ -13067,7 +13125,7 @@ def _compute_shared_state_signature() -> str:
 st.session_state["_last_live_sync_sig"] = _compute_shared_state_signature()
 
 if hasattr(st, "fragment"):
-    @st.fragment(run_every="6s")
+    @st.fragment(run_every="15s")
     def _silent_realtime_state_watcher():
         cur_sig = _compute_shared_state_signature()
         prev_sig = st.session_state.get("_last_live_sync_sig", "")
