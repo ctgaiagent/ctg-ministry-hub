@@ -1490,22 +1490,17 @@ def extract_id_from_url(url: str) -> str:
 # ==========================================
 # ☁️ GOOGLE DRIVE SERVICE & AUTOMATIC 2027 ROUTING
 # ==========================================
-def get_google_drive_service():
-    sa_json = st.session_state.get("custom_secrets", {}).get("GOOGLE_SERVICE_ACCOUNT_JSON", "") or get_secret("GOOGLE_SERVICE_ACCOUNT_JSON")
+@st.cache_resource(ttl=3600, show_spinner=False)
+def _build_cached_google_drive_service(sa_json: str, g_id: str, g_sec: str, g_ref: str):
     if sa_json and service_account is not None:
         try:
             sa_info = json.loads(sa_json)
             creds = service_account.Credentials.from_service_account_info(
                 sa_info, scopes=["https://www.googleapis.com/auth/drive"]
             )
-            return build("drive", "v3", credentials=creds)
+            return build("drive", "v3", credentials=creds, cache_discovery=False)
         except Exception:
             pass
-
-    cfg = load_saved_config()
-    g_id = get_secret("GMAIL_CLIENT_ID")
-    g_sec = get_secret("GMAIL_CLIENT_SECRET")
-    g_ref = cfg.get("GMAIL_REFRESH_TOKEN") or get_secret("GMAIL_REFRESH_TOKEN")
     if not all([g_id, g_sec, g_ref]):
         return None
     try:
@@ -1516,9 +1511,17 @@ def get_google_drive_service():
             client_id=g_id.strip(),
             client_secret=g_sec.strip()
         )
-        return build("drive", "v3", credentials=creds)
+        return build("drive", "v3", credentials=creds, cache_discovery=False)
     except Exception:
         return None
+
+def get_google_drive_service():
+    sa_json = st.session_state.get("custom_secrets", {}).get("GOOGLE_SERVICE_ACCOUNT_JSON", "") or get_secret("GOOGLE_SERVICE_ACCOUNT_JSON")
+    cfg = load_saved_config()
+    g_id = get_secret("GMAIL_CLIENT_ID")
+    g_sec = get_secret("GMAIL_CLIENT_SECRET")
+    g_ref = cfg.get("GMAIL_REFRESH_TOKEN") or get_secret("GMAIL_REFRESH_TOKEN")
+    return _build_cached_google_drive_service(str(sa_json or ""), str(g_id or ""), str(g_sec or ""), str(g_ref or ""))
 
 def _verify_drive_folder_id(service, candidate_id: str) -> str:
     """Sinusuri kung ang candidate_id ay nage-exist at naa-access sa Google Drive (supportsAllDrives=True).
@@ -2269,7 +2272,7 @@ def _build_seed_census_workbook_bytes() -> bytes:
     wb.save(out_b)
     return out_b.getvalue()
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def _get_cached_excel_max_family_id_map(spreadsheet_url: str) -> dict:
     """Scans HEAD OF FAMILY MASTER and all 10 Parish sheets once per cache cycle to return the highest Family ID integer per parish in 0.0001s."""
     max_map = {p: 0 for p in PARISH_ORDER}
@@ -2377,7 +2380,7 @@ def generate_next_family_id_for_parish(parish_name: str, df_members: pd.DataFram
 
     return f"{prefix}{max_num + 1:04d}"
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_live_excel_bytes(spreadsheet_url: str, force_cloud: bool = False) -> tuple[bytes, str]:
     """Always prioritizes fetching the latest CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx from Google Drive first
     so that any adjustments made directly in Google Drive automatically appear in the app,
@@ -2473,13 +2476,84 @@ def fetch_live_excel_bytes(spreadsheet_url: str, force_cloud: bool = False) -> t
     except Exception:
         return b"", "CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx"
 
-@st.cache_data(ttl=300, show_spinner=False)
+def build_hongkong_membership_template_excel_bytes() -> bytes:
+    """Builds the official Hongkong Membership Data Base.xlsx template matching 'HONG KONG PARISH - OFW MEMBERS'."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "HONGKONG PARISH"
+    ws.cell(1, 1, "HONG KONG PARISH - OFW MEMBERS")
+    ws.cell(2, 1, "LIST OF MEMBERS - HONGKONG PARISH")
+    ws.cell(3, 1, "Individual OFW records. Existing IDs remain usable in Search.")
+    hk_headers = [
+        "Member / Record ID", "Head of Family", "No.", "Full Name", "Relationship",
+        "Sex", "Birthdate", "Age", "Category", "Civil Status", "Employment / Work",
+        "Contact No.", "Church Member Status", "Status", "Baptized", "Baptism Date",
+        "Address (HK or Philippines)", "Work Type", "Day Off", "Remarks"
+    ]
+    for c_i, h_text in enumerate(hk_headers, 1):
+        cell = ws.cell(4, c_i, h_text)
+        cell.font = openpyxl.styles.Font(bold=True, color="FFFFFF")
+        cell.fill = openpyxl.styles.PatternFill("solid", fgColor="4F81BD")
+    ws.column_dimensions["B"].hidden = True
+    ws.column_dimensions["E"].hidden = True
+    ws.column_dimensions["A"].width = 21
+    ws.column_dimensions["D"].width = 26
+    ws.column_dimensions["G"].width = 14
+    ws.column_dimensions["K"].width = 18
+    ws.column_dimensions["L"].width = 16
+    ws.column_dimensions["Q"].width = 28
+    ws.column_dimensions["R"].width = 18
+    ws.column_dimensions["S"].width = 16
+    ws.column_dimensions["T"].width = 25
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+def format_dataframe_for_parish_display(df_in: pd.DataFrame, parish_scope: str) -> pd.DataFrame:
+    """Formats a member DataFrame for display/download. When parish_scope == 'HONGKONG PARISH',
+    uses the exact Hongkong OFW column layout (Member / Record ID, No., Full Name, Sex, Birthdate, Age, Category,
+    Civil Status, Employment / Work, Contact No., Church Member Status, Status, Baptized, Baptism Date,
+    Address (HK or Philippines), Work Type, Day Off, Remarks) and hides Head of Family & Relationship."""
+    if df_in is None or df_in.empty:
+        if parish_scope == "HONGKONG PARISH":
+            return pd.DataFrame(columns=[
+                "Member / Record ID", "No.", "Full Name", "Sex", "Birthdate", "Age", "Category",
+                "Civil Status", "Employment / Work", "Contact No.", "Church Member Status", "Status",
+                "Baptized", "Baptism Date", "Address (HK or Philippines)", "Work Type", "Day Off", "Remarks"
+            ])
+        return df_in
+    if parish_scope == "HONGKONG PARISH":
+        out = pd.DataFrame()
+        out["Member / Record ID"] = df_in["Family ID"].astype(str) if "Family ID" in df_in.columns else ""
+        out["No."] = df_in["No."].astype(str) if "No." in df_in.columns else ""
+        out["Full Name"] = df_in["Full Name"].astype(str) if "Full Name" in df_in.columns else ""
+        out["Sex"] = df_in["Sex"].astype(str) if "Sex" in df_in.columns else ""
+        out["Birthdate"] = df_in["Birthdate"].astype(str) if "Birthdate" in df_in.columns else ""
+        out["Age"] = df_in["Age"].astype(str) if "Age" in df_in.columns else ""
+        out["Category"] = df_in["Category"].astype(str) if "Category" in df_in.columns else ""
+        out["Civil Status"] = df_in["Civil Status"].astype(str) if "Civil Status" in df_in.columns else ""
+        out["Employment / Work"] = df_in["Student/Working"].astype(str) if "Student/Working" in df_in.columns else ""
+        out["Contact No."] = df_in["Contact No."].astype(str) if "Contact No." in df_in.columns else ""
+        out["Church Member Status"] = df_in["Church Member"].astype(str) if "Church Member" in df_in.columns else ""
+        out["Status"] = df_in["Status"].astype(str) if "Status" in df_in.columns else ""
+        out["Baptized"] = df_in["Baptized"].astype(str) if "Baptized" in df_in.columns else ""
+        out["Baptism Date"] = df_in["Baptism Date"].astype(str) if "Baptism Date" in df_in.columns else ""
+        out["Address (HK or Philippines)"] = df_in["Current Address (If living separately)"].astype(str) if "Current Address (If living separately)" in df_in.columns else ""
+        out["Work Type"] = df_in["Work Type"].astype(str) if "Work Type" in df_in.columns else ""
+        out["Day Off"] = df_in["Day Off"].astype(str) if "Day Off" in df_in.columns else ""
+        out["Remarks"] = df_in["Remarks"].astype(str) if "Remarks" in df_in.columns else ""
+        return out
+    # For non-Hongkong view, omit blank Work Type / Day Off columns to keep Philippine parish tables clean
+    drop_hk = [c for c in ["Work Type", "Day Off"] if c in df_in.columns and parish_scope != "Lahat ng Parokya (All 10 Parishes)"]
+    return df_in.drop(columns=drop_hk) if drop_hk else df_in
+
+@st.cache_data(ttl=3600, show_spinner=False)
 def load_complete_parish_members(spreadsheet_url: str):
     standard_cols = [
         "Parish", "Family ID", "Head of Family", "No.", "Full Name", "Relationship",
         "Sex", "Birthdate", "Age", "Category", "Civil Status", "Student/Working",
         "Contact No.", "Church Member", "Status", "Baptized", "Baptism Date",
-        "Current Address (If living separately)", "Remarks"
+        "Current Address (If living separately)", "Work Type", "Day Off", "Remarks"
     ]
     excel_bytes = b""
     src_label = "CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx"
@@ -2535,7 +2609,6 @@ def load_complete_parish_members(spreadsheet_url: str):
                 df_p = pd.read_excel(xls, sheet_name=p_name, header=3)
                 df_p.columns = [str(c).strip() for c in df_p.columns]
                 if "Family ID" not in df_p.columns and "Member / Record ID" not in df_p.columns:
-                    # Try dynamic header detection if header row was not row 4
                     df_raw_scan = pd.read_excel(xls, sheet_name=p_name, header=None, nrows=10)
                     found_hdr = None
                     for r_idx_s, r_vals in df_raw_scan.iterrows():
@@ -2547,25 +2620,32 @@ def load_complete_parish_members(spreadsheet_url: str):
                         df_p = pd.read_excel(xls, sheet_name=p_name, header=found_hdr)
                         df_p.columns = [str(c).strip() for c in df_p.columns]
 
+                hk_seq_counter = 0
                 for _, r in df_p.iterrows():
                     fid_raw = r.get("Family ID", r.get("Member / Record ID", ""))
                     fn_raw = r.get("Full Name", "")
+                    hof_raw = r.get("Head of Family", "")
                     fid_str = str(fid_raw if pd.notna(fid_raw) else "").strip()
                     fn_str = str(fn_raw if pd.notna(fn_raw) else "").strip()
                     if not fn_str or fn_str.lower() in ("nan", "none"):
                         continue
                     if not fid_str or fid_str.upper() in ("NAN", "NONE", "NULL"):
-                        if not hof_raw or str(hof_raw).strip().lower() in ("nan", "none", ""):
-                            continue
-                        fid_str = f"{PARISH_FAMILY_ID_PREFIXES.get(p_name, 'CTG-FAM-')}PENDING"
-                    elif not fid_str.upper().startswith("CTG-"):
+                        if p_name == "HONGKONG PARISH":
+                            hk_seq_counter += 1
+                            fid_str = f"CTG-HK-FAM-{hk_seq_counter:04d}"
+                        else:
+                            if not hof_raw or str(hof_raw).strip().lower() in ("nan", "none", ""):
+                                continue
+                            fid_str = f"{PARISH_FAMILY_ID_PREFIXES.get(p_name, 'CTG-FAM-')}PENDING"
+                    elif not fid_str.upper().startswith("CTG-") and p_name != "HONGKONG PARISH":
                         continue
 
                     hof_info = hof_lookup.get(fid_str.upper(), {})
-                    hof_raw = r.get("Head of Family", "")
                     hof_str = str(hof_raw if pd.notna(hof_raw) else "").strip()
                     if not hof_str or hof_str.startswith("=") or hof_str.lower() == "nan":
                         hof_str = hof_info.get("Head of Family", "")
+                    if p_name == "HONGKONG PARISH" and not hof_str:
+                        hof_str = fn_str
 
                     no_raw = r.get("No.", "")
                     no_val = str(no_raw if pd.notna(no_raw) else "").strip()
@@ -2574,6 +2654,8 @@ def load_complete_parish_members(spreadsheet_url: str):
 
                     rel_raw = r.get("Relationship", "")
                     rel_str = str(rel_raw if pd.notna(rel_raw) else "").strip().upper()
+                    if p_name == "HONGKONG PARISH" and (not rel_str or rel_str.lower() == "nan"):
+                        rel_str = "HEAD OF FAMILY"
                     if not hof_str and (rel_str == "HEAD OF FAMILY" or no_val == "1"):
                         hof_str = fn_str
 
@@ -2598,12 +2680,16 @@ def load_complete_parish_members(spreadsheet_url: str):
                     cat_str = str(cat_raw if pd.notna(cat_raw) else "").strip().upper()
                     if not cat_str or cat_str.startswith("=") or cat_str.lower() == "nan":
                         cat_str = compute_category_from_age(age_str)
+                    if p_name == "HONGKONG PARISH" and cat_str in ("YOUTH", "KIDS", ""):
+                        cat_str = "ADULT"
 
                     civ_raw = r.get("Civil Status", "")
                     civ_str = str(civ_raw if pd.notna(civ_raw) else "").strip().upper()
 
                     sw_raw = r.get("Student/Working", r.get("Employment / Work", ""))
                     sw_str = str(sw_raw if pd.notna(sw_raw) else "").strip()
+                    if p_name == "HONGKONG PARISH" and (not sw_str or sw_str.lower() == "nan"):
+                        sw_str = "WORKING"
 
                     con_raw = r.get("Contact No.", "")
                     con_str = str(con_raw if pd.notna(con_raw) else "").strip()
@@ -2628,18 +2714,22 @@ def load_complete_parish_members(spreadsheet_url: str):
                     if not addr_str or addr_str.startswith("=") or addr_str.lower() == "nan":
                         addr_str = hof_info.get("Complete Address", "")
 
-                    rem_raw = r.get("Remarks", "")
-                    rem_str = str(rem_raw if pd.notna(rem_raw) else "").strip()
-                    if rem_str.lower() == "nan":
-                        rem_str = ""
+                    wt_str = ""
+                    do_str = ""
                     if p_name == "HONGKONG PARISH":
                         wt_raw = r.get("Work Type", "")
                         do_raw = r.get("Day Off", "")
                         wt_str = str(wt_raw if pd.notna(wt_raw) else "").strip()
                         do_str = str(do_raw if pd.notna(do_raw) else "").strip()
-                        hk_extra = " | ".join([x for x in [f"Work Type: {wt_str}" if wt_str else "", f"Day Off: {do_str}" if do_str else ""] if x])
-                        if hk_extra and hk_extra not in rem_str:
-                            rem_str = f"{rem_str} ({hk_extra})".strip() if rem_str else hk_extra
+                        if wt_str.lower() == "nan":
+                            wt_str = ""
+                        if do_str.lower() == "nan":
+                            do_str = ""
+
+                    rem_raw = r.get("Remarks", "")
+                    rem_str = str(rem_raw if pd.notna(rem_raw) else "").strip()
+                    if rem_str.lower() == "nan":
+                        rem_str = ""
 
                     all_rows.append({
                         "Parish": p_name,
@@ -2660,193 +2750,181 @@ def load_complete_parish_members(spreadsheet_url: str):
                         "Baptized": bap_str,
                         "Baptism Date": bapd_str,
                         "Current Address (If living separately)": addr_str,
+                        "Work Type": wt_str,
+                        "Day Off": do_str,
                         "Remarks": rem_str,
                     })
         except Exception:
-            all_rows = []
+            pass
 
     if not all_rows:
-        seed_data = _get_embedded_census_seed_data()
-        all_rows = seed_data.get("members", [])
-        src_label = "CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx (CTG Ministry Hub app_Storage)"
+        return pd.DataFrame(columns=standard_cols), src_label
 
-    if all_rows:
-        df_out = pd.DataFrame(all_rows, columns=standard_cols)
-        fid_to_head = {}
-        for _, r_item in df_out.iterrows():
-            fid_k = str(r_item["Family ID"]).strip().upper()
-            if str(r_item["Head of Family"]).strip():
-                fid_to_head[fid_k] = str(r_item["Head of Family"]).strip()
-            elif str(r_item["Relationship"]).strip().upper() == "HEAD OF FAMILY" or str(r_item["No."]).strip() == "1":
-                fid_to_head[fid_k] = str(r_item["Full Name"]).strip()
-        df_out["Head of Family"] = df_out.apply(
-            lambda r: r["Head of Family"] if str(r["Head of Family"]).strip() else fid_to_head.get(str(r["Family ID"]).strip().upper(), ""),
-            axis=1
+    df_out = pd.DataFrame(all_rows)
+    for col in standard_cols:
+        if col not in df_out.columns:
+            df_out[col] = ""
+        df_out[col] = df_out[col].fillna("").astype(str).str.strip()
+        df_out[col] = df_out[col].replace({"nan": "", "None": "", "NaT": ""})
+
+    return df_out[standard_cols], src_label
+
+def is_removed_or_deceased_record(rec) -> bool:
+    st_v = str(rec.get("Status", "") if hasattr(rec, "get") else "").upper().strip()
+    rem_v = str(rec.get("Remarks", "") if hasattr(rec, "get") else "").upper().strip()
+    combined = f"{st_v} {rem_v}"
+    return any(k in combined for k in ["REMOVED", "DECEASED", "TANGGAL NA", "PATAY NA", "DIED", "NAMATAY"])
+
+def mask_sensitive_member_dataframe(df_in: pd.DataFrame, apply_mask: bool = False) -> pd.DataFrame:
+    if df_in is None or df_in.empty or not apply_mask:
+        return df_in.copy() if df_in is not None else pd.DataFrame()
+    df_m = df_in.copy()
+    if "Contact No." in df_m.columns:
+        df_m["Contact No."] = df_m["Contact No."].apply(
+            lambda x: (str(x)[:4] + "-***-" + str(x)[-3:]) if len(str(x).strip()) >= 7 else str(x)
         )
-        return df_out, src_label
-    return pd.DataFrame(columns=standard_cols), src_label
+    for addr_c in ["Current Address (If living separately)", "Address (HK or Philippines)"]:
+        if addr_c in df_m.columns:
+            df_m[addr_c] = df_m[addr_c].apply(
+                lambda x: ("***, " + ", ".join(str(x).split(",")[1:]).strip()) if "," in str(x) else ("***" if str(x).strip() else "")
+            )
+    return df_m
 
-@st.cache_data(ttl=300, show_spinner=False)
-def load_removed_and_deceased_sheet_members(spreadsheet_url: str, fallback_df: pd.DataFrame = None) -> pd.DataFrame:
-    """Reads directly from the 'REMOVED & DECEASED MEMBERS' sheet and combines with records where Remarks/Status contain 'tanggal na' or 'patay na'."""
-    cols = [
-        "Parish", "Family ID", "Head of Family", "No.", "Full Name", "Relationship",
-        "Sex", "Birthdate", "Age", "Category", "Civil Status", "Student/Working",
-        "Contact No.", "Church Member", "Status", "Baptized", "Baptism Date",
-        "Current Address (If living separately)", "Remarks"
-    ]
-    sheet_rows = []
+def style_member_status_dataframe(df_in: pd.DataFrame, default_badge: str = "ALL"):
+    if df_in is None or df_in.empty:
+        return df_in
+    def _highlight_status_col(val):
+        v = str(val or "").upper().strip()
+        if "INACTIVE" in v:
+            return "background-color: rgba(245, 158, 11, 0.22); color: #FCD34D; font-weight: 700;"
+        if "NON" in v:
+            return "background-color: rgba(148, 163, 184, 0.22); color: #E2E8F0; font-weight: 700;"
+        if any(k in v for k in ["REMOVED", "DECEASED", "TANGGAL", "PATAY"]):
+            return "background-color: rgba(239, 68, 68, 0.22); color: #FCA5A5; font-weight: 700;"
+        if "ACTIVE" in v:
+            return "background-color: rgba(16, 185, 129, 0.22); color: #6EE7B7; font-weight: 700;"
+        return ""
     try:
-        excel_bytes, _ = fetch_live_excel_bytes(spreadsheet_url)
-        if excel_bytes:
-            wb_val = openpyxl.load_workbook(io.BytesIO(excel_bytes), data_only=True)
-            if "REMOVED & DECEASED MEMBERS" in wb_val.sheetnames:
-                ws_rd = wb_val["REMOVED & DECEASED MEMBERS"]
-                for r_i in range(8, ((ws_rd.max_row or 0) + 1)):
-                    p_src = str(ws_rd.cell(r_i, 1).value or "").strip()
-                    fid_v = str(ws_rd.cell(r_i, 2).value or "").strip()
-                    fn_v = str(ws_rd.cell(r_i, 5).value or "").strip()
-                    if not fid_v or fid_v.startswith("=") or not fn_v or fn_v.startswith("="):
-                        continue
-                    sheet_rows.append({
-                        "Parish": f"{p_src} PARISH" if p_src and not p_src.upper().endswith("PARISH") else p_src,
-                        "Family ID": fid_v,
-                        "Head of Family": str(ws_rd.cell(r_i, 3).value or "").strip(),
-                        "No.": str(ws_rd.cell(r_i, 4).value or "").strip(),
-                        "Full Name": fn_v,
-                        "Relationship": str(ws_rd.cell(r_i, 6).value or "").strip(),
-                        "Sex": str(ws_rd.cell(r_i, 7).value or "").strip(),
-                        "Birthdate": format_clean_date_str(ws_rd.cell(r_i, 8).value),
-                        "Age": str(ws_rd.cell(r_i, 9).value or "").strip(),
-                        "Category": str(ws_rd.cell(r_i, 10).value or "").strip(),
-                        "Civil Status": str(ws_rd.cell(r_i, 11).value or "").strip(),
-                        "Student/Working": str(ws_rd.cell(r_i, 12).value or "").strip(),
-                        "Contact No.": str(ws_rd.cell(r_i, 13).value or "").strip(),
-                        "Church Member": str(ws_rd.cell(r_i, 14).value or "").strip(),
-                        "Status": str(ws_rd.cell(r_i, 15).value or "").strip(),
-                        "Baptized": str(ws_rd.cell(r_i, 16).value or "").strip(),
-                        "Baptism Date": format_clean_date_str(ws_rd.cell(r_i, 17).value),
-                        "Current Address (If living separately)": str(ws_rd.cell(r_i, 18).value or "").strip(),
-                        "Remarks": str(ws_rd.cell(r_i, 19).value or "").strip(),
-                    })
+        if "Status" in df_in.columns:
+            return df_in.style.map(_highlight_status_col, subset=["Status"])
     except Exception:
         pass
+    return df_in
 
-    df_sheet = pd.DataFrame(sheet_rows, columns=cols) if sheet_rows else pd.DataFrame(columns=cols)
-    if fallback_df is not None and not fallback_df.empty:
-        rem_mask = (
-            fallback_df["Remarks"].astype(str).str.contains(r"tanggal\s*na|patay\s*na|removed|deceased|namatay", case=False, na=False) |
-            fallback_df["Status"].astype(str).str.contains(r"tanggal\s*na|patay\s*na|removed|deceased", case=False, na=False)
-        )
-        df_filtered = fallback_df[rem_mask].copy()
-        for c in cols:
-            if c not in df_filtered.columns:
-                df_filtered[c] = ""
-        df_combined = pd.concat([df_sheet, df_filtered[cols]], ignore_index=True)
-        if not df_combined.empty:
-            df_combined = df_combined.drop_duplicates(subset=["Family ID", "Full Name"], keep="last").reset_index(drop=True)
-        return df_combined
-    return df_sheet
-
-def is_removed_or_deceased_record(row: pd.Series) -> bool:
-    rem_txt = str(row.get("Remarks", "") or "").lower()
-    st_txt = str(row.get("Status", "") or "").lower()
-    combined = f"{rem_txt} {st_txt}"
-    return any(k in combined for k in ["tanggal na", "patay na", "removed", "deceased", "namatay"])
-
-def mask_sensitive_member_dataframe(df: pd.DataFrame, apply_mask: bool = False) -> pd.DataFrame:
-    if not apply_mask or df.empty:
-        return df
-    df_masked = df.copy()
-    if "Contact No." in df_masked.columns:
-        def _mask_phone(val):
-            s = str(val or "").strip()
-            if len(s) >= 7:
-                return s[:3] + "****" + s[-2:]
-            return "🔒 Masked" if s else ""
-        df_masked["Contact No."] = df_masked["Contact No."].apply(_mask_phone)
-    if "Current Address (If living separately)" in df_masked.columns:
-        def _mask_addr(val):
-            s = str(val or "").strip()
-            if not s or s.lower() == "n/a":
-                return s
-            parts = [p.strip() for p in s.split(",") if p.strip()]
-            if len(parts) >= 2:
-                return "🔒 [Masked Street], " + ", ".join(parts[-2:])
-            return "🔒 [Protected Parish Address]"
-        df_masked["Current Address (If living separately)"] = df_masked["Current Address (If living separately)"].apply(_mask_addr)
-    return df_masked
-
-def style_member_status_dataframe(df: pd.DataFrame, default_badge: str = "ALL"):
-    if df.empty:
-        return df
-    def _row_style(row):
-        if is_removed_or_deceased_record(row) or default_badge == "REMOVED":
-            return ["background-color: rgba(127, 29, 29, 0.32); color: #FECACA; font-weight: 500;"] * len(row)
-        st_group = classify_member_status(row.get("Status", ""), row.get("Church Member", ""))
-        if st_group == "ACTIVE" or default_badge == "ACTIVE":
-            return ["background-color: rgba(6, 78, 59, 0.30); color: #D1FAE5;"] * len(row)
-        elif st_group == "INACTIVE" or default_badge == "INACTIVE":
-            return ["background-color: rgba(120, 53, 15, 0.30); color: #FEF3C7;"] * len(row)
-        elif st_group == "NON-MEMBER" or default_badge == "NON-MEMBER":
-            return ["background-color: rgba(30, 41, 59, 0.40); color: #E2E8F0;"] * len(row)
-        return [""] * len(row)
-    try:
-        return df.style.apply(_row_style, axis=1)
-    except Exception:
-        return df
-
-def build_printable_members_html_report(df: pd.DataFrame, report_title: str, parish_label: str) -> bytes:
-    ts_now = get_philippine_datetime_str()
-    table_html = df.to_html(index=False, border=1, classes="report-table") if not df.empty else "<p>No records found.</p>"
+def build_printable_members_html_report(df_in: pd.DataFrame, status_title: str, selected_parish: str) -> bytes:
+    df_fmt = format_dataframe_for_parish_display(df_in, selected_parish)
+    tbl_html = df_fmt.to_html(index=False, border=1, classes="ctg-print-table") if not df_fmt.empty else "<p>Walang rekord.</p>"
+    title_hdr = "HONG KONG PARISH - OFW MEMBERS" if selected_parish == "HONGKONG PARISH" else f"CHURCH OF THE TEMPLE OF GOD — {selected_parish}"
     html_doc = f"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
-<title>{report_title}</title>
+<title>{title_hdr} — {status_title}</title>
 <style>
-  body {{ font-family: Arial, Helvetica, sans-serif; margin: 24px; color: #111827; }}
-  .header-box {{ background: #0f5132; color: #ffffff; padding: 16px 20px; border-radius: 8px; margin-bottom: 16px; }}
-  .header-box h2 {{ margin: 0 0 6px 0; font-size: 20px; }}
-  .header-box p {{ margin: 0; font-size: 13px; opacity: 0.92; }}
-  .print-btn {{ background: #198754; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: bold; margin-bottom: 12px; }}
-  @media print {{ .print-btn {{ display: none; }} }}
-  table.report-table {{ width: 100%; border-collapse: collapse; font-size: 11.5px; }}
-  table.report-table th {{ background: #1e293b; color: #ffffff; padding: 7px 8px; text-align: left; border: 1px solid #cbd5e1; }}
-  table.report-table td {{ padding: 6px 8px; border: 1px solid #cbd5e1; vertical-align: top; }}
-  table.report-table tr:nth-child(even) {{ background: #f8fafc; }}
+body {{ font-family: Arial, sans-serif; margin: 24px; color: #0F172A; }}
+h2 {{ margin-bottom: 4px; color: #1E3A8A; }}
+h4 {{ margin-top: 0; color: #475569; }}
+table.ctg-print-table {{ border-collapse: collapse; width: 100%; font-size: 11px; margin-top: 12px; }}
+table.ctg-print-table th {{ background: #1E3A8A; color: #FFFFFF; padding: 6px 8px; text-align: left; }}
+table.ctg-print-table td {{ border: 1px solid #CBD5E1; padding: 5px 8px; }}
+table.ctg-print-table tr:nth-child(even) {{ background: #F8FAFC; }}
 </style>
 </head>
 <body>
-  <button class="print-btn" onclick="window.print()">🖨️ Print / Save as PDF</button>
-  <div class="header-box">
-    <h2>CHURCH OF THE TEMPLE OF GOD — {report_title}</h2>
-    <p>Parish Scope: {parish_label} | Total Records: {len(df)} | Generated: {ts_now}</p>
-  </div>
-  {table_html}
+<h2>{title_hdr}</h2>
+<h4>{status_title} (Kabuuang Bilang: {len(df_fmt)})</h4>
+{tbl_html}
 </body>
 </html>"""
     return html_doc.encode("utf-8")
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_removed_and_deceased_sheet_members(spreadsheet_url: str, active_df: pd.DataFrame = None) -> pd.DataFrame:
+    standard_cols = [
+        "Parish", "Family ID", "Head of Family", "No.", "Full Name", "Relationship",
+        "Sex", "Birthdate", "Age", "Category", "Civil Status", "Student/Working",
+        "Contact No.", "Church Member", "Status", "Baptized", "Baptism Date",
+        "Current Address (If living separately)", "Work Type", "Day Off", "Remarks"
+    ]
+    rows = []
+    excel_bytes = b""
+    try:
+        excel_bytes, _ = fetch_live_excel_bytes(spreadsheet_url)
+    except Exception:
+        pass
+
+    if excel_bytes:
+        try:
+            xls = pd.ExcelFile(io.BytesIO(excel_bytes))
+            if "REMOVED & DECEASED MEMBERS" in xls.sheet_names:
+                df_r = pd.read_excel(xls, sheet_name="REMOVED & DECEASED MEMBERS", header=3)
+                df_r.columns = [str(c).strip() for c in df_r.columns]
+                for _, r in df_r.iterrows():
+                    fn_v = str(r.get("Full Name", "") if pd.notna(r.get("Full Name", "")) else "").strip()
+                    if not fn_v or fn_v.lower() == "nan":
+                        continue
+                    p_v = str(r.get("Parish", "") if pd.notna(r.get("Parish", "")) else "").strip()
+                    fid_v = str(r.get("Family ID", r.get("Member / Record ID", "")) if pd.notna(r.get("Family ID", r.get("Member / Record ID", ""))) else "").strip()
+                    st_v = str(r.get("Status", r.get("Reason / Status", "REMOVED")) if pd.notna(r.get("Status", r.get("Reason / Status", "REMOVED"))) else "REMOVED").strip().upper()
+                    rem_v = str(r.get("Remarks", "") if pd.notna(r.get("Remarks", "")) else "").strip()
+                    rows.append({
+                        "Parish": p_v,
+                        "Family ID": fid_v,
+                        "Head of Family": str(r.get("Head of Family", "") if pd.notna(r.get("Head of Family", "")) else "").strip(),
+                        "No.": str(r.get("No.", "1") if pd.notna(r.get("No.", "1")) else "1").strip(),
+                        "Full Name": fn_v,
+                        "Relationship": str(r.get("Relationship", "") if pd.notna(r.get("Relationship", "")) else "").strip(),
+                        "Sex": str(r.get("Sex", "") if pd.notna(r.get("Sex", "")) else "").strip(),
+                        "Birthdate": format_clean_date_str(r.get("Birthdate", "")),
+                        "Age": str(r.get("Age", "") if pd.notna(r.get("Age", "")) else "").strip(),
+                        "Category": str(r.get("Category", "") if pd.notna(r.get("Category", "")) else "").strip(),
+                        "Civil Status": str(r.get("Civil Status", "") if pd.notna(r.get("Civil Status", "")) else "").strip(),
+                        "Student/Working": str(r.get("Student/Working", "") if pd.notna(r.get("Student/Working", "")) else "").strip(),
+                        "Contact No.": str(r.get("Contact No.", "") if pd.notna(r.get("Contact No.", "")) else "").strip(),
+                        "Church Member": "NO",
+                        "Status": st_v,
+                        "Baptized": str(r.get("Baptized", "") if pd.notna(r.get("Baptized", "")) else "").strip(),
+                        "Baptism Date": format_clean_date_str(r.get("Baptism Date", "")),
+                        "Current Address (If living separately)": str(r.get("Current Address (If living separately)", r.get("Address", "")) if pd.notna(r.get("Current Address (If living separately)", r.get("Address", ""))) else "").strip(),
+                        "Work Type": str(r.get("Work Type", "") if pd.notna(r.get("Work Type", "")) else "").strip(),
+                        "Day Off": str(r.get("Day Off", "") if pd.notna(r.get("Day Off", "")) else "").strip(),
+                        "Remarks": rem_v,
+                    })
+        except Exception:
+            pass
+
+    if active_df is not None and not active_df.empty:
+        flagged = active_df[active_df.apply(is_removed_or_deceased_record, axis=1)]
+        for _, r in flagged.iterrows():
+            rows.append(r.to_dict())
+
+    if not rows:
+        return pd.DataFrame(columns=standard_cols)
+    df_rem = pd.DataFrame(rows).drop_duplicates(subset=["Parish", "Family ID", "Full Name"], keep="first")
+    for col in standard_cols:
+        if col not in df_rem.columns:
+            df_rem[col] = ""
+    return df_rem[standard_cols]
 
 def batch_update_members_in_excel_and_sync(
     spreadsheet_url: str,
     edited_rows: list[dict]
 ) -> tuple[bool, str]:
-    """Updates multiple modified member records across Parish Census sheets and HEAD OF FAMILY MASTER in one atomic pass
-    and syncs the updated workbook directly back to Google Drive (CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx)."""
+    """Updates multiple modified member records across Parish Census sheets (including Hongkong OFW columns)
+    and HEAD OF FAMILY MASTER in one atomic pass and syncs back to Google Drive."""
     if not edited_rows:
         return False, "Walang binagong rekord."
     applied_count = 0
     last_msg = ""
     for row_d in edited_rows:
         p_val = str(row_d.get("Parish", "")).strip()
-        fid_val = str(row_d.get("Family ID", "")).strip()
+        fid_val = str(row_d.get("Family ID", row_d.get("Member / Record ID", ""))).strip()
         orig_name = str(row_d.get("_orig_full_name") or row_d.get("Full Name", "")).strip()
         if not p_val or not orig_name:
             continue
         ok_one, last_msg = update_member_in_excel_and_sync(
             spreadsheet_url=spreadsheet_url,
-            parish=p_val,
+            parish_name=p_val,
             family_id=fid_val,
             full_name=orig_name,
             new_status=str(row_d.get("Status", "")).strip(),
@@ -2862,13 +2940,15 @@ def batch_update_members_in_excel_and_sync(
                 "Age": str(row_d.get("Age", "")).strip(),
                 "Category": str(row_d.get("Category", "")).strip(),
                 "Civil Status": str(row_d.get("Civil Status", "")).strip(),
-                "Student/Working": str(row_d.get("Student/Working", "")).strip(),
+                "Student/Working": str(row_d.get("Student/Working", row_d.get("Employment / Work", ""))).strip(),
                 "Contact No.": str(row_d.get("Contact No.", "")).strip(),
-                "Church Member": str(row_d.get("Church Member", "")).strip(),
+                "Church Member": str(row_d.get("Church Member", row_d.get("Church Member Status", ""))).strip(),
                 "Status": str(row_d.get("Status", "")).strip(),
                 "Baptized": str(row_d.get("Baptized", "")).strip(),
                 "Baptism Date": str(row_d.get("Baptism Date", "")).strip(),
-                "Current Address (If living separately)": str(row_d.get("Current Address (If living separately)", "")).strip(),
+                "Current Address (If living separately)": str(row_d.get("Current Address (If living separately)", row_d.get("Address (HK or Philippines)", ""))).strip(),
+                "Work Type": str(row_d.get("Work Type", "")).strip(),
+                "Day Off": str(row_d.get("Day Off", "")).strip(),
                 "Remarks": str(row_d.get("Remarks", "")).strip(),
             }
         )
@@ -2878,9 +2958,12 @@ def batch_update_members_in_excel_and_sync(
     return (applied_count > 0), f"Matagumpay na na-update at na-sync sa Google Drive ang {applied_count} miyembro! ({last_msg})"
 
 def update_member_in_excel_and_sync(
-    spreadsheet_url: str, parish_name: str, family_id: str, full_name: str,
-    new_status: str = None, new_category: str = None, new_remarks: str = None
+    spreadsheet_url: str, parish_name: str = "", family_id: str = "", full_name: str = "",
+    new_status: str = None, new_category: str = None, new_remarks: str = None,
+    parish: str = None, full_edit_payload: dict = None
 ) -> tuple[bool, str]:
+    if parish and not parish_name:
+        parish_name = parish
     try:
         excel_bytes, _ = fetch_live_excel_bytes(spreadsheet_url)
     except Exception:
@@ -2912,6 +2995,12 @@ def update_member_in_excel_and_sync(
             if r_fid.upper() == family_id.strip().upper() and r_fn.upper() == full_name.strip().upper():
                 target_row = r_idx
                 break
+        if target_row is None:
+            for r_idx in range(5, ((ws.max_row or 0) + 1)):
+                r_fn = str(ws.cell(row=r_idx, column=fn_col).value or "").strip()
+                if r_fn.upper() == full_name.strip().upper():
+                    target_row = r_idx
+                    break
 
         if target_row is None:
             return False, f"Hindi nahanap si '{full_name}' ({family_id}) sa sheet ng {parish_name}."
@@ -2930,6 +3019,30 @@ def update_member_in_excel_and_sync(
                 ws.cell(row=target_row, column=cat_col).value = new_category.strip().upper()
         if new_remarks is not None:
             ws.cell(row=target_row, column=rem_col).value = new_remarks.strip()
+
+        if isinstance(full_edit_payload, dict):
+            if full_edit_payload.get("Full Name"):
+                ws.cell(row=target_row, column=fn_col).value = full_edit_payload["Full Name"]
+            if full_edit_payload.get("Sex"):
+                ws.cell(row=target_row, column=headers.get("Sex") or 6).value = full_edit_payload["Sex"].upper()
+            if full_edit_payload.get("Civil Status"):
+                ws.cell(row=target_row, column=headers.get("Civil Status") or 10).value = full_edit_payload["Civil Status"].upper()
+            if full_edit_payload.get("Student/Working"):
+                ws.cell(row=target_row, column=headers.get("Student/Working") or headers.get("Employment / Work") or 11).value = full_edit_payload["Student/Working"]
+            if "Contact No." in full_edit_payload:
+                ws.cell(row=target_row, column=headers.get("Contact No.") or 12).value = full_edit_payload["Contact No."]
+            if full_edit_payload.get("Baptized"):
+                ws.cell(row=target_row, column=headers.get("Baptized") or 15).value = full_edit_payload["Baptized"].upper()
+            if "Current Address (If living separately)" in full_edit_payload:
+                addr_c = headers.get("Current Address (If living separately)") or headers.get("Address (HK or Philippines)") or 17
+                cur_a = ws.cell(row=target_row, column=addr_c).value
+                if parish_name == "HONGKONG PARISH" or not (isinstance(cur_a, str) and cur_a.startswith("=")):
+                    ws.cell(row=target_row, column=addr_c).value = full_edit_payload["Current Address (If living separately)"]
+            if parish_name == "HONGKONG PARISH":
+                if "Work Type" in full_edit_payload:
+                    ws.cell(row=target_row, column=headers.get("Work Type") or 18).value = full_edit_payload["Work Type"]
+                if "Day Off" in full_edit_payload:
+                    ws.cell(row=target_row, column=headers.get("Day Off") or 19).value = full_edit_payload["Day Off"]
 
         out_buf = io.BytesIO()
         wb.save(out_buf)
@@ -2951,15 +3064,191 @@ def _safe_write_cell_preserving_formulas(ws, row_idx: int, col_idx: int, new_val
         return
     ws.cell(row=row_idx, column=col_idx).value = new_value
 
+def _clear_master_row_preserving_formulas(ws_master, row_idx: int, template_row_idx: int = 395):
+    """Clears all non-formula data entry cells in a HEAD OF FAMILY MASTER row while keeping Parish (Col 2) and all formulas intact."""
+    data_cols = [1, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 25, 26, 27, 30, 31, 32, 33, 34, 35, 36]
+    for c_i in data_cols:
+        val = ws_master.cell(row=row_idx, column=c_i).value
+        if not (isinstance(val, str) and val.startswith("=")):
+            ws_master.cell(row=row_idx, column=c_i).value = None
+    # Restore any formula columns if accidentally overwritten
+    formula_cols = [7, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 28, 29, 37, 38, 39]
+    if template_row_idx and template_row_idx <= (ws_master.max_row or 0):
+        for c_f in formula_cols:
+            cur_v = ws_master.cell(row=row_idx, column=c_f).value
+            if not (isinstance(cur_v, str) and cur_v.startswith("=")):
+                tpl_v = ws_master.cell(row=template_row_idx, column=c_f).value
+                if isinstance(tpl_v, str) and tpl_v.startswith("="):
+                    ws_master.cell(row=row_idx, column=c_f).value = tpl_v
+
+def _clear_parish_sheet_row_preserving_formulas(ws_parish, row_idx: int, template_row_idx: int = 45):
+    """Clears all non-formula data entry cells in a Parish Sheet row and restores structured table formulas in Cols 2, 8, 9, 17 if overwritten."""
+    data_cols = [1, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 18, 19, 20]
+    for c_i in data_cols:
+        if c_i <= (ws_parish.max_column or 0):
+            val = ws_parish.cell(row=row_idx, column=c_i).value
+            if not (isinstance(val, str) and val.startswith("=")):
+                ws_parish.cell(row=row_idx, column=c_i).value = None
+    # Restore structured table formulas in Col 2 (Head of Family), Col 8 (Age), Col 9 (Category), Col 17 (Current Address)
+    if template_row_idx and template_row_idx <= (ws_parish.max_row or 0):
+        for c_f in [2, 8, 9, 17]:
+            cur_v = ws_parish.cell(row=row_idx, column=c_f).value
+            if not (isinstance(cur_v, str) and cur_v.startswith("=")):
+                tpl_v = ws_parish.cell(row=template_row_idx, column=c_f).value
+                if isinstance(tpl_v, str) and tpl_v.startswith("="):
+                    ws_parish.cell(row=row_idx, column=c_f).value = tpl_v
+
+def delete_family_or_parish_records_from_excel_and_sync(
+    spreadsheet_url: str,
+    parish_name: str,
+    family_id: str = "",
+    head_of_family: str = "",
+    clear_all_in_parish: bool = False
+) -> tuple[bool, str]:
+    """Deletes a specific Family ID / Head of Family (or all test records in a Parish) from HEAD OF FAMILY MASTER and the Parish Sheet,
+    preserving all background Excel formulas and syncing the cleaned workbook directly to Google Drive."""
+    try:
+        excel_bytes, _ = fetch_live_excel_bytes(spreadsheet_url, force_cloud=True)
+        if not excel_bytes:
+            excel_bytes, _ = fetch_live_excel_bytes(spreadsheet_url, force_cloud=False)
+        if not excel_bytes:
+            return False, "Hindi mabasa ang Excel database."
+        wb = openpyxl.load_workbook(io.BytesIO(excel_bytes))
+    except Exception as e:
+        return False, f"Error sa pagbukas ng Excel: {str(e)}"
+
+    fid_clean = str(family_id or "").strip().upper()
+    hof_clean = str(head_of_family or "").strip().upper()
+    cleared_master = 0
+    cleared_parish = 0
+
+    if "HEAD OF FAMILY MASTER" in wb.sheetnames:
+        ws_m = wb["HEAD OF FAMILY MASTER"]
+        # Find a clean template row in HEAD OF FAMILY MASTER that still has formulas
+        tpl_m_row = None
+        for r_t in range(4, (ws_m.max_row or 0) + 1):
+            v7 = ws_m.cell(row=r_t, column=7).value
+            if isinstance(v7, str) and v7.startswith("="):
+                tpl_m_row = r_t
+                break
+        for r_m in range(4, (ws_m.max_row or 0) + 1):
+            row_p = str(ws_m.cell(row=r_m, column=2).value or "").strip()
+            if not normalize_parish_match(row_p, parish_name):
+                continue
+            r_fid = str(ws_m.cell(row=r_m, column=1).value or "").strip().upper()
+            r_hof = str(ws_m.cell(row=r_m, column=5).value or "").strip().upper()
+            if not r_fid and not r_hof:
+                continue
+            match_del = False
+            if clear_all_in_parish:
+                match_del = True
+            elif fid_clean and r_fid == fid_clean:
+                match_del = True
+            elif hof_clean and r_hof == hof_clean:
+                match_del = True
+            if match_del:
+                _clear_master_row_preserving_formulas(ws_m, r_m, tpl_m_row or 395)
+                cleared_master += 1
+
+    if parish_name in wb.sheetnames:
+        ws_p = wb[parish_name]
+        tpl_p_row = None
+        for r_t in range(20, (ws_p.max_row or 0) + 1):
+            v2 = ws_p.cell(row=r_t, column=2).value
+            v8 = ws_p.cell(row=r_t, column=8).value
+            if isinstance(v2, str) and v2.startswith("=") and isinstance(v8, str) and v8.startswith("="):
+                tpl_p_row = r_t
+                break
+        for r_p in range(5, (ws_p.max_row or 0) + 1):
+            r_fid = str(ws_p.cell(row=r_p, column=1).value or "").strip().upper()
+            r_hof = str(ws_p.cell(row=r_p, column=2).value or "").strip().upper()
+            r_fn = str(ws_p.cell(row=r_p, column=4).value or "").strip().upper()
+            if not r_fid and not r_fn:
+                continue
+            match_del = False
+            if clear_all_in_parish:
+                match_del = True
+            elif fid_clean and r_fid == fid_clean:
+                match_del = True
+            elif hof_clean and (r_hof == hof_clean or r_fn == hof_clean):
+                match_del = True
+            if match_del:
+                _clear_parish_sheet_row_preserving_formulas(ws_p, r_p, tpl_p_row or 45)
+                cleared_parish += 1
+
+    if cleared_master == 0 and cleared_parish == 0:
+        return False, "Walang nakitang tumutugmang record na buburahin."
+
+    out_buf = io.BytesIO()
+    wb.save(out_buf)
+    new_bytes = out_buf.getvalue()
+    ok_sync, sync_msg = sync_excel_bytes_to_drive(new_bytes, spreadsheet_url)
+    st.cache_data.clear()
+    return True, f"Matagumpay na nabura ang {cleared_parish} member row(s) at {cleared_master} master row(s) sa {parish_name}! ({sync_msg})"
+
+def _auto_purge_andabuen_test_santos_records_once(spreadsheet_url: str):
+    """One-time automatic cleanup of the test 'Roberto Santos' records in ANDABUEN PARISH (CTG-AND-FAM-0001 / CTG-AND-FAM-0002 / NAN)
+    requested by the user so the duplicate test records are removed from Google Drive and the local cache."""
+    cfg = load_saved_config()
+    if cfg.get("ANDABUEN_SANTOS_TEST_PURGED_V1"):
+        return
+    try:
+        excel_bytes, _ = fetch_live_excel_bytes(spreadsheet_url, force_cloud=True)
+        if not excel_bytes:
+            excel_bytes, _ = fetch_live_excel_bytes(spreadsheet_url, force_cloud=False)
+        if not excel_bytes:
+            return
+        wb = openpyxl.load_workbook(io.BytesIO(excel_bytes))
+        santos_names = {
+            "ROBERTO SANTOS", "MARIA SANTOS", "JOSHUA SANTOS",
+            "PRINCESS SANTOS", "DANIEL SANTOS", "MICHAEL SANTOS"
+        }
+        changed = False
+        if "HEAD OF FAMILY MASTER" in wb.sheetnames:
+            ws_m = wb["HEAD OF FAMILY MASTER"]
+            tpl_m = 395
+            for r_t in range(360, (ws_m.max_row or 0) + 1):
+                if isinstance(ws_m.cell(r_t, 7).value, str) and str(ws_m.cell(r_t, 7).value).startswith("="):
+                    tpl_m = r_t
+                    break
+            for r_m in range(4, (ws_m.max_row or 0) + 1):
+                rp = str(ws_m.cell(r_m, 2).value or "").strip()
+                rhof = str(ws_m.cell(r_m, 5).value or "").strip().upper()
+                rfid = str(ws_m.cell(r_m, 1).value or "").strip().upper()
+                if normalize_parish_match(rp, "ANDABUEN PARISH") and (rhof in santos_names or rfid in ("NAN", "CTG-AND-FAM-0001", "CTG-AND-FAM-0002")):
+                    _clear_master_row_preserving_formulas(ws_m, r_m, tpl_m)
+                    changed = True
+        if "ANDABUEN PARISH" in wb.sheetnames:
+            ws_a = wb["ANDABUEN PARISH"]
+            tpl_a = 45
+            for r_t in range(25, (ws_a.max_row or 0) + 1):
+                if isinstance(ws_a.cell(r_t, 2).value, str) and str(ws_a.cell(r_t, 2).value).startswith("="):
+                    tpl_a = r_t
+                    break
+            for r_p in range(5, (ws_a.max_row or 0) + 1):
+                rfn = str(ws_a.cell(r_p, 4).value or "").strip().upper()
+                rhof = str(ws_a.cell(r_p, 2).value or "").strip().upper()
+                rfid = str(ws_a.cell(r_p, 1).value or "").strip().upper()
+                if rfn in santos_names or rhof in santos_names or rfid == "NAN":
+                    _clear_parish_sheet_row_preserving_formulas(ws_a, r_p, tpl_a)
+                    changed = True
+        if changed:
+            ob = io.BytesIO()
+            wb.save(ob)
+            sync_excel_bytes_to_drive(ob.getvalue(), spreadsheet_url)
+            st.cache_data.clear()
+        cfg["ANDABUEN_SANTOS_TEST_PURGED_V1"] = True
+        with open(LOCAL_CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
+    except Exception:
+        pass
+
 def append_new_member_to_excel_and_sync(spreadsheet_url: str, member_data: dict, dependents_list: list[dict] = None) -> tuple[bool, str]:
     """
-    Implements the Exact Two-Step Excel Data Workflow:
-    - STEP 1 (HEAD OF FAMILY MASTER): Scans the 50 pre-allocated rows for the target Parish in 'HEAD OF FAMILY MASTER'
-      (where Col B Parish matches, and Col A Family ID & Col E Head of Family are empty).
-      Writes ONLY data entry cells (Family ID, Head of Family, Mobile Number, Address components, Head demographics)
-      and strictly avoids overwriting formula columns (Col G Complete Address, Cols O-X Member Counts, Col AB/AC Age/Category formulas, Cols AK-AM Address Check).
-    - STEP 2 (Parish Sheet Routing): Routes the Head of Family (as Member No. 1) and any dependents (No. 2, 3...)
-      into the first available pre-allocated slot in the target Parish Sheet, preserving pre-allocated row formulas.
+    Implements the Exact Two-Step Excel Data Workflow with STRICT ANTI-DUPLICATE PROTECTION:
+    - If the Head of Family already exists in the target Parish in 'HEAD OF FAMILY MASTER' or the Parish Sheet,
+      reuses their existing Family ID and updates/merges members in-place so duplicate Family IDs (e.g. 0001 & 0002 for the same family) NEVER occur.
+    - Preserves structured Excel formulas in HEAD OF FAMILY MASTER and the Parish Sheet (Col B Head of Family, Col H Age, Col I Category, Col Q Current Address).
     """
     try:
         excel_bytes, _ = fetch_live_excel_bytes(spreadsheet_url)
@@ -2974,103 +3263,132 @@ def append_new_member_to_excel_and_sync(spreadsheet_url: str, member_data: dict,
         if parish_name not in wb.sheetnames:
             return False, f"Wala ang sheet na '{parish_name}' sa Excel."
 
-        raw_fid = str(member_data.get("Family ID", "") or "").strip()
-        if (
-            not raw_fid
-            or raw_fid.upper() in ("NAN", "NONE", "NULL", "AUTO", "-")
-            or raw_fid.upper().endswith("-NEW")
-        ):
-            family_id = generate_next_family_id_for_parish(parish_name, wb=wb)
-        else:
-            family_id = raw_fid.upper()
-        member_data["Family ID"] = family_id
-
-        full_name = str(member_data.get("Full Name", "") or "").strip()
-        rel_val = str(member_data.get("Relationship", "HEAD OF FAMILY") or "HEAD OF FAMILY").strip().upper()
-        head_name = str(member_data.get("Head of Family", "") or "").strip() or full_name
+        full_name = _clean_cell_str(member_data.get("Full Name", ""))
+        rel_val = _clean_cell_str(member_data.get("Relationship", "HEAD OF FAMILY")).upper() or "HEAD OF FAMILY"
+        head_name = _clean_cell_str(member_data.get("Head of Family", "")) or full_name
         member_data["Head of Family"] = head_name
+
+        raw_fid = _clean_cell_str(member_data.get("Family ID", "")).upper()
+        if raw_fid in ("NAN", "NONE", "NULL", "AUTO", "-") or raw_fid.endswith("-NEW"):
+            raw_fid = ""
+
+        # =================================================================
+        # STRICT ANTI-DUPLICATE CHECK: Check if Head of Family already exists in this Parish!
+        # =================================================================
+        existing_fid_for_head = ""
+        master_slot_row = None
+        master_already_exists = False
+
+        if "HEAD OF FAMILY MASTER" in wb.sheetnames:
+            ws_master = wb["HEAD OF FAMILY MASTER"]
+            for r_m in range(4, (ws_master.max_row or 0) + 1):
+                row_parish = _clean_cell_str(ws_master.cell(row=r_m, column=2).value)
+                ex_fid = _clean_cell_str(ws_master.cell(row=r_m, column=1).value)
+                ex_hof = _clean_cell_str(ws_master.cell(row=r_m, column=5).value)
+                if normalize_parish_match(row_parish, parish_name):
+                    if ex_hof and head_name and ex_hof.upper() == head_name.upper():
+                        existing_fid_for_head = ex_fid.upper() if ex_fid else ""
+                        master_slot_row = r_m
+                        master_already_exists = True
+                        break
+                    if raw_fid and ex_fid and ex_fid.upper() == raw_fid:
+                        existing_fid_for_head = ex_fid.upper()
+                        master_slot_row = r_m
+                        master_already_exists = True
+                        break
+
+        ws = wb[parish_name]
+        if not existing_fid_for_head:
+            for r_p in range(5, (ws.max_row or 0) + 1):
+                p_fid = _clean_cell_str(ws.cell(row=r_p, column=1).value)
+                p_fn = _clean_cell_str(ws.cell(row=r_p, column=4).value)
+                p_rel = _clean_cell_str(ws.cell(row=r_p, column=5).value).upper()
+                if p_fn and head_name and p_fn.upper() == head_name.upper() and p_fid.upper().startswith("CTG-"):
+                    existing_fid_for_head = p_fid.upper()
+                    break
+
+        if existing_fid_for_head:
+            family_id = existing_fid_for_head
+        elif raw_fid and raw_fid.startswith("CTG-"):
+            family_id = raw_fid
+        else:
+            family_id = generate_next_family_id_for_parish(parish_name, wb=wb)
+
+        member_data["Family ID"] = family_id
 
         # =================================================================
         # STEP 1: HEAD OF FAMILY MASTER (Pre-allocated 50 slots per Parish)
         # =================================================================
-        master_slot_row = None
-        master_already_exists = False
         if "HEAD OF FAMILY MASTER" in wb.sheetnames:
             ws_master = wb["HEAD OF FAMILY MASTER"]
-            # Check if Family ID already exists in HEAD OF FAMILY MASTER
-            for r_m in range(4, ((ws_master.max_row or 0) + 1)):
-                ex_fid = str(ws_master.cell(row=r_m, column=1).value or "").strip()
-                if ex_fid.upper() == family_id.upper():
-                    master_slot_row = r_m
-                    master_already_exists = True
-                    break
-
-            # If Family ID is not yet in HEAD OF FAMILY MASTER, find the first empty slot in this Parish's 50-row block
-            if not master_already_exists:
-                for r_m in range(4, ((ws_master.max_row or 0) + 1)):
-                    row_parish = str(ws_master.cell(row=r_m, column=2).value or "").strip()
-                    ex_fid = str(ws_master.cell(row=r_m, column=1).value or "").strip()
-                    ex_hof = str(ws_master.cell(row=r_m, column=5).value or "").strip()
+            if master_slot_row is None:
+                for r_m in range(4, (ws_master.max_row or 0) + 1):
+                    ex_fid = _clean_cell_str(ws_master.cell(row=r_m, column=1).value)
+                    if ex_fid.upper() == family_id.upper():
+                        master_slot_row = r_m
+                        master_already_exists = True
+                        break
+            if master_slot_row is None:
+                for r_m in range(4, (ws_master.max_row or 0) + 1):
+                    row_parish = _clean_cell_str(ws_master.cell(row=r_m, column=2).value)
+                    ex_fid = _clean_cell_str(ws_master.cell(row=r_m, column=1).value)
+                    ex_hof = _clean_cell_str(ws_master.cell(row=r_m, column=5).value)
                     if normalize_parish_match(row_parish, parish_name) and not ex_fid and not ex_hof:
                         master_slot_row = r_m
                         break
 
             if master_slot_row is not None and (not master_already_exists or rel_val == "HEAD OF FAMILY"):
-                # Safe Writing into non-formula data entry cells of HEAD OF FAMILY MASTER:
-                # Col 1 (A): Family ID, Col 2 (B): Parish, Col 3 (C): Area/Zone, Col 4 (D): Cell Group,
-                # Col 5 (E): Head of Family, Col 6 (F): Mobile Number, Col 8 (H): Barangay,
-                # Col 9 (I): City/Municipality, Col 10 (J): Province / Area, Col 11 (K): ZIP Code,
-                # Col 12 (L): Emergency Contact Name, Col 13 (M): Emergency Relationship, Col 14 (N): Emergency Contact Number,
-                # Col 25 (Y): Head Relationship, Col 26 (Z): Head Sex, Col 27 (AA): Head Birthdate,
-                # Col 30 (AD): Head Civil Status, Col 31 (AE): Head Student/Working, Col 32 (AF): Head Church Member Status,
-                # Col 33 (AG): Head Baptized, Col 34 (AH): Head Baptism Date, Col 35 (AI): House / Street / Purok,
-                # Col 36 (AJ): Manual / Previous Full Address
                 ws_master.cell(row=master_slot_row, column=1).value = family_id
-                if not str(ws_master.cell(row=master_slot_row, column=2).value or "").strip():
+                if not _clean_cell_str(ws_master.cell(row=master_slot_row, column=2).value):
                     ws_master.cell(row=master_slot_row, column=2).value = parish_name
-                _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 3, member_data.get("Area/Zone", ""))
-                _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 4, member_data.get("Cell Group", ""))
+                _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 3, _clean_cell_str(member_data.get("Area/Zone", "")))
+                _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 4, _clean_cell_str(member_data.get("Cell Group", "")))
                 ws_master.cell(row=master_slot_row, column=5).value = head_name
-                _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 6, member_data.get("Contact No.", ""))
-                _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 8, member_data.get("Barangay", ""))
-                _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 9, member_data.get("City/Municipality", ""))
-                _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 10, member_data.get("Province / Area", ""))
-                _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 11, member_data.get("ZIP Code", ""))
-                _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 12, member_data.get("Emergency Contact Name", ""))
-                _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 13, member_data.get("Emergency Relationship", ""))
-                _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 14, member_data.get("Emergency Contact Number", ""))
+                _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 6, _clean_cell_str(member_data.get("Contact No.", "")))
+                _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 8, _clean_cell_str(member_data.get("Barangay", "")))
+                _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 9, _clean_cell_str(member_data.get("City/Municipality", "")))
+                _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 10, _clean_cell_str(member_data.get("Province / Area", "")))
+                _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 11, _clean_cell_str(member_data.get("ZIP Code", "")))
+                _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 12, _clean_cell_str(member_data.get("Emergency Contact Name", "")))
+                _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 13, _clean_cell_str(member_data.get("Emergency Relationship", "")))
+                _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 14, _clean_cell_str(member_data.get("Emergency Contact Number", "")))
 
                 if rel_val == "HEAD OF FAMILY":
                     _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 25, "HEAD OF FAMILY")
-                    _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 26, member_data.get("Sex", ""))
-                    bdate_in = member_data.get("Birthdate", "")
+                    _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 26, _clean_cell_str(member_data.get("Sex", "")))
+                    bdate_in = _clean_cell_str(member_data.get("Birthdate", ""))
                     if bdate_in:
                         try:
                             ws_master.cell(row=master_slot_row, column=27).value = pd.to_datetime(bdate_in).to_pydatetime()
+                            ws_master.cell(row=master_slot_row, column=27).number_format = "yyyy-mm-dd"
                         except Exception:
                             ws_master.cell(row=master_slot_row, column=27).value = str(bdate_in)
-                    _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 30, member_data.get("Civil Status", ""))
-                    _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 31, member_data.get("Student/Working", ""))
-                    cm_val = member_data.get("Church Member", "YES")
-                    _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 32, cm_val)
-                    _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 33, member_data.get("Baptized", "YES"))
-                    bap_d = member_data.get("Baptism Date", "")
+                    _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 30, _clean_cell_str(member_data.get("Civil Status", "")))
+                    _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 31, _clean_cell_str(member_data.get("Student/Working", "")))
+                    _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 32, _clean_cell_str(member_data.get("Church Member", "YES")) or "YES")
+                    _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 33, _clean_cell_str(member_data.get("Baptized", "YES")) or "YES")
+                    bap_d = _clean_cell_str(member_data.get("Baptism Date", ""))
                     if bap_d:
                         try:
                             ws_master.cell(row=master_slot_row, column=34).value = pd.to_datetime(bap_d).to_pydatetime()
+                            ws_master.cell(row=master_slot_row, column=34).number_format = "yyyy-mm-dd"
                         except Exception:
                             ws_master.cell(row=master_slot_row, column=34).value = str(bap_d)
 
-                _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 35, member_data.get("House / Street / Purok", ""))
-                manual_addr = member_data.get("Manual / Previous Full Address", "") or member_data.get("Current Address (If living separately)", "")
+                house_st = _clean_cell_str(member_data.get("House / Street / Purok", ""))
+                _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 35, house_st)
+                addr_parts = [x for x in [house_st, _clean_cell_str(member_data.get("Barangay", "")), _clean_cell_str(member_data.get("City/Municipality", "")), _clean_cell_str(member_data.get("Province / Area", ""))] if x]
+                composed_household_addr = ", ".join(addr_parts)
+                manual_addr = _clean_cell_str(member_data.get("Manual / Previous Full Address", "")) or composed_household_addr or _clean_cell_str(member_data.get("Current Address (If living separately)", ""))
+                if manual_addr.upper() == "SAME ADDRESS":
+                    manual_addr = composed_household_addr
                 _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 36, manual_addr)
 
         # =================================================================
-        # STEP 2: PARISH SHEET ROUTING (Head of Family No. 1 + Dependents)
+        # STEP 2: PARISH SHEET ROUTING (In-place update if member exists, never duplicates!)
         # =================================================================
-        ws = wb[parish_name]
         headers = {}
-        for col_idx in range(1, ((ws.max_column or 0) + 1)):
+        for col_idx in range(1, (ws.max_column or 0) + 1):
             val = ws.cell(row=4, column=col_idx).value
             if val:
                 headers[str(val).strip()] = col_idx
@@ -3092,125 +3410,191 @@ def append_new_member_to_excel_and_sync(spreadsheet_url: str, member_data: dict,
         bap_col = headers.get("Baptized") or 15
         bapd_col = headers.get("Baptism Date") or 16
         addr_col = headers.get("Current Address (If living separately)") or headers.get("Address (HK or Philippines)") or 17
+        wt_col = headers.get("Work Type") or 18
+        do_col = headers.get("Day Off") or 19
         rem_col = headers.get("Remarks") or (20 if parish_name == "HONGKONG PARISH" else 18)
-
-        # Count how many members already exist for this Family ID in the Parish Sheet
-        existing_family_members = 0
-        for r_idx in range(5, ((ws.max_row or 0) + 1)):
-            v_fid = str(ws.cell(row=r_idx, column=fid_col).value or "").strip()
-            v_fn = str(ws.cell(row=r_idx, column=fn_col).value or "").strip()
-            if v_fid.upper() == family_id.upper() and v_fn:
-                existing_family_members += 1
 
         records_to_insert = [member_data]
         if dependents_list:
             for dep in dependents_list:
-                if isinstance(dep, dict) and str(dep.get("Full Name", "")).strip():
+                if isinstance(dep, dict) and _clean_cell_str(dep.get("Full Name", "")):
                     dep_copy = dep.copy()
                     dep_copy["Parish"] = parish_name
                     dep_copy["Family ID"] = family_id
                     dep_copy["Head of Family"] = head_name
                     records_to_insert.append(dep_copy)
 
-        inserted_rows_info = []
-        for idx_rec, rec in enumerate(records_to_insert):
-            insert_row = None
-            for r_idx in range(5, ((ws.max_row or 0) + 1)):
-                v_fid = str(ws.cell(row=r_idx, column=fid_col).value or "").strip()
-                v_fn = str(ws.cell(row=r_idx, column=fn_col).value or "").strip()
-                if not v_fid and not v_fn:
-                    insert_row = r_idx
-                    break
-            if insert_row is None:
-                insert_row = ((ws.max_row or 0) + 1)
+        # Deduplicate records_to_insert by Full Name within the same batch
+        seen_names_in_batch = set()
+        unique_records_to_insert = []
+        for rec_item in records_to_insert:
+            fn_key = _clean_cell_str(rec_item.get("Full Name", "")).upper()
+            if fn_key and fn_key not in seen_names_in_batch:
+                seen_names_in_batch.add(fn_key)
+                unique_records_to_insert.append(rec_item)
 
-            rec_rel = str(rec.get("Relationship", "HEAD OF FAMILY" if idx_rec == 0 else "DEPENDENT") or "").strip().upper()
-            raw_no_v = str(rec.get("No.", "") or "").strip()
-            if raw_no_v and raw_no_v.lower() not in ("nan", "none", ""):
+        # Map existing members of this Family ID in the Parish Sheet so we update in-place instead of duplicating
+        existing_member_row_map = {}
+        existing_family_members = 0
+        for r_idx in range(5, (ws.max_row or 0) + 1):
+            v_fid = _clean_cell_str(ws.cell(row=r_idx, column=fid_col).value).upper()
+            v_fn = _clean_cell_str(ws.cell(row=r_idx, column=fn_col).value)
+            if v_fid == family_id.upper() and v_fn:
+                existing_family_members += 1
+                existing_member_row_map[v_fn.upper()] = r_idx
+
+        inserted_rows_info = []
+        for idx_rec, rec in enumerate(unique_records_to_insert):
+            rec_fn = _clean_cell_str(rec.get("Full Name", ""))
+            if not rec_fn:
+                continue
+            if rec_fn.upper() in existing_member_row_map:
+                insert_row = existing_member_row_map[rec_fn.upper()]
+            else:
+                insert_row = None
+                for r_idx in range(5, (ws.max_row or 0) + 1):
+                    v_fid = _clean_cell_str(ws.cell(row=r_idx, column=fid_col).value)
+                    v_fn = _clean_cell_str(ws.cell(row=r_idx, column=fn_col).value)
+                    if not v_fid and not v_fn:
+                        insert_row = r_idx
+                        break
+                if insert_row is None:
+                    insert_row = (ws.max_row or 0) + 1
+                existing_member_row_map[rec_fn.upper()] = insert_row
+
+            rec_rel = _clean_cell_str(rec.get("Relationship", "HEAD OF FAMILY" if idx_rec == 0 else "DEPENDENT")).upper() or "HEAD OF FAMILY"
+            raw_no_v = _clean_cell_str(rec.get("No.", ""))
+            if raw_no_v:
                 try:
                     member_no = int(float(raw_no_v))
                 except Exception:
-                    member_no = existing_family_members + idx_rec + 1
-            elif rec_rel == "HEAD OF FAMILY" and existing_family_members == 0 and idx_rec == 0:
-                member_no = 1
+                    member_no = idx_rec + 1
             else:
-                member_no = existing_family_members + idx_rec + 1
+                member_no = idx_rec + 1
 
             ws.cell(row=insert_row, column=fid_col).value = family_id
-            # Preserve Head of Family formula in Col B if present; otherwise write head_name
             _safe_write_cell_preserving_formulas(ws, insert_row, hof_col, head_name, allow_overwrite_formula=False)
             ws.cell(row=insert_row, column=no_col).value = member_no
-            ws.cell(row=insert_row, column=fn_col).value = str(rec.get("Full Name", "")).strip()
+            ws.cell(row=insert_row, column=fn_col).value = rec_fn
             ws.cell(row=insert_row, column=rel_col).value = rec_rel
-            ws.cell(row=insert_row, column=sex_col).value = str(rec.get("Sex", "MALE") or "MALE").strip().upper()
+            ws.cell(row=insert_row, column=sex_col).value = _clean_cell_str(rec.get("Sex", "MALE")).upper() or "MALE"
 
-            bdate_val = str(rec.get("Birthdate", "") or "").strip()
+            bdate_val = _clean_cell_str(rec.get("Birthdate", ""))
             has_valid_bdate = False
             if bdate_val:
                 try:
                     ws.cell(row=insert_row, column=bdate_col).value = pd.to_datetime(bdate_val).to_pydatetime()
+                    ws.cell(row=insert_row, column=bdate_col).number_format = "yyyy-mm-dd"
                     has_valid_bdate = True
                 except Exception:
                     ws.cell(row=insert_row, column=bdate_col).value = bdate_val
 
-            # If no Birthdate was provided, write explicit Age and Category; if Birthdate is provided, let Excel formula compute or write if cell has no formula
-            age_in = str(rec.get("Age", "") or "").strip()
+            age_in = _clean_cell_str(rec.get("Age", ""))
             if age_in:
                 _safe_write_cell_preserving_formulas(ws, insert_row, age_col, int(age_in) if age_in.isdigit() else age_in, allow_overwrite_formula=(not has_valid_bdate))
-            cat_in = str(rec.get("Category", "") or "").strip().upper()
+            cat_in = _clean_cell_str(rec.get("Category", "")).upper()
             if cat_in:
                 _safe_write_cell_preserving_formulas(ws, insert_row, cat_col, cat_in, allow_overwrite_formula=(not has_valid_bdate))
 
-            ws.cell(row=insert_row, column=civ_col).value = str(rec.get("Civil Status", "SINGLE") or "SINGLE").strip().upper()
-            ws.cell(row=insert_row, column=sw_col).value = str(rec.get("Student/Working", "NONE") or "NONE").strip()
-            ws.cell(row=insert_row, column=con_col).value = str(rec.get("Contact No.", "") or "").strip()
+            ws.cell(row=insert_row, column=civ_col).value = _clean_cell_str(rec.get("Civil Status", "SINGLE")).upper() or "SINGLE"
+            ws.cell(row=insert_row, column=sw_col).value = _clean_cell_str(rec.get("Student/Working", "WORKING")) or "WORKING"
+            ws.cell(row=insert_row, column=con_col).value = _clean_cell_str(rec.get("Contact No.", ""))
+            st_val = _clean_cell_str(rec.get("Status", "ACTIVE")).upper() or "ACTIVE"
+            cm_val = _clean_cell_str(rec.get("Church Member", "")).upper()
+            if not cm_val:
+                cm_val = "NO" if "NON" in st_val else "YES"
+            ws.cell(row=insert_row, column=cm_col).value = cm_val
+            ws.cell(row=insert_row, column=st_col).value = st_val
+            ws.cell(row=insert_row, column=bap_col).value = _clean_cell_str(rec.get("Baptized", "YES")).upper() or "YES"
 
-            st_in = str(rec.get("Status", "ACTIVE") or "ACTIVE").strip().upper()
-            cm_in = str(rec.get("Church Member", "") or "").strip().upper()
-            if not cm_in:
-                cm_in = "NO" if "NON" in st_in else "YES"
-            ws.cell(row=insert_row, column=cm_col).value = cm_in
-            ws.cell(row=insert_row, column=st_col).value = st_in
-
-            bap_in = str(rec.get("Baptized", "YES") or "YES").strip().upper()
-            ws.cell(row=insert_row, column=bap_col).value = bap_in
-            bapd_in = str(rec.get("Baptism Date", "") or "").strip()
-            if bapd_in:
+            bapd_val = _clean_cell_str(rec.get("Baptism Date", ""))
+            if bapd_val:
                 try:
-                    ws.cell(row=insert_row, column=bapd_col).value = pd.to_datetime(bapd_in).to_pydatetime()
+                    ws.cell(row=insert_row, column=bapd_col).value = pd.to_datetime(bapd_val).to_pydatetime()
+                    ws.cell(row=insert_row, column=bapd_col).number_format = "yyyy-mm-dd"
                 except Exception:
-                    ws.cell(row=insert_row, column=bapd_col).value = bapd_in
+                    ws.cell(row=insert_row, column=bapd_col).value = bapd_val
 
-            sep_addr = str(rec.get("Current Address (If living separately)", "") or "").strip()
-            if sep_addr:
-                _safe_write_cell_preserving_formulas(ws, insert_row, addr_col, sep_addr, allow_overwrite_formula=(rec_rel != "HEAD OF FAMILY" or master_slot_row is None))
+            # Preserve Col 17 formula if member lives at Same Address; only overwrite Col 17 if living separately (e.g., "Quezon City")
+            cur_addr_in = _clean_cell_str(rec.get("Current Address (If living separately)", ""))
+            house_st_chk = _clean_cell_str(rec.get("House / Street / Purok", ""))
+            is_separate_addr = bool(
+                cur_addr_in
+                and cur_addr_in.upper() != "SAME ADDRESS"
+                and (not house_st_chk or house_st_chk.upper() not in cur_addr_in.upper())
+            )
+            if is_separate_addr:
+                _safe_write_cell_preserving_formulas(ws, insert_row, addr_col, cur_addr_in, allow_overwrite_formula=True)
 
-            rem_in = str(rec.get("Remarks", "") or "").strip()
-            if rem_in:
-                ws.cell(row=insert_row, column=rem_col).value = rem_in
+            # Strip any raw "(Drive File: https://...)" or "(Drive Photo: https://...)" from Remarks so Excel Remarks stays clean
+            raw_rem_in = _clean_cell_str(rec.get("Remarks", ""))
+            clean_rem_excel = re.sub(r"\s*\(Drive\s+(?:File|Photo):\s*https?://[^\)]+\)", "", raw_rem_in, flags=re.I).strip()
+            if parish_name == "HONGKONG PARISH":
+                hk_seq_no = str(max(1, insert_row - 4))
+                ws.cell(row=insert_row, column=no_col).value = int(hk_seq_no)
+                member_no = hk_seq_no
+                if cur_addr_in and cur_addr_in.upper() != "SAME ADDRESS":
+                    ws.cell(row=insert_row, column=addr_col).value = cur_addr_in
+                r_wt = _clean_cell_str(rec.get("Work Type", ""))
+                r_do = _clean_cell_str(rec.get("Day Off", ""))
+                if r_wt:
+                    ws.cell(row=insert_row, column=wt_col).value = r_wt
+                if r_do:
+                    ws.cell(row=insert_row, column=do_col).value = r_do
+            ws.cell(row=insert_row, column=rem_col).value = clean_rem_excel
 
-            inserted_rows_info.append(f"{rec.get('Full Name')} (No. {member_no}, Row {insert_row})")
+            if is_removed_or_deceased_record(rec) and "REMOVED & DECEASED MEMBERS" in wb.sheetnames:
+                ws_rem = wb["REMOVED & DECEASED MEMBERS"]
+                rem_row = None
+                for rr in range(8, (ws_rem.max_row or 0) + 1):
+                    if not ws_rem.cell(row=rr, column=1).value and not ws_rem.cell(row=rr, column=4).value:
+                        rem_row = rr
+                        break
+                if rem_row is None:
+                    rem_row = max(8, (ws_rem.max_row or 0) + 1)
+                ws_rem.cell(row=rem_row, column=1).value = family_id
+                ws_rem.cell(row=rem_row, column=2).value = head_name
+                ws_rem.cell(row=rem_row, column=3).value = member_no
+                ws_rem.cell(row=rem_row, column=4).value = rec_fn
+                ws_rem.cell(row=rem_row, column=5).value = rec_rel
+                ws_rem.cell(row=rem_row, column=6).value = _clean_cell_str(rec.get("Sex", ""))
+                ws_rem.cell(row=rem_row, column=7).value = bdate_val
+                ws_rem.cell(row=rem_row, column=8).value = age_in
+                ws_rem.cell(row=rem_row, column=9).value = cat_in
+                ws_rem.cell(row=rem_row, column=10).value = _clean_cell_str(rec.get("Civil Status", ""))
+                ws_rem.cell(row=rem_row, column=11).value = _clean_cell_str(rec.get("Student/Working", ""))
+                ws_rem.cell(row=rem_row, column=12).value = _clean_cell_str(rec.get("Contact No.", ""))
+                ws_rem.cell(row=rem_row, column=13).value = cm_val
+                ws_rem.cell(row=rem_row, column=14).value = st_val
+                ws_rem.cell(row=rem_row, column=15).value = _clean_cell_str(rec.get("Baptized", ""))
+                ws_rem.cell(row=rem_row, column=16).value = bapd_val
+                ws_rem.cell(row=rem_row, column=17).value = cur_addr_in
+                ws_rem.cell(row=rem_row, column=18).value = f"[{parish_name}] {clean_rem_excel}".strip()
+
+            inserted_rows_info.append(f"{rec_fn} (No. {member_no}, Row {insert_row})")
 
         out_buf = io.BytesIO()
         wb.save(out_buf)
         new_bytes = out_buf.getvalue()
-        for local_f in [LOCAL_EXCEL_CACHE, "CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx", "CTG_HEADS_TOTAL_UPDATED FIXED.xlsx"]:
-            try:
-                with open(local_f, "wb") as f_out:
-                    f_out.write(new_bytes)
-            except Exception:
-                pass
-        ok, sync_msg = sync_excel_bytes_to_drive(new_bytes, spreadsheet_url)
+        ok_sync, sync_msg = sync_excel_bytes_to_drive(new_bytes, spreadsheet_url)
         st.cache_data.clear()
-        master_msg = f"HEAD OF FAMILY MASTER (Row {master_slot_row})" if master_slot_row else "Parish Sheet"
-        return ok, f"Step 1: Saved to {master_msg} | Step 2: Routed to {parish_name} [{', '.join(inserted_rows_info)}]. {sync_msg}"
+        summary_names = ", ".join(inserted_rows_info)
+        dep_cnt = len(unique_records_to_insert) - 1
+        dep_note = f" (+ {dep_cnt} dependents)" if dep_cnt > 0 else ""
+        dup_tag = " [Na-update sa kasalukuyang Family ID — Hindi Nadoble]" if master_already_exists else ""
+        return True, (
+            f"Matagumpay na na-save si {full_name}{dep_note} sa {parish_name} ({family_id}){dup_tag}! "
+            f"Step 1: HEAD OF FAMILY MASTER (Row {master_slot_row or 'N/A'}) | "
+            f"Step 2: {parish_name} [{summary_names}]. {sync_msg}"
+        )
     except Exception as e:
-        return False, f"Updating database, please try again in a few minutes ({str(e)})"
+        return False, f"Updating database, please try again in a few minutes. ({str(e)})"
 
 ACTIVE_SPREADSHEET_URL = load_saved_cloud_url()
 ACTIVE_WEEKLY_FOLDER_URL = load_saved_weekly_folder_url()
 ACTIVE_PARISH_UPLOAD_URL = load_saved_parish_upload_folder_url()
-master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
+master_members_df = pd.DataFrame()
+excel_filename = "CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx"
 
 def clean_notion_id(raw_id: str) -> str:
     if not raw_id:
@@ -3258,7 +3642,7 @@ def extract_notion_property(prop_data: dict) -> str:
         return str(prop_data.get("last_edited_time") or "")
     return ""
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=3600, show_spinner=False)
 def load_notion_crm_data(token: str, db_id: str) -> pd.DataFrame:
     if not token or not db_id:
         return pd.DataFrame()
@@ -3584,6 +3968,7 @@ def search_web_for_answers(search_query: str) -> str:
             continue
     return "Hindi makakonekta sa Web Search sa ngayon."
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def load_internal_chat_messages(sync_cloud: bool = False) -> list:
     messages = []
     if os.path.exists(LOCAL_CHAT_FILE):
@@ -3593,7 +3978,7 @@ def load_internal_chat_messages(sync_cloud: bool = False) -> list:
         except Exception:
             messages = []
 
-    if sync_cloud or not messages:
+    if sync_cloud:
         service = get_google_drive_service()
         if service is not None:
             try:
@@ -3865,6 +4250,13 @@ if st.session_state.get("login_role") != "Master Admin":
     st.session_state.user_role = "Parish Leader"
     st.session_state.assigned_parish = st.session_state.get("login_parish", st.session_state.get("assigned_parish", PARISH_ORDER[0]))
 
+master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
+if not st.session_state.get("_andabuen_purged_session"):
+    st.session_state["_andabuen_purged_session"] = True
+    if not master_members_df.empty and "ROBERTO SANTOS" in master_members_df["Full Name"].astype(str).str.upper().values:
+        _auto_purge_andabuen_test_santos_records_once(ACTIVE_SPREADSHEET_URL)
+        master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
+
 if "custom_secrets" not in st.session_state:
     st.session_state.custom_secrets = {
         "GEMINI_API_KEY": GEMINI_API_KEY, "GEMINI_API_KEY_2": GEMINI_API_KEY_2,
@@ -3914,6 +4306,7 @@ def build_combined_records_df(df_p: pd.DataFrame, df_q: pd.DataFrame, df_co: pd.
         df_out = df_out.sort_values(by="Huling Na-update", ascending=False, ignore_index=True)
     return df_out
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def load_all_ministry_DataFrames():
     n_tok = st.session_state.custom_secrets.get("NOTION_TOKEN", NOTION_TOKEN)
     crm_db = st.session_state.custom_secrets.get("NOTION_CRM_DB_ID", NOTION_CRM_DB_ID)
@@ -4241,6 +4634,7 @@ VERIFIED_POBLACION_JAN_W1_RECORD = {
     "has_data": True
 }
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def load_weekly_monitoring_records() -> dict:
     db = {}
     if os.path.exists(LOCAL_WEEKLY_REPORTS_DB):
@@ -5133,7 +5527,7 @@ def _build_clean_pwr_2027_consolidation_workbook() -> openpyxl.Workbook:
     wb.remove(default_ws)
     return wb
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_pwr_2027_consolidation_workbook_bytes(force_drive: bool = False) -> bytes:
     """Reads cached CTG_PWR_2027_CONSOLIDATION.xlsx in <5ms for zero lag when force_drive=False,
     and pulls fresh bytes from Google Drive when force_drive=True or local cache is missing."""
@@ -7381,7 +7775,12 @@ def build_parish_monitoring_attendance_df(selected_month: str, selected_week: st
             "Date & Time Submitted (PH Time)": f"🇵🇭 As of {get_philippine_datetime_str()}",
         })
 
-    return pd.DataFrame(rows)
+    df_mon_out = pd.DataFrame(rows)
+    if normalize_parish_match(filter_parish, "HONGKONG PARISH") and filter_parish != "Lahat ng Parokya" and not df_mon_out.empty:
+        drop_hk_mon = [c for c in ["Youth Fellowship", "Kids Fellowship"] if c in df_mon_out.columns]
+        if drop_hk_mon:
+            df_mon_out = df_mon_out.drop(columns=drop_hk_mon)
+    return df_mon_out
 
 # 2️⃣ TABLE 2: SUMMARY FOR POSTING PER PARISH (DEFAULT 0 HANGGA'T WALANG DATA MULA SA GOOGLE DRIVE EXCEL)
 def build_summary_for_posting_per_parish_df(parish_name: str, selected_month: str, selected_week: str) -> pd.DataFrame:
@@ -7445,7 +7844,12 @@ def build_summary_for_posting_per_parish_df(parish_name: str, selected_month: st
             "Date & Time Submitted (PH Time)": "✅ Tapos Na" if (has_data and is_week_record_completed(rec)) else ("❌ (No Report)" if is_no_rep else "⏳ Hindi Pa Tapos"),
         }
     ]
-    return pd.DataFrame(rows)
+    df_post_out = pd.DataFrame(rows)
+    if parish_name == "HONGKONG PARISH" and not df_post_out.empty:
+        drop_hk_post = [c for c in ["Youth Fellowship", "Kids Fellowship"] if c in df_post_out.columns]
+        if drop_hk_post:
+            df_post_out = df_post_out.drop(columns=drop_hk_post)
+    return df_post_out
 
 def render_record_style_html_table(df: pd.DataFrame):
     """Nagre-render ng Record-Style HTML Table kung saan nakikita nang buo at naka-wrap ang lahat ng nakasulat na Family Names, Pangalan ng mga Tao, at Remarks nang walang '...' truncation."""
@@ -8282,7 +8686,7 @@ def build_parish_member_attendance_sheet_df(parish_name: str, selected_month: st
                     fn = str(m_row.get("Full Name", "")).strip()
                     if not fn:
                         continue
-                    cat = str(m_row.get("Category", "ADULT")).upper().strip()
+                    cat = "ADULT" if parish_name == "HONGKONG PARISH" else str(m_row.get("Category", "ADULT")).upper().strip()
                     if "KID" in cat or "CHILD" in cat:
                         k_idx += 1
                         kids_list.append({
@@ -8411,11 +8815,18 @@ def build_parish_member_attendance_sheet_df(parish_name: str, selected_month: st
 
     totals_meta = {
         "total_members_say": tot_say,
-        "total_members_y": tot_y,
-        "total_members_k": tot_k,
+        "total_members_y": 0 if parish_name == "HONGKONG PARISH" else tot_y,
+        "total_members_k": 0 if parish_name == "HONGKONG PARISH" else tot_k,
         "report_date": resolve_display_week_date(rec, selected_month, selected_week, int(selected_year) if str(selected_year).isdigit() else 2027)
     }
-    return pd.DataFrame(rows), totals_meta
+    df_mem_out = pd.DataFrame(rows)
+    if parish_name == "HONGKONG PARISH" and not df_mem_out.empty:
+        # Remove YOUTHS and KIDS section header rows and drop Youth Fellowship & Kids Fellowship columns for Hongkong Parish
+        df_mem_out = df_mem_out[~df_mem_out["A.M & P.M Mass"].isin(["YOUTHS", "KIDS"])].copy()
+        drop_hk_cols = [c for c in ["Youth Fellowship", "Kids Fellowship"] if c in df_mem_out.columns]
+        if drop_hk_cols:
+            df_mem_out = df_mem_out.drop(columns=drop_hk_cols)
+    return df_mem_out, totals_meta
 
 OUTREACH_DRIVE_SHEET_35_COLUMNS = [
     "Timestamp",
@@ -8533,6 +8944,7 @@ def _download_drive_spreadsheet_bytes_any_format(sheet_url_or_id: str) -> bytes 
             continue
     return None
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_outreach_drive_spreadsheet_df(sheet_url: str = "") -> tuple[pd.DataFrame, str]:
     """Binabasa ang lahat ng rows mula sa Google Drive Spreadsheet para sa House Visitation, Missionary Work, Indoctrination & Remarks
     (https://docs.google.com/spreadsheets/d/1FZLr3gFvU-YXWJMTrRkOqJ2X0hTAaQ3rRerX9cdUIb8/edit?usp=sharing)."""
@@ -9215,7 +9627,7 @@ def _sync_from_editor_bar():
     if p and p in PARISH_ORDER:
         st.session_state["up_sel_parish"] = p
 
-@st.cache_data(ttl=25, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def auto_poll_drive_weekly_report_changes(target_month: str, target_week: str) -> str:
     """Awtomatikong tinitingnan kung may binago/in-adjust sa Google Drive Weekly Report Excel files
     at kusang ina-update ang datos at attendance list sa app."""
@@ -9396,30 +9808,46 @@ def render_weekly_report_page():
                     v_misa_pr = st.text_input("Misa Preacher:", value=str(cur_rec.get("misa_preacher", "")), key=f"vmip_{f_rev}")
                     v_pam_pr = st.text_input("Pampamilya Preacher:", value=str(cur_rec.get("pampamilya_preacher", "")), key=f"vpap_{f_rev}")
 
-            tm1, tm2, tm3 = st.columns(3)
-            with tm1:
-                v_tot_say = st.number_input("Total Members (Adults+Youths):", min_value=0, value=int(cur_rec.get("total_members_say", 0)) or def_denoms["say"], key=f"vtsay_{f_rev}")
-            with tm2:
-                v_tot_y = st.number_input("Total Youth Members:", min_value=0, value=int(cur_rec.get("total_members_y", 0)) or def_denoms["youth"], key=f"vty_{f_rev}")
-            with tm3:
-                v_tot_k = st.number_input("Total Kids Members:", min_value=0, value=int(cur_rec.get("total_members_k", 0)) or def_denoms["kids"], key=f"vtk_{f_rev}")
+            if v_parish == "HONGKONG PARISH":
+                st.caption("🇭🇰 **Hongkong Parish (OFW Members):** Tanging **Adults / OFW Attendance** lamang ang nire-report (Walang Youth Fellowship at Kids Fellowship).")
+                v_tot_say = st.number_input("Total Members (Adults / OFW):", min_value=0, value=int(cur_rec.get("total_members_say", 0)) or def_denoms["say"], key=f"vtsay_{f_rev}")
+                v_tot_y = 0
+                v_tot_k = 0
+                hk_a1, hk_a2, hk_a3, hk_a4 = st.columns(4)
+                with hk_a1:
+                    m_a = st.number_input("Mass (Adults / OFW):", min_value=0, value=int(cur_rec.get("mass_a", 0)), key=f"vma_{f_rev}")
+                with hk_a2:
+                    p_a = st.number_input("Pampamilya (Adults / OFW):", min_value=0, value=int(cur_rec.get("pampamilya_a", 0)), key=f"vpa_{f_rev}")
+                with hk_a3:
+                    o_a = st.number_input("Online Ministry (Adults / OFW):", min_value=0, value=int(cur_rec.get("online_a", 0)), key=f"voa_{f_rev}")
+                with hk_a4:
+                    ad_a = st.number_input("Adal ti Evangelio (Adults / OFW):", min_value=0, value=int(cur_rec.get("adal_a", 0)), key=f"vada_{f_rev}")
+                m_y, p_y, o_y, y_y, k_k, ad_y = 0, 0, 0, 0, 0, 0
+            else:
+                tm1, tm2, tm3 = st.columns(3)
+                with tm1:
+                    v_tot_say = st.number_input("Total Members (Adults+Youths):", min_value=0, value=int(cur_rec.get("total_members_say", 0)) or def_denoms["say"], key=f"vtsay_{f_rev}")
+                with tm2:
+                    v_tot_y = st.number_input("Total Youth Members:", min_value=0, value=int(cur_rec.get("total_members_y", 0)) or def_denoms["youth"], key=f"vty_{f_rev}")
+                with tm3:
+                    v_tot_k = st.number_input("Total Kids Members:", min_value=0, value=int(cur_rec.get("total_members_k", 0)) or def_denoms["kids"], key=f"vtk_{f_rev}")
 
-            a1, a2, a3, a4, a5 = st.columns(5)
-            with a1:
-                m_a = st.number_input("Mass (Adults A):", min_value=0, value=int(cur_rec.get("mass_a", 0)), key=f"vma_{f_rev}")
-                m_y = st.number_input("Mass (Youth Y):", min_value=0, value=int(cur_rec.get("mass_y", 0)), key=f"vmy_{f_rev}")
-            with a2:
-                p_a = st.number_input("Pampamilya (A):", min_value=0, value=int(cur_rec.get("pampamilya_a", 0)), key=f"vpa_{f_rev}")
-                p_y = st.number_input("Pampamilya (Y):", min_value=0, value=int(cur_rec.get("pampamilya_y", 0)), key=f"vpy_{f_rev}")
-            with a3:
-                o_a = st.number_input("Online Min. (A):", min_value=0, value=int(cur_rec.get("online_a", 0)), key=f"voa_{f_rev}")
-                o_y = st.number_input("Online Min. (Y):", min_value=0, value=int(cur_rec.get("online_y", 0)), key=f"voy_{f_rev}")
-            with a4:
-                y_y = st.number_input("Youth Fell. (Y):", min_value=0, value=int(cur_rec.get("youth_y", 0)), key=f"vyy_{f_rev}")
-                k_k = st.number_input("Kids Fell. (K):", min_value=0, value=int(cur_rec.get("kids_k", 0)), key=f"vkk_{f_rev}")
-            with a5:
-                ad_a = st.number_input("Adal ti Evang. (A):", min_value=0, value=int(cur_rec.get("adal_a", 0)), key=f"vada_{f_rev}")
-                ad_y = st.number_input("Adal ti Evang. (Y):", min_value=0, value=int(cur_rec.get("adal_y", 0)), key=f"vady_{f_rev}")
+                a1, a2, a3, a4, a5 = st.columns(5)
+                with a1:
+                    m_a = st.number_input("Mass (Adults A):", min_value=0, value=int(cur_rec.get("mass_a", 0)), key=f"vma_{f_rev}")
+                    m_y = st.number_input("Mass (Youth Y):", min_value=0, value=int(cur_rec.get("mass_y", 0)), key=f"vmy_{f_rev}")
+                with a2:
+                    p_a = st.number_input("Pampamilya (A):", min_value=0, value=int(cur_rec.get("pampamilya_a", 0)), key=f"vpa_{f_rev}")
+                    p_y = st.number_input("Pampamilya (Y):", min_value=0, value=int(cur_rec.get("pampamilya_y", 0)), key=f"vpy_{f_rev}")
+                with a3:
+                    o_a = st.number_input("Online Min. (A):", min_value=0, value=int(cur_rec.get("online_a", 0)), key=f"voa_{f_rev}")
+                    o_y = st.number_input("Online Min. (Y):", min_value=0, value=int(cur_rec.get("online_y", 0)), key=f"voy_{f_rev}")
+                with a4:
+                    y_y = st.number_input("Youth Fell. (Y):", min_value=0, value=int(cur_rec.get("youth_y", 0)), key=f"vyy_{f_rev}")
+                    k_k = st.number_input("Kids Fell. (K):", min_value=0, value=int(cur_rec.get("kids_k", 0)), key=f"vkk_{f_rev}")
+                with a5:
+                    ad_a = st.number_input("Adal ti Evang. (A):", min_value=0, value=int(cur_rec.get("adal_a", 0)), key=f"vada_{f_rev}")
+                    ad_y = st.number_input("Adal ti Evang. (Y):", min_value=0, value=int(cur_rec.get("adal_y", 0)), key=f"vady_{f_rev}")
 
             parsed_cur_ro = parse_remarks_into_mass_and_outreach(str(cur_rec.get("remarks", "")))
             v_date = st.text_input("Petsa ng Pagsamba / Sabado (MM/DD/YY):", value=default_wk_date, key=f"vdt_{f_rev}")
@@ -10062,8 +10490,13 @@ def render_weekly_report_page():
                                 denoms = get_parish_member_denominators(target_parish)
                                 if int(extracted.get("total_members_say", 0)) <= 0:
                                     extracted["total_members_say"] = denoms["say"]
-                                    extracted["total_members_y"] = denoms["youth"]
-                                    extracted["total_members_k"] = denoms["kids"]
+                                    extracted["total_members_y"] = 0 if target_parish == "HONGKONG PARISH" else denoms["youth"]
+                                    extracted["total_members_k"] = 0 if target_parish == "HONGKONG PARISH" else denoms["kids"]
+                                if target_parish == "HONGKONG PARISH":
+                                    for _hk_z in ["total_members_y", "total_members_k", "mass_y", "pampamilya_y", "online_y", "youth_y", "kids_k", "adal_y"]:
+                                        extracted[_hk_z] = 0
+                                    extracted["youths_records"] = []
+                                    extracted["kids_records"] = []
 
                                 if up_hv.strip() and up_hv.strip() != "0":
                                     extracted["house_visitation"] = up_hv.strip()
@@ -10259,10 +10692,13 @@ def render_weekly_report_page():
     with pwr_tabs_list[3]:
         for m_disp in months_to_display:
             m_disp_weeks = get_weeks_for_month_year(m_disp, int(selected_year))
+            _att_lbl_p4 = "Adults / OFW Attendance — Walang Youth at Kids" if focused_parish_for_sheets == "HONGKONG PARISH" else "Adults/Youths/Kids Attendance"
             st.markdown(
-                f"### 📊 Parish Weekly Report Data (Adults/Youths/Kids Attendance) — `{focused_parish_for_sheets}` ({m_disp.upper()} {selected_year})"
+                f"### 📊 Parish Weekly Report Data ({_att_lbl_p4}) — `{focused_parish_for_sheets}` ({m_disp.upper()} {selected_year})"
             )
-            st.caption(f"Maaari kang pumili ng Linggo ({len(m_disp_weeks)} Weeks sa {m_disp} o Lahat ng Weeks) sa dropdown sa ibaba o sa Top Control Bar upang makita ang listahan ng Attendance ng Adults, Youths, at Kids.")
+            st.caption(
+                f"Maaari kang pumili ng Linggo ({len(m_disp_weeks)} Weeks sa {m_disp} o Lahat ng Weeks) sa dropdown sa ibaba o sa Top Control Bar upang makita ang listahan ng Attendance ({_att_lbl_p4})."
+            )
 
             ms_c1, ms_c2 = st.columns([1.4, 1.4])
             with ms_c1:
@@ -10272,7 +10708,7 @@ def render_weekly_report_page():
                     cur_ms_wk = mem_sheet_week_opts[-1] if show_all_weeks_of_month else m_disp_weeks[0]
                     st.session_state["member_sheet_week_sel"] = cur_ms_wk
                 sel_mem_sheet_wk = st.selectbox(
-                    f"🗓️ Pumili ng Linggo para sa Adults/Youths/Kids Attendance Sheet ({len(m_disp_weeks)} Weeks):",
+                    f"🗓️ Pumili ng Linggo para sa {_att_lbl_p4} Sheet ({len(m_disp_weeks)} Weeks):",
                     mem_sheet_week_opts,
                     key=f"member_sheet_week_sel_{m_disp}" if show_all_months else "member_sheet_week_sel"
                 )
@@ -10287,28 +10723,36 @@ def render_weekly_report_page():
                 st.markdown(f"**📋 {focused_parish_for_sheets} — {mw_item} of {m_disp.upper()} {selected_year} (Date: `{mem_meta['report_date']}`)**")
                 st.dataframe(mem_sheet_df, use_container_width=True, hide_index=True)
 
-                tot_b1, tot_b2, tot_b3 = st.columns(3)
-                with tot_b1:
+                if focused_parish_for_sheets == "HONGKONG PARISH":
                     st.markdown(
                         f"<div class='full-text-card' style='text-align:center;'>"
-                        f"<b>Total Members (Adults+Youths):</b><br><span style='font-size:1.35rem;font-weight:800;color:#10b981;'>{mem_meta['total_members_say']}</span>"
+                        f"<b>Total Members (Adults / OFW — Hongkong Parish):</b><br><span style='font-size:1.35rem;font-weight:800;color:#10b981;'>{mem_meta['total_members_say']}</span>"
                         f"</div>",
                         unsafe_allow_html=True
                     )
-                with tot_b2:
-                    st.markdown(
-                        f"<div class='full-text-card' style='text-align:center;'>"
-                        f"<b>Total Youth Members:</b><br><span style='font-size:1.35rem;font-weight:800;color:#3b82f6;'>{mem_meta['total_members_y']}</span>"
-                        f"</div>",
-                        unsafe_allow_html=True
-                    )
-                with tot_b3:
-                    st.markdown(
-                        f"<div class='full-text-card' style='text-align:center;'>"
-                        f"<b>Total Kids Members:</b><br><span style='font-size:1.35rem;font-weight:800;color:#d97706;'>{mem_meta['total_members_k']}</span>"
-                        f"</div>",
-                        unsafe_allow_html=True
-                    )
+                else:
+                    tot_b1, tot_b2, tot_b3 = st.columns(3)
+                    with tot_b1:
+                        st.markdown(
+                            f"<div class='full-text-card' style='text-align:center;'>"
+                            f"<b>Total Members (Adults+Youths):</b><br><span style='font-size:1.35rem;font-weight:800;color:#10b981;'>{mem_meta['total_members_say']}</span>"
+                            f"</div>",
+                            unsafe_allow_html=True
+                        )
+                    with tot_b2:
+                        st.markdown(
+                            f"<div class='full-text-card' style='text-align:center;'>"
+                            f"<b>Total Youth Members:</b><br><span style='font-size:1.35rem;font-weight:800;color:#3b82f6;'>{mem_meta['total_members_y']}</span>"
+                            f"</div>",
+                            unsafe_allow_html=True
+                        )
+                    with tot_b3:
+                        st.markdown(
+                            f"<div class='full-text-card' style='text-align:center;'>"
+                            f"<b>Total Kids Members:</b><br><span style='font-size:1.35rem;font-weight:800;color:#d97706;'>{mem_meta['total_members_k']}</span>"
+                            f"</div>",
+                            unsafe_allow_html=True
+                        )
             st.divider()
 
     # =====================================================================
@@ -12427,7 +12871,9 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
         all_rem_df = load_removed_and_deceased_sheet_members(ACTIVE_SPREADSHEET_URL, master_members_df)
         removed_deceased_base_df = all_rem_df[all_rem_df["Parish"].apply(lambda p: normalize_parish_match(str(p), selected_parish))].copy() if not all_rem_df.empty else pd.DataFrame()
 
-    family_display_list = ["Lahat ng Family ID"]
+    is_hk_census_view = (selected_parish == "HONGKONG PARISH")
+    id_filter_all_lbl = "Lahat ng Member / Record ID" if is_hk_census_view else "Lahat ng Family ID"
+    family_display_list = [id_filter_all_lbl]
     family_map = {}
     for fid_val, grp in parish_filtered_df.groupby("Family ID", sort=True):
         fid_clean = str(fid_val).strip()
@@ -12435,19 +12881,25 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
             continue
         heads = [str(h).strip() for h in grp["Head of Family"].unique() if str(h).strip() and str(h).strip().lower() != "nan"]
         head_label = heads[0] if heads else str(grp.iloc[0]["Full Name"]).strip()
-        disp_str = f"{fid_clean} — ({head_label}) [{len(grp)} miyembro]"
+        disp_str = f"{fid_clean} — {head_label}" if is_hk_census_view else f"{fid_clean} — ({head_label}) [{len(grp)} miyembro]"
         family_display_list.append(disp_str)
         family_map[disp_str] = fid_clean
 
     with col_f:
-        selected_family_disp = st.selectbox("2. Pumili ng Family ID:", family_display_list)
+        selected_family_disp = st.selectbox(
+            "2. Pumili ng Member / Record ID (OFW):" if is_hk_census_view else "2. Pumili ng Family ID:",
+            family_display_list
+        )
         selected_family_id = family_map.get(selected_family_disp, "Lahat ng Family ID")
 
     with col_s:
         keyword_search = st.text_input(
-            "3. 🔍 Search Family ID o Full Name:",
-            placeholder="Hal. CTG-LN-FAM-0001 o Juan Reyes"
+            "3. 🔍 Search Member / Record ID o Full Name:" if is_hk_census_view else "3. 🔍 Search Family ID o Full Name:",
+            placeholder="Hal. CTG-HK-FAM-0001 o Maria Dela Cruz" if is_hk_census_view else "Hal. CTG-LN-FAM-0001 o Juan Reyes"
         ).strip()
+
+    if is_hk_census_view:
+        st.info("🇭🇰 **HONG KONG PARISH - OFW MEMBERS (`LIST OF MEMBERS - HONGKONG PARISH`):** Individual OFW records (Member / Record ID, Employment / Work, Address HK/PH, Work Type, Day Off, Remarks — Walang Youth at Kids).")
 
     c_opt1, c_opt2, c_opt3, c_opt4 = st.columns([2.1, 1.15, 0.95, 0.95])
     with c_opt1:
@@ -12534,18 +12986,23 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
 
     # Top Summary Metrics (st.metric)
     m1, m2, m3, m4, m5, m6 = st.columns(6)
-    m1.metric("👨‍👩‍👧‍👦 Total Families", total_families)
-    m2.metric("👥 Total Members", len(final_df))
+    m1.metric("🆔 Total OFW Records" if is_hk_census_view else "👨‍👩‍👧‍👦 Total Families", total_families)
+    m2.metric("👥 Total OFW Members" if is_hk_census_view else "👥 Total Members", len(final_df))
     m3.metric("🟢 Total Active", len(df_active_full))
     m4.metric("🟡 Total Inactive", len(df_inactive_full))
     m5.metric("⚪ Non-Members", len(df_non_member_full))
     m6.metric("🔴 Removed & Deceased", len(df_removed_full))
 
-    c_tot1, c_tot2, c_tot3, c_tot4 = st.columns(4)
-    c_tot1.metric("👴 TOTAL SENIORS (Active)", len(df_seniors))
-    c_tot2.metric("🧑 TOTAL ADULTS (Active)", len(df_adults))
-    c_tot3.metric("👦 TOTAL YOUTH (Active)", len(df_youth))
-    c_tot4.metric("👶 TOTAL KIDS (Active)", len(df_kids))
+    if is_hk_census_view:
+        c_tot1, c_tot2 = st.columns(2)
+        c_tot1.metric("👴 TOTAL SENIORS (Active OFW)", len(df_seniors))
+        c_tot2.metric("🧑 TOTAL ADULTS / OFW (Active)", len(df_adults))
+    else:
+        c_tot1, c_tot2, c_tot3, c_tot4 = st.columns(4)
+        c_tot1.metric("👴 TOTAL SENIORS (Active)", len(df_seniors))
+        c_tot2.metric("🧑 TOTAL ADULTS (Active)", len(df_adults))
+        c_tot3.metric("👦 TOTAL YOUTH (Active)", len(df_youth))
+        c_tot4.metric("👶 TOTAL KIDS (Active)", len(df_kids))
 
     is_searching_specific = bool(keyword_search or selected_family_id != "Lahat ng Family ID")
     if is_searching_specific:
@@ -12554,15 +13011,22 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
         if not display_search_df.empty:
             for _, m_row in display_search_df.iterrows():
                 st_badge_color = "#10B981" if "ACTIVE" in str(m_row["Status"]).upper() and "INACTIVE" not in str(m_row["Status"]).upper() else ("#F59E0B" if "INACTIVE" in str(m_row["Status"]).upper() else ("#EF4444" if is_removed_or_deceased_record(m_row) else "#94A3B8"))
+                is_row_hk_card = (str(m_row.get("Parish", "")).strip() == "HONGKONG PARISH")
+                id_lbl_c = "Member / Record ID" if is_row_hk_card else "Family ID"
+                hk_wt_do_line = (
+                    f"🛠️ <b>Work Type:</b> {m_row.get('Work Type', '') or 'N/A'} | 📅 <b>Day Off:</b> {m_row.get('Day Off', '') or 'N/A'}<br>"
+                    if is_row_hk_card else
+                    f"🏠 <b>Head of Family:</b> {m_row['Head of Family'] or 'N/A'} | 👨‍👩‍👧 <b>Relationship:</b> {m_row['Relationship'] or 'N/A'}<br>"
+                )
                 st.markdown(
                     f"<div class='full-text-card' style='border-left: 5px solid {st_badge_color};'>"
                     f"<b>👤 Buong Pangalan: <span style='font-size:1.15em;color:#38BDF8;'>{m_row['Full Name']}</span></b> "
                     f"<span style='background:{st_badge_color};color:#fff;padding:2px 8px;border-radius:12px;font-size:0.8em;font-weight:700;'>{m_row['Status'] or 'N/A'}</span><br>"
-                    f"⛪ <b>Parokya:</b> {m_row['Parish']} | 🆔 <b>Family ID:</b> <code>{m_row['Family ID']}</code> | 🔢 <b>Member No.:</b> {m_row.get('No.', '1')}<br>"
-                    f"🏠 <b>Head of Family:</b> {m_row['Head of Family'] or 'N/A'} | 👨‍👩‍👧 <b>Relationship:</b> {m_row['Relationship'] or 'N/A'} | 💍 <b>Civil Status:</b> {m_row.get('Civil Status', '') or 'N/A'}<br>"
+                    f"⛪ <b>Parokya:</b> {m_row['Parish']} | 🆔 <b>{id_lbl_c}:</b> <code>{m_row['Family ID']}</code> | 🔢 <b>No.:</b> {m_row.get('No.', '1')} | 💍 <b>Civil Status:</b> {m_row.get('Civil Status', '') or 'N/A'}<br>"
+                    f"{hk_wt_do_line}"
                     f"🎂 <b>Birthdate / Age / Sex / Category:</b> {m_row.get('Birthdate', '') or 'N/A'} • {m_row['Age'] or 'N/A'} yrs • {m_row['Sex'] or 'N/A'} • <code>{m_row['Category'] or 'N/A'}</code><br>"
-                    f"💼 <b>Student/Working:</b> {m_row.get('Student/Working', '') or 'N/A'} | ⛪ <b>Church Member:</b> {m_row.get('Church Member', '') or 'N/A'} | 💧 <b>Baptized:</b> {m_row.get('Baptized', '') or 'N/A'} ({m_row.get('Baptism Date', '') or 'N/A'})<br>"
-                    f"📱 <b>Contact No.:</b> {m_row['Contact No.'] or 'N/A'} | 📍 <b>Current Address:</b> {m_row['Current Address (If living separately)'] or 'N/A'}<br>"
+                    f"💼 <b>{'Employment / Work' if is_row_hk_card else 'Student/Working'}:</b> {m_row.get('Student/Working', '') or 'N/A'} | ⛪ <b>Church Member Status:</b> {m_row.get('Church Member', '') or 'N/A'} | 💧 <b>Baptized:</b> {m_row.get('Baptized', '') or 'N/A'} ({m_row.get('Baptism Date', '') or 'N/A'})<br>"
+                    f"📱 <b>Contact No.:</b> {m_row['Contact No.'] or 'N/A'} | 📍 <b>{'Address (HK or Philippines)' if is_row_hk_card else 'Current Address'}:</b> {m_row['Current Address (If living separately)'] or 'N/A'}<br>"
                     f"📝 <b>Remarks:</b> {m_row['Remarks'] or 'Walang espesyal na remarks'}"
                     f"</div>",
                     unsafe_allow_html=True
@@ -12598,8 +13062,30 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
         "Remarks": st.column_config.TextColumn("Remarks", width="large"),
     }
 
+    hk_col_cfg = {
+        "Member / Record ID": st.column_config.TextColumn("Member / Record ID", width="medium"),
+        "No.": st.column_config.TextColumn("No.", width="small"),
+        "Full Name": st.column_config.TextColumn("Full Name", width="medium"),
+        "Sex": st.column_config.TextColumn("Sex", width="small"),
+        "Birthdate": st.column_config.TextColumn("Birthdate", width="small"),
+        "Age": st.column_config.TextColumn("Age", width="small"),
+        "Category": st.column_config.TextColumn("Category", width="small"),
+        "Civil Status": st.column_config.TextColumn("Civil Status", width="small"),
+        "Employment / Work": st.column_config.TextColumn("Employment / Work", width="medium"),
+        "Contact No.": st.column_config.TextColumn("Contact No.", width="medium"),
+        "Church Member Status": st.column_config.TextColumn("Church Member Status", width="small"),
+        "Status": st.column_config.TextColumn("Status", width="small"),
+        "Baptized": st.column_config.TextColumn("Baptized", width="small"),
+        "Baptism Date": st.column_config.TextColumn("Baptism Date", width="small"),
+        "Address (HK or Philippines)": st.column_config.TextColumn("Address (HK or Philippines)", width="large"),
+        "Work Type": st.column_config.TextColumn("Work Type", width="medium"),
+        "Day Off": st.column_config.TextColumn("Day Off", width="medium"),
+        "Remarks": st.column_config.TextColumn("Remarks", width="large"),
+    }
+
     def _render_status_tab_content(df_sub: pd.DataFrame, status_title: str, badge_key: str, banner_type: str, key_sfx: str):
-        df_disp = mask_sensitive_member_dataframe(df_sub, apply_privacy_mask)
+        df_masked = mask_sensitive_member_dataframe(df_sub, apply_privacy_mask)
+        df_disp = format_dataframe_for_parish_display(df_masked, selected_parish)
         if banner_type == "success":
             st.success(f"**{status_title}** — Kabuuang Bilang: **{len(df_disp)}** ({selected_parish})")
         elif banner_type == "warning":
@@ -12622,7 +13108,7 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
                 key=f"dl_csv_{key_sfx}"
             )
         with dl_c2:
-            html_bytes = build_printable_members_html_report(df_disp, status_title, selected_parish)
+            html_bytes = build_printable_members_html_report(df_masked, status_title, selected_parish)
             st.download_button(
                 label=f"🖨️ Download Printable Report ({status_title} HTML/PDF)",
                 data=html_bytes,
@@ -12637,7 +13123,7 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
                 style_member_status_dataframe(df_disp, default_badge=badge_key),
                 use_container_width=True,
                 hide_index=True,
-                column_config=common_col_cfg
+                column_config=(hk_col_cfg if is_hk_census_view else common_col_cfg)
             )
         else:
             st.caption(f"Walang nahanap na rekord sa ilalim ng {status_title}.")
@@ -12666,20 +13152,30 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
     with tab_sum:
         st.markdown("#### 📋 MEMBER STATUS SUMMARY TABLE")
         st.dataframe(summary_df, use_container_width=True, hide_index=True)
-        st.markdown("#### 👥 ACTIVE MEMBERS BY AGE CATEGORY (SENIORS • ADULTS • YOUTH • KIDS)")
-        col_sen, col_adu, col_you, col_kid = st.columns(4)
-        with col_sen:
-            st.markdown(f"<div class='category-header-seniors'>👴 TOTAL SENIORS ({len(df_seniors)})</div>", unsafe_allow_html=True)
-            st.dataframe(df_seniors, use_container_width=True, hide_index=True)
-        with col_adu:
-            st.markdown(f"<div class='category-header-adults'>🧑 TOTAL ADULTS ({len(df_adults)})</div>", unsafe_allow_html=True)
-            st.dataframe(df_adults, use_container_width=True, hide_index=True)
-        with col_you:
-            st.markdown(f"<div class='category-header-youth'>👦 TOTAL YOUTH ({len(df_youth)})</div>", unsafe_allow_html=True)
-            st.dataframe(df_youth, use_container_width=True, hide_index=True)
-        with col_kid:
-            st.markdown(f"<div class='category-header-kids'>👶 TOTAL KIDS ({len(df_kids)})</div>", unsafe_allow_html=True)
-            st.dataframe(df_kids, use_container_width=True, hide_index=True)
+        if is_hk_census_view:
+            st.markdown("#### 👥 ACTIVE OFW MEMBERS BY AGE CATEGORY (SENIORS • ADULTS)")
+            col_sen, col_adu = st.columns(2)
+            with col_sen:
+                st.markdown(f"<div class='category-header-seniors'>👴 TOTAL SENIORS ({len(df_seniors)})</div>", unsafe_allow_html=True)
+                st.dataframe(df_seniors, use_container_width=True, hide_index=True)
+            with col_adu:
+                st.markdown(f"<div class='category-header-adults'>🧑 TOTAL ADULTS / OFW ({len(df_adults)})</div>", unsafe_allow_html=True)
+                st.dataframe(df_adults, use_container_width=True, hide_index=True)
+        else:
+            st.markdown("#### 👥 ACTIVE MEMBERS BY AGE CATEGORY (SENIORS • ADULTS • YOUTH • KIDS)")
+            col_sen, col_adu, col_you, col_kid = st.columns(4)
+            with col_sen:
+                st.markdown(f"<div class='category-header-seniors'>👴 TOTAL SENIORS ({len(df_seniors)})</div>", unsafe_allow_html=True)
+                st.dataframe(df_seniors, use_container_width=True, hide_index=True)
+            with col_adu:
+                st.markdown(f"<div class='category-header-adults'>🧑 TOTAL ADULTS ({len(df_adults)})</div>", unsafe_allow_html=True)
+                st.dataframe(df_adults, use_container_width=True, hide_index=True)
+            with col_you:
+                st.markdown(f"<div class='category-header-youth'>👦 TOTAL YOUTH ({len(df_youth)})</div>", unsafe_allow_html=True)
+                st.dataframe(df_youth, use_container_width=True, hide_index=True)
+            with col_kid:
+                st.markdown(f"<div class='category-header-kids'>👶 TOTAL KIDS ({len(df_kids)})</div>", unsafe_allow_html=True)
+                st.dataframe(df_kids, use_container_width=True, hide_index=True)
 
     st.divider()
 
@@ -12698,12 +13194,20 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
                         st.success(f"✅ Na-update na ang App mula sa Google Drive ({lbl_fresh})!")
                         time.sleep(0.5)
                         st.rerun()
-            edit_cols_order = [
-                "Parish", "Family ID", "Head of Family", "No.", "Full Name", "Relationship",
-                "Sex", "Birthdate", "Age", "Category", "Civil Status", "Student/Working",
-                "Contact No.", "Church Member", "Status", "Baptized", "Baptism Date",
-                "Current Address (If living separately)", "Remarks"
-            ]
+            if is_hk_census_view:
+                edit_cols_order = [
+                    "Parish", "Family ID", "No.", "Full Name",
+                    "Sex", "Birthdate", "Age", "Category", "Civil Status", "Student/Working",
+                    "Contact No.", "Church Member", "Status", "Baptized", "Baptism Date",
+                    "Current Address (If living separately)", "Work Type", "Day Off", "Remarks"
+                ]
+            else:
+                edit_cols_order = [
+                    "Parish", "Family ID", "Head of Family", "No.", "Full Name", "Relationship",
+                    "Sex", "Birthdate", "Age", "Category", "Civil Status", "Student/Working",
+                    "Contact No.", "Church Member", "Status", "Baptized", "Baptism Date",
+                    "Current Address (If living separately)", "Remarks"
+                ]
             avail_edit_cols = [c for c in edit_cols_order if c in final_df.columns]
             df_for_live_edit = final_df[avail_edit_cols].copy().reset_index(drop=True)
             edited_census_table = st.data_editor(
@@ -13125,7 +13629,7 @@ def _compute_shared_state_signature() -> str:
 st.session_state["_last_live_sync_sig"] = _compute_shared_state_signature()
 
 if hasattr(st, "fragment"):
-    @st.fragment(run_every="15s")
+    @st.fragment(run_every="1h")
     def _silent_realtime_state_watcher():
         cur_sig = _compute_shared_state_signature()
         prev_sig = st.session_state.get("_last_live_sync_sig", "")
@@ -13135,6 +13639,211 @@ if hasattr(st, "fragment"):
             st.rerun()
 
     _silent_realtime_state_watcher()
+
+def query_weekly_monitoring_reports(search_query: str = "") -> str:
+    """Naghahanap sa 2027 Weekly Reports (Attendance, Liturgical Officers, Preachers, Topics, Outreach, at Remarks) ng mga Parokya."""
+    try:
+        db = load_weekly_monitoring_records()
+        if not db:
+            return "Wala pang naka-save na Weekly Report sa database."
+        q_low = str(search_query or "").strip().lower()
+        lines = []
+        for k, rec in db.items():
+            if not isinstance(rec, dict) or not rec.get("has_data"):
+                continue
+            p_n = rec.get("parish", "")
+            m_n = rec.get("month", "")
+            w_n = rec.get("week", "")
+            summary_str = (
+                f"Parish: {p_n} | Month/Week: {m_n} 2027 ({w_n}) | Date: {rec.get('report_date','')} | "
+                f"Submitted PH Time: {rec.get('submitted_at_ph','')} | "
+                f"Priest: {rec.get('priest','')} | Sakristan: {rec.get('sakristan','')} | "
+                f"Tema Misa: {rec.get('tema_misa','')} | Adal Topic: {rec.get('adal_evangelio','')} | "
+                f"Mass(A:{rec.get('mass_a',0)}, Y:{rec.get('mass_y',0)}) | "
+                f"Pampamilya(A:{rec.get('pampamilya_a',0)}, Y:{rec.get('pampamilya_y',0)}) | "
+                f"Online(A:{rec.get('online_a',0)}, Y:{rec.get('online_y',0)}) | "
+                f"Youth:{rec.get('youth_y',0)} | Kids:{rec.get('kids_k',0)} | "
+                f"Remarks: {rec.get('remarks','')[:180]}"
+            )
+            if not q_low or q_low in summary_str.lower():
+                lines.append(summary_str)
+        if not lines:
+            return f"Walang nahanap na Weekly Report para sa '{search_query}'."
+        return "Mga 2027 Weekly Reports:\n" + "\n".join(lines[:20])
+    except Exception as e:
+        return f"Error sa pagbasa ng Weekly Reports: {str(e)}"
+
+
+def render_ctg_gabay_ai_assistant_section(show_top_banner: bool = True, key_prefix: str = "gabay_ai"):
+    """Renders the official '💬 CTG Gabay AI — Madaling Sundan na Ministry Assistant' interface
+    (used directly on the Home Dashboard and on the dedicated AI Chat Assistant tab)."""
+    if show_top_banner:
+        render_title_with_logo(
+            "💬 CTG Gabay AI — Madaling Sundan na Ministry Assistant",
+            f"Opisyal na AI Assistant ng Church of the Temple of God ({st.session_state.assigned_parish}) • 🇵🇭 {get_philippine_datetime_str()}"
+        )
+    else:
+        render_title_with_logo(
+            "💬 CTG Gabay AI — Madaling Sundan na Ministry Assistant",
+            f"Opisyal na AI Assistant ng Church of the Temple of God ({st.session_state.assigned_parish}) • 🇵🇭 {get_philippine_datetime_str()}"
+        )
+
+    st.markdown(
+        "<div class='full-text-card'>"
+        "<b>🧭 Paano Gamitin ang AI Chat Assistant (3 Madaling Hakbang):</b><br>"
+        "<b>1️⃣ Pumili ng Wika at Mode sa Ibaba</b> (Tagalog, Ilokano, o English).<br>"
+        "<b>2️⃣ Pindutin ang Kahit Aling 'Mabilisang Tanong' Button</b> sa ibaba kung ayaw mong mag-type, O<br>"
+        "<b>3️⃣ Mag-type sa Chat Box sa Pinakababa</b> (hal. <i>'Hanapin si Pacita Agasen'</i> o <i>'Gumawa ng mensahe para sa pagsamba sa Sabado'</i>)."
+        "</div>",
+        unsafe_allow_html=True
+    )
+
+    valid_keys = get_valid_gemini_keys()
+    if not valid_keys:
+        st.warning("Wala pang GEMINI_API_KEY. Mangyaring ilagay ito sa App Settings.")
+        return
+
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+    if "current_model" not in st.session_state:
+        st.session_state.current_model = selected_model
+
+    col_chat_opt1, col_chat_opt2, col_chat_opt3 = st.columns([1.2, 1.6, 0.9])
+    with col_chat_opt1:
+        pref_lang = st.selectbox(
+            "🌐 1. Pumili ng Wika:",
+            ["Tagalog", "Ilokano", "English", "Awto (Kung ano ang tanong)"],
+            index=0,
+            key=f"{key_prefix}_pref_lang"
+        )
+    with col_chat_opt2:
+        assistant_mode = st.selectbox(
+            "🤖 2. Pumili ng Gawain:",
+            [
+                "💬 All-in-One Assistant (Maghanap ng Miyembro, Attendance & Gabay)",
+                "✍️ Gawaan ng Mensahe / Tugon sa Miyembro (AI Draft Generator)"
+            ],
+            index=0,
+            key=f"{key_prefix}_assistant_mode"
+        )
+    with col_chat_opt3:
+        st.write("")
+        if st.button("🧹 Burahin ang Usapan", use_container_width=True, key=f"{key_prefix}_clear_btn"):
+            st.session_state.messages = []
+            st.session_state.pop("chat_session", None)
+            st.rerun()
+
+    st.markdown("##### ⚡ Mabilisang Tanong (Pindutin lang ang button para sumagot agad ang AI):")
+    qb1, qb2, qb3 = st.columns(3)
+    qb4, qb5, qb6 = st.columns(3)
+    quick_clicked_prompt = None
+    with qb1:
+        if st.button("📊 Buod ng Weekly Report & Attendance", use_container_width=True, key=f"{key_prefix}_qb1"):
+            quick_clicked_prompt = f"Ipakita ang malinaw na buod ng pinakahuling Weekly Report, Attendance, at Liturgical Officers para sa {st.session_state.assigned_parish}."
+    with qb2:
+        if st.button("👥 Ilan ang Active Members sa Census?", use_container_width=True, key=f"{key_prefix}_qb2"):
+            quick_clicked_prompt = f"Ipakita ang bilang ng Active Members (Seniors, Adults, Youth, Kids) sa {st.session_state.assigned_parish} mula sa Excel Census."
+    with qb3:
+        if st.button("✉️ Imbitasyon sa Pagsamba ngayong Sabado", use_container_width=True, key=f"{key_prefix}_qb3"):
+            quick_clicked_prompt = f"Gumawa ng maikli, magalang, at nakaka-inspire na mensahe ng paanyaya para sa ating pagsamba ngayong Sabado sa Church of the Temple of God ({st.session_state.assigned_parish})."
+    with qb4:
+        if st.button("🙏 Panalangin & Comforting Bible Verse", use_container_width=True, key=f"{key_prefix}_qb4"):
+            quick_clicked_prompt = "Magbigay ng isang nakaka-comfort na Bible verse at maikling panalangin para sa pamilyang dumadaan sa pagsubok."
+    with qb5:
+        if st.button("📥 Tingnan ang Pending Requests sa Inbox", use_container_width=True, key=f"{key_prefix}_qb5"):
+            quick_clicked_prompt = f"Ano ang mga kasalukuyang Prayer Requests, Questions, o Counselling sa Notion CRM para sa {st.session_state.assigned_parish}?"
+    with qb6:
+        if st.button("🏠 Gabay sa House Visitation & Outreach", use_container_width=True, key=f"{key_prefix}_qb6"):
+            quick_clicked_prompt = "Magbigay ng 5 madaling hakbang at gabay para sa aming House Visitation (10 families requirement) at Missionary Work ngayong linggo."
+
+    lang_rule = "Sumagot gamit ang wikang ginamit ng nagtatanong." if "Awto" in pref_lang else f"Sumagot nang buo sa wikang {pref_lang}."
+    sys_inst = (
+        f"Ikaw si CTG Gabay AI, ang opisyal, magalang, at napakadaling sundan na AI assistant ng Church of the Temple of God (CTG) "
+        f"para sa parokya ng {st.session_state.assigned_parish}. Tandaan na ang opisyal na pangalan ng simbahan ay "
+        f"'Church of the Temple of God' at ang araw ng pagsamba at pangunahing pagtitipon (Worship / Sabbath Service) ay tuwing SABADO (Saturday).\n"
+        f"- {lang_rule}\n"
+        f"- Isulat ang iyong sagot sa malinaw na bullet points o numbered steps (1, 2, 3) upang hindi mahirapan ang mga users sa pagbasa sa cellphone, tablet, o computer.\n"
+        f"- Gamitin ang `query_excel_database` kapag naghahanap ng miyembro o Family ID sa Excel Census.\n"
+        f"- Gamitin ang `query_weekly_monitoring_reports` kapag tinatanong ang 2027 Weekly Reports, Attendance, Officers, o Remarks.\n"
+        f"- Gamitin ang `query_notion_crm` kapag tinatanong ang Prayer Requests, Questions, Counselling, o Visitors sa Notion.\n"
+        f"- Gamitin ang `search_web_for_answers` para sa real-time internet facts."
+    )
+
+    def resolve_callable_gemini_model(requested_model: str) -> str:
+        if requested_model == "gemini-3.8-flash":
+            return "gemini-2.5-flash"
+        return requested_model or "gemini-2.5-flash"
+
+    def create_chat(api_key, model_name):
+        client = genai.Client(api_key=api_key)
+        actual_m = resolve_callable_gemini_model(model_name)
+        return client.chats.create(
+            model=actual_m,
+            config=types.GenerateContentConfig(
+                system_instruction=sys_inst,
+                tools=[query_excel_database, query_weekly_monitoring_reports, query_notion_crm, send_email_via_gmail, search_web_for_answers],
+                temperature=0.3
+            )
+        )
+
+    if "chat_session" not in st.session_state or st.session_state.current_model != selected_model:
+        st.session_state.current_model = selected_model
+        st.session_state.chat_session = create_chat(valid_keys[0], selected_model)
+
+    def stream_chat_response(prompt_text: str):
+        final_prompt = prompt_text
+        if "Gawaan ng Mensahe" in assistant_mode or "AI Draft" in assistant_mode:
+            final_prompt = (
+                f"Gumawa ng opisyal, malinaw, at magalang na AI Draft Answer / Mensahe mula sa Church of the Temple of God ({st.session_state.assigned_parish}) "
+                f"(kung saan ang araw ng pagsamba ay tuwing Sabado / Saturday) na may kasamang Bible verse at comforting message para dito ({lang_rule}):\n\n{prompt_text}"
+            )
+        elif "Awto" not in pref_lang:
+            final_prompt = f"[Sagutin nang malinaw at madaling sundan sa wikang {pref_lang}] {prompt_text}"
+
+        try:
+            for chunk in st.session_state.chat_session.send_message_stream(final_prompt):
+                if chunk.text:
+                    yield chunk.text
+            return
+        except Exception:
+            pass
+
+        for backup_key in valid_keys:
+            for fallback_m in ["gemini-2.5-flash", resolve_callable_gemini_model(selected_model)]:
+                try:
+                    st.session_state.chat_session = create_chat(backup_key, fallback_m)
+                    for chunk in st.session_state.chat_session.send_message_stream(final_prompt):
+                        if chunk.text:
+                            yield chunk.text
+                    return
+                except Exception:
+                    continue
+
+        try:
+            client = genai.Client(api_key=valid_keys[0])
+            res = safe_generate_content(client, "gemini-2.5-flash", final_prompt)
+            yield res.text
+        except Exception as e:
+            yield f"⚠️ Paumanhin, nagkaroon ng pansamantalang aberya sa koneksyon: {str(e)}"
+
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    typed_prompt = st.chat_input(
+        "✍️ Mag-type dito ng iyong tanong (hal. 'Hanapin si Pacita Agasen' o 'Gumawa ng panalangin')...",
+        key=f"{key_prefix}_chat_input"
+    )
+    active_prompt = quick_clicked_prompt or typed_prompt
+
+    if active_prompt:
+        st.session_state.messages.append({"role": "user", "content": active_prompt})
+        with st.chat_message("user"):
+            st.markdown(active_prompt)
+        with st.chat_message("assistant"):
+            full_reply = st.write_stream(stream_chat_response(active_prompt))
+            st.session_state.messages.append({"role": "assistant", "content": str(full_reply)})
+
 
 # =====================================================================
 # 📑 WEEKLY REPORT & PARISH MONITORING ROUTE
@@ -13157,50 +13866,7 @@ elif app_mode == "🧭 Parish Leader Portal (Wizard & Summary)":
     )
     render_church_leadership_and_priests_directory(context_key="home_portal")
     st.divider()
-
-    records_master_df = global_records_df
-    p_records = records_master_df[records_master_df["Parokya"].apply(lambda x: normalize_parish_match(x, st.session_state.assigned_parish))] if not records_master_df.empty else pd.DataFrame()
-    pending_p_count = len(p_records[p_records["Status"].str.contains("Assigned", case=False, na=False)]) if not p_records.empty else 0
-
-    st.markdown("### 📋 Daily Action Checklist (Pang-araw-araw na Gabay)")
-    chk1 = st.checkbox(f"1. Mayroon kang ({pending_p_count}) bagong request o panalangin na nakatalaga sa iyong parokya.", value=(pending_p_count > 0))
-    chk2 = st.checkbox("2. I-upload ang Weekly Report (Image o Excel) para sa Sabado (Saturday Service) sa Weekly Report tab.", value=False)
-    chk3 = st.checkbox("3. Buksan ang Ministry Messenger para makipag-ugnayan kay Master Admin o sa ibang Parokya.", value=False)
-
-    col_w0, col_w1, col_w2, col_w3 = st.columns(4)
-    with col_w0:
-        if st.button("📑 Mag-upload ng Weekly Report", type="primary", use_container_width=True):
-            st.session_state.app_mode_override = "📑 Weekly Report & Parish Monitoring"
-            st.rerun()
-    with col_w1:
-        if st.button("👉 Pumunta sa Parish Inbox", use_container_width=True):
-            st.session_state.app_mode_override = "📥 Parish Inbox & Action Hub"
-            st.rerun()
-    with col_w2:
-        if st.button("📊 Buksan ang Parish Census", use_container_width=True):
-            st.session_state.app_mode_override = "📊 Parish Census & Member Manager"
-            st.rerun()
-    with col_w3:
-        if st.button("🗣️ Buksan ang Ministry Messenger", use_container_width=True):
-            st.session_state.app_mode_override = "🗣️ Ministry Messenger (Admin & Users Chat)"
-            st.rerun()
-
-    st.divider()
-    st.markdown("### 🤖 Guided AI Assistant para sa Parish Leader")
-    st.caption("Magtanong dito kung paano kakausapin ang mga miyembro, humingi ng ideya sa Bible study tuwing Sabado, o gabay sa pamumuno.")
-    with st.form("wizard_ai_form"):
-        w_prompt = st.text_input("Magtanong sa CTG Gabay AI:", placeholder="Hal. Paano ko kakausapin ang isang miyembrong matagal nang hindi nakakadalo sa pagsamba tuwing Sabado?")
-        w_submit = st.form_submit_button("Humingi ng Gabay sa AI", use_container_width=True)
-        if w_submit and w_prompt:
-            client = genai.Client(api_key=get_valid_gemini_keys()[0])
-            ans = safe_generate_content(
-                client,
-                selected_model,
-                f"Bilang isang tagapayo sa simbahan ng Church of the Temple of God (CTG) sa parokya ng {st.session_state.assigned_parish} "
-                f"(kung saan ang araw ng pagsamba ay tuwing Sabado / Saturday), sagutin ito nang may malasakit at gabay sa Bibliya sa wikang Tagalog: {w_prompt}"
-            )
-            st.success("Gabay mula sa AI:")
-            st.markdown(ans.text)
+    render_ctg_gabay_ai_assistant_section(show_top_banner=False, key_prefix="home_dashboard_gabay")
     st.stop()
 
 # =====================================================================
@@ -13623,42 +14289,81 @@ def extract_members_from_uploaded_image_or_file(file_bytes: bytes, filename: str
     """
     Extracts structured member registration records from an uploaded physical form image (.jpg, .png)
     using Gemini Vision (gemini-3.8-flash / gemini-2.5-flash via google-genai SDK) or from an Excel/CSV batch file (.xlsx, .csv),
-    supporting the official CTG Physical Family Information Form (Sections I-VIII + Reference Guide codes).
+    supporting both the Philippine Family Information Form and the Hongkong Membership Data Base.xlsx (Individual OFW schema).
     """
     ext = filename.split(".")[-1].lower()
     extracted_list = []
 
     if ext in ["xlsx", "csv"]:
         try:
-            df_in = pd.read_csv(io.BytesIO(file_bytes)) if ext == "csv" else pd.read_excel(io.BytesIO(file_bytes))
+            detected_parish = default_parish
+            if ext == "csv":
+                df_in = pd.read_csv(io.BytesIO(file_bytes))
+            else:
+                xls_up = pd.ExcelFile(io.BytesIO(file_bytes))
+                target_sheet = xls_up.sheet_names[0]
+                if default_parish in xls_up.sheet_names:
+                    target_sheet = default_parish
+                elif "HONGKONG PARISH" in xls_up.sheet_names:
+                    target_sheet = "HONGKONG PARISH"
+                df_raw_top = pd.read_excel(xls_up, sheet_name=target_sheet, header=None, nrows=10)
+                found_hdr_row = 0
+                for r_i_s, r_vals in df_raw_top.iterrows():
+                    row_txts = [str(v).strip() for v in r_vals.values if pd.notna(v)]
+                    joined_upper = " ".join(row_txts).upper()
+                    if "HONG KONG" in joined_upper or "HONGKONG" in joined_upper or "OFW MEMBERS" in joined_upper:
+                        detected_parish = "HONGKONG PARISH"
+                    if any(k in row_txts for k in ["Full Name", "Member / Record ID", "Family ID", "Pangalan"]):
+                        found_hdr_row = r_i_s
+                        break
+                df_in = pd.read_excel(xls_up, sheet_name=target_sheet, header=found_hdr_row)
+
             df_in.columns = [str(c).strip() for c in df_in.columns]
-            for _, r in df_in.iterrows():
+            is_hk_schema = (
+                detected_parish == "HONGKONG PARISH"
+                or "Member / Record ID" in df_in.columns
+                or "Work Type" in df_in.columns
+                or "Day Off" in df_in.columns
+                or "Address (HK or Philippines)" in df_in.columns
+            )
+            if is_hk_schema and default_parish == "HONGKONG PARISH":
+                detected_parish = "HONGKONG PARISH"
+
+            for idx_r, r in df_in.iterrows():
                 fn_v = _clean_cell_str(r.get("Full Name", r.get("Pangalan", r.get("Name", ""))))
-                if not fn_v:
+                if not fn_v or fn_v.upper() in ("FULL NAME", "PANGALAN", "NAME"):
                     continue
-                p_v = _clean_cell_str(r.get("Parish", r.get("Parokya", default_parish))) or default_parish
-                matched_p = default_parish
+                p_v = _clean_cell_str(r.get("Parish", r.get("Parokya", detected_parish))) or detected_parish
+                matched_p = detected_parish
                 for p_cand in PARISH_ORDER:
                     if normalize_parish_match(p_v, p_cand):
                         matched_p = p_cand
                         break
+                is_row_hk = (matched_p == "HONGKONG PARISH") or is_hk_schema
+                hof_val = _clean_cell_str(r.get("Head of Family", fn_v)) or fn_v
+                rel_val = _clean_cell_str(r.get("Relationship", "HEAD OF FAMILY")) or "HEAD OF FAMILY"
+                if is_row_hk:
+                    # In Hongkong Parish, every row is an Individual OFW record
+                    hof_val = fn_v
+                    rel_val = "HEAD OF FAMILY"
+
                 raw_item = {
                     "Parish": matched_p,
                     "Family ID": _clean_cell_str(r.get("Family ID", r.get("Member / Record ID", ""))),
                     "Area/Zone": _clean_cell_str(r.get("Area/Zone", "")),
                     "Cell Group": _clean_cell_str(r.get("Cell Group", "")),
-                    "Head of Family": _clean_cell_str(r.get("Head of Family", fn_v)) or fn_v,
-                    "No.": _clean_cell_str(r.get("No.", "1")) or "1",
+                    "Head of Family": hof_val,
+                    "No.": _clean_cell_str(r.get("No.", str(idx_r + 1 if is_row_hk else 1))) or "1",
                     "Full Name": fn_v,
-                    "Relationship": _clean_cell_str(r.get("Relationship", "HEAD OF FAMILY")) or "HEAD OF FAMILY",
-                    "Sex": _clean_cell_str(r.get("Sex", "MALE")) or "MALE",
+                    "Relationship": rel_val,
+                    "Sex": _clean_cell_str(r.get("Sex", "FEMALE" if is_row_hk else "MALE")) or ("FEMALE" if is_row_hk else "MALE"),
                     "Birthdate": _clean_cell_str(r.get("Birthdate", "")),
                     "Age": _clean_cell_str(r.get("Age", "")),
-                    "Category": _clean_cell_str(r.get("Category", "")),
+                    "Category": _clean_cell_str(r.get("Category", "ADULT" if is_row_hk else "")),
                     "Civil Status": _clean_cell_str(r.get("Civil Status", "SINGLE")) or "SINGLE",
-                    "Student/Working": _clean_cell_str(r.get("Student/Working", r.get("Employment / Work", "WORKING"))) or "WORKING",
+                    "Student/Working": _clean_cell_str(r.get("Employment / Work", r.get("Student/Working", "WORKING"))) or "WORKING",
                     "Contact No.": _clean_cell_str(r.get("Contact No.", r.get("Mobile Number", r.get("Contact Number", "")))),
-                    "Church Member": _clean_cell_str(r.get("Church Member Status", r.get("Church Member", ""))),
+                    "Church Member": _clean_cell_str(r.get("Church Member Status", r.get("Church Member", "YES"))) or "YES",
                     "Status": _clean_cell_str(r.get("Status", "ACTIVE")) or "ACTIVE",
                     "Baptized": _clean_cell_str(r.get("Baptized", "YES")) or "YES",
                     "Baptism Date": _clean_cell_str(r.get("Baptism Date", "")),
@@ -13667,13 +14372,20 @@ def extract_members_from_uploaded_image_or_file(file_bytes: bytes, filename: str
                     "City/Municipality": _clean_cell_str(r.get("City/Municipality", "")),
                     "Province / Area": _clean_cell_str(r.get("Province / Area", r.get("Province", ""))),
                     "ZIP Code": _clean_cell_str(r.get("ZIP Code", "")),
-                    "Current Address (If living separately)": _clean_cell_str(r.get("Current Address (If living separately)", r.get("Complete Address", r.get("Address", "")))),
+                    "Current Address (If living separately)": _clean_cell_str(
+                        r.get("Address (HK or Philippines)", r.get("Current Address (If living separately)", r.get("Complete Address", r.get("Address", ""))))
+                    ),
+                    "Work Type": _clean_cell_str(r.get("Work Type", "")),
+                    "Day Off": _clean_cell_str(r.get("Day Off", "")),
                     "Emergency Contact Name": _clean_cell_str(r.get("Emergency Contact Name", "")),
                     "Emergency Relationship": _clean_cell_str(r.get("Emergency Relationship", "")),
                     "Emergency Contact Number": _clean_cell_str(r.get("Emergency Contact Number", "")),
                     "Remarks": _clean_cell_str(r.get("Remarks", "")),
                 }
-                extracted_list.append(_normalize_ctg_form_codes(raw_item))
+                norm_item = _normalize_ctg_form_codes(raw_item)
+                if is_row_hk and norm_item.get("Category") in ("YOUTH", "KIDS", ""):
+                    norm_item["Category"] = "ADULT"
+                extracted_list.append(norm_item)
             if extracted_list:
                 return extracted_list
         except Exception:
@@ -13805,13 +14517,16 @@ def extract_members_from_uploaded_image_or_file(file_bytes: bytes, filename: str
 if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
     render_title_with_logo(
         "➕ Magdagdag ng Miyembro (2-Step Excel Workflow: HEAD OF FAMILY MASTER + Parish Sheet)",
-        "Step 1: Awtomatikong naglalaan ng Family ID sa pre-allocated 50 slots ng HEAD OF FAMILY MASTER (nang hindi binubura ang mga formula). Step 2: Niru-route ang Head of Family (No. 1) at Dependents (No. 2, 3...) sa Parish Sheet at Google Drive."
+        "Step 1: Awtomatikong naglalaan ng Family ID / Member Record ID sa pre-allocated 50 slots ng HEAD OF FAMILY MASTER. Step 2: Niru-route ang Miyembro o Pamilya sa Parish Sheet at Google Drive."
     )
-    # Strict RBAC: Master Admin can add/upload for all 10 Parishes; Parish Admin is locked to their assigned Parish
     allowed_parishes_add = [st.session_state.assigned_parish] if st.session_state.user_role != "Master Admin" else PARISH_ORDER
 
-    with st.expander("📸 1. Image Upload (Gemini Vision OCR) & Excel/CSV Batch Upload", expanded=True):
-        st.caption("Mag-upload ng physical registration form image (.jpg, .png) para awtomatikong ma-extract ng Gemini API ang JSON at mapunan ang form sa ibaba para ma-review bago i-save, o mag-upload ng Excel/CSV para sa batch upload.")
+    with st.expander("📸 1. One-Click Image / Excel Upload (Auto-Upload sa Parish Drive Folder + Auto-Save sa Excel Database)", expanded=True):
+        st.caption(
+            "Mag-upload ng **Physical Registration Form Image (`.jpg`, `.png`)** o **Excel/CSV (`.xlsx`, `.csv` — kasama ang `Hongkong Membership Data Base.xlsx`)** at pindutin ang **1-Click Upload & Auto-Save**. "
+            "Awtomatikong ilalagay ang file sa Google Drive folder ng Parokya (`CTG MEMBERS DATABASE ALL PARISH`), babasahin ang lahat ng miyembro, "
+            "at direktang ise-save sa `HEAD OF FAMILY MASTER` at `Parish Sheet` nang **walang duplikasyon**."
+        )
         up_c1, up_c2 = st.columns([1.2, 1.8])
         with up_c1:
             def_p_auto = st.selectbox(
@@ -13820,6 +14535,15 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                 disabled=(st.session_state.user_role != "Master Admin"),
                 key="auto_add_mem_parish"
             )
+            if def_p_auto == "HONGKONG PARISH":
+                st.download_button(
+                    "📥 I-download ang Hongkong Membership Data Base Template (.xlsx)",
+                    data=build_hongkong_membership_template_excel_bytes(),
+                    file_name="Hongkong Membership Data Base.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    key="btn_dl_hk_template_xlsx"
+                )
         with up_c2:
             auto_mem_file = st.file_uploader(
                 "📤 Mag-upload ng Physical Registration Form Image (.jpg, .png) o Batch Excel/CSV (.xlsx, .csv):",
@@ -13827,18 +14551,36 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                 key="auto_add_mem_uploader"
             )
         if auto_mem_file is not None:
-            if st.button("🔍 Extract Data via Gemini OCR / Excel Parser, Upload File to Parish Google Drive Folder & Auto-Populate Form", type="primary", use_container_width=True):
-                with st.spinner(f"Ina-upload sa CTG MEMBERS DATABASE ALL PARISH → {def_p_auto} at binabasa ang datos..."):
+            btn_col_1click, btn_col_preview = st.columns([1.65, 1.15])
+            with btn_col_1click:
+                one_click_save_btn = st.button(
+                    f"🚀 1-Click Upload, Basahin & I-save Agad ang Lahat sa {def_p_auto} (Google Drive + Excel)",
+                    type="primary",
+                    use_container_width=True,
+                    key="btn_one_click_upload_and_save_all"
+                )
+            with btn_col_preview:
+                preview_only_btn = st.button(
+                    "🔍 I-preview Lang Muna sa Form sa Ibaba",
+                    use_container_width=True,
+                    key="btn_preview_only_upload"
+                )
+
+            if one_click_save_btn or preview_only_btn:
+                with st.spinner(f"Ina-upload sa CTG MEMBERS DATABASE ALL PARISH → {def_p_auto}, binabasa ang rekord, at sine-save sa database..."):
                     f_bytes_m = auto_mem_file.read()
                     ext_low = auto_mem_file.name.split(".")[-1].lower()
-                    mime_default = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if ext_low == "xlsx" else ("text/csv" if ext_low == "csv" else "image/jpeg")
+                    mime_default = (
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        if ext_low == "xlsx"
+                        else ("text/csv" if ext_low == "csv" else "image/jpeg")
+                    )
                     up_link, up_msg = upload_member_image_to_parish_database_folder(
                         f_bytes_m,
                         f"CTG_Form_{def_p_auto.replace(' ', '_')}_{auto_mem_file.name}",
                         auto_mem_file.type or mime_default,
                         def_p_auto
                     )
-                    uploaded_ocr_link = up_link or ""
                     if up_link:
                         st.info(f"📁 Na-upload na ang file sa **CTG MEMBERS DATABASE ALL PARISH → {def_p_auto}** ([Buksan sa Google Drive]({up_link}))")
                     elif up_msg:
@@ -13847,67 +14589,129 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                     ext_members = extract_members_from_uploaded_image_or_file(
                         f_bytes_m, auto_mem_file.name, auto_mem_file.type, def_p_auto, selected_model
                     )
-                    if ext_members:
-                        if uploaded_ocr_link:
-                            for em_it in ext_members:
-                                cur_r = str(em_it.get("Remarks", "") or "").strip()
-                                tag_lbl = "Drive File" if ext_low in ["xlsx", "csv"] else "Drive Photo"
-                                em_it["Remarks"] = f"{cur_r} ({tag_lbl}: {uploaded_ocr_link})".strip()
+                    if not ext_members:
+                        st.warning("Walang nabasang pangalan sa image/file. Maaari mong i-type nang direkta sa form sa ibaba.")
+                    elif one_click_save_btn:
+                        target_p = def_p_auto if st.session_state.user_role == "Master Admin" else st.session_state.assigned_parish
+                        total_saved_members = 0
+                        save_messages = []
+
+                        if target_p == "HONGKONG PARISH":
+                            # Individual OFW records: every row in Hongkong Membership Data Base.xlsx is an individual OFW member!
+                            for m_it in ext_members:
+                                m_copy = m_it.copy()
+                                m_copy["Parish"] = "HONGKONG PARISH"
+                                m_copy["Head of Family"] = _clean_cell_str(m_copy.get("Full Name", ""))
+                                m_copy["Relationship"] = "HEAD OF FAMILY"
+                                if m_copy.get("Category") in ("YOUTH", "KIDS", ""):
+                                    m_copy["Category"] = "ADULT"
+                                ok_1c, msg_1c = append_new_member_to_excel_and_sync(ACTIVE_SPREADSHEET_URL, m_copy, [])
+                                if ok_1c:
+                                    total_saved_members += 1
+                                    save_messages.append(msg_1c)
+                                else:
+                                    save_messages.append(f"⚠️ {msg_1c}")
+                        else:
+                            # Group extracted members by Head of Family for Philippine parishes
+                            families_grouped = {}
+                            for m_it in ext_members:
+                                m_copy = m_it.copy()
+                                m_copy["Parish"] = target_p
+                                hof_k = _clean_cell_str(m_copy.get("Head of Family", "")) or _clean_cell_str(m_copy.get("Full Name", ""))
+                                families_grouped.setdefault(hof_k.upper(), []).append(m_copy)
+
+                            for _, fam_members in families_grouped.items():
+                                head_item = fam_members[0].copy()
+                                deps_items = [d.copy() for d in fam_members[1:]] if len(fam_members) > 1 else []
+                                ok_1c, msg_1c = append_new_member_to_excel_and_sync(ACTIVE_SPREADSHEET_URL, head_item, deps_items)
+                                if ok_1c:
+                                    total_saved_members += len(fam_members)
+                                    save_messages.append(msg_1c)
+                                else:
+                                    save_messages.append(f"⚠️ {msg_1c}")
+
+                        st.session_state.pop("extracted_members_batch", None)
+                        st.session_state.pop("extracted_member_form_prefill", None)
+                        st.session_state.pop("extracted_dependents_prefill", None)
+                        st.cache_data.clear()
+                        if total_saved_members > 0:
+                            st.success(f"✅ **1-Click Upload & Save Kumpleto ({total_saved_members} Miyembro sa {target_p})!** " + " | ".join(save_messages))
+                        else:
+                            st.error(" | ".join(save_messages))
+                    else:
+                        target_p = def_p_auto if st.session_state.user_role == "Master Admin" else st.session_state.assigned_parish
+                        for em_it in ext_members:
+                            em_it["Parish"] = target_p
                         st.session_state["extracted_members_batch"] = ext_members
                         st.session_state["extracted_member_form_prefill"] = ext_members[0]
-                        if len(ext_members) > 1:
-                            st.session_state["extracted_dependents_prefill"] = ext_members[1:]
-                        else:
-                            st.session_state["extracted_dependents_prefill"] = []
-                        st.success(f"✅ Na-extract ang **{len(ext_members)}** rekord mula sa `{auto_mem_file.name}`! Na-auto-populate na ang mga input fields sa ibaba para ma-review mo bago i-save.")
-                    else:
-                        st.warning("Walang nabasang pangalan sa image/file. Maaari mong i-type nang direkta sa form sa ibaba.")
+                        st.session_state["extracted_dependents_prefill"] = ([] if target_p == "HONGKONG PARISH" else (ext_members[1:] if len(ext_members) > 1 else []))
+                        st.success(f"✅ Na-preview ang **{len(ext_members)}** rekord sa form sa ibaba!")
 
-        if "extracted_members_batch" in st.session_state and st.session_state["extracted_members_batch"]:
-            batch_list = st.session_state["extracted_members_batch"]
-            st.markdown(f"**📋 Extracted Structured JSON Records ({len(batch_list)} Miyembro):**")
-            st.dataframe(pd.DataFrame(batch_list), use_container_width=True, hide_index=True)
-            if len(batch_list) >= 1:
-                if st.button(f"🚀 Batch Save All ({len(batch_list)} Miyembro) Directly to Database (HEAD OF FAMILY MASTER + Parish Sheet)", type="primary", use_container_width=True):
-                    head_item = batch_list[0].copy()
-                    target_p = head_item.get("Parish", def_p_auto)
-                    if st.session_state.user_role != "Master Admin":
-                        target_p = st.session_state.assigned_parish
-                    head_item["Parish"] = target_p
-                    deps_items = [d.copy() for d in batch_list[1:]] if len(batch_list) > 1 else []
-                    ok_b, last_msg = append_new_member_to_excel_and_sync(ACTIVE_SPREADSHEET_URL, head_item, deps_items)
-                    st.session_state.pop("extracted_members_batch", None)
-                    st.session_state.pop("extracted_member_form_prefill", None)
-                    st.session_state.pop("extracted_dependents_prefill", None)
-                    st.cache_data.clear()
-                    if ok_b:
-                        st.success(f"✅ {last_msg}")
+    with st.expander("🗑️ Burahin ang Pamilya / Test Upload Record sa Parokya (Delete Family / OFW Record from HEAD OF FAMILY MASTER & Parish Sheet)", expanded=False):
+        st.caption("Kung may test upload o maling naipasang pamilya/miyembro, maaari mo itong burahin dito sa **1 Click** nang hindi nabubura ang mga Excel formulas.")
+        del_c1, del_c2, del_c3 = st.columns([1.2, 1.6, 1.2])
+        with del_c1:
+            del_target_parish = st.selectbox(
+                "Parokya na Lilinisin:",
+                allowed_parishes_add,
+                index=allowed_parishes_add.index(def_p_auto) if def_p_auto in allowed_parishes_add else 0,
+                disabled=(st.session_state.user_role != "Master Admin"),
+                key="del_fam_parish_sel"
+            )
+        p_fams_df = master_members_df[master_members_df["Parish"] == del_target_parish] if not master_members_df.empty else pd.DataFrame()
+        del_fam_opts = []
+        del_fam_map = {}
+        if not p_fams_df.empty:
+            for fid_v, grp_v in p_fams_df.groupby("Family ID", sort=True):
+                hof_v = str(grp_v["Head of Family"].iloc[0] or grp_v["Full Name"].iloc[0]).strip()
+                lbl_d = f"{fid_v} — {hof_v} ({len(grp_v)} miyembro)"
+                del_fam_opts.append(lbl_d)
+                del_fam_map[lbl_d] = (str(fid_v).strip(), hof_v)
+        with del_c2:
+            sel_del_fam_lbl = st.selectbox(
+                "Piliin ang Family ID / Member Record ID na Buburahin:",
+                del_fam_opts if del_fam_opts else ["Walang nakalistang rekord"],
+                key="del_fam_id_sel"
+            )
+        with del_c3:
+            st.write("")
+            if st.button("🗑️ Burahin ang Piniling Rekord", type="primary", use_container_width=True, disabled=(not del_fam_opts), key="btn_del_selected_family"):
+                fid_to_del, hof_to_del = del_fam_map.get(sel_del_fam_lbl, ("", ""))
+                with st.spinner(f"Binubura ang {fid_to_del} ({hof_to_del}) mula sa {del_target_parish} at Google Drive..."):
+                    ok_d, msg_d = delete_family_or_parish_records_from_excel_and_sync(
+                        ACTIVE_SPREADSHEET_URL, del_target_parish, family_id=fid_to_del, head_of_family=hof_to_del
+                    )
+                    if ok_d:
+                        st.success(f"✅ {msg_d}")
+                        time.sleep(0.5)
+                        st.rerun()
                     else:
-                        st.error(last_msg)
-                    time.sleep(0.8)
-                    st.rerun()
+                        st.warning(msg_d)
 
     prefill_m = st.session_state.get("extracted_member_form_prefill", {})
+    def_p_val = prefill_m.get("Parish", def_p_auto if def_p_auto in allowed_parishes_add else allowed_parishes_add[0])
+    def_p_i = allowed_parishes_add.index(def_p_val) if def_p_val in allowed_parishes_add else 0
+    selected_target_parish = allowed_parishes_add[def_p_i]
+    is_hk_add_mode = (selected_target_parish == "HONGKONG PARISH")
+    suggested_next_fid = generate_next_family_id_for_parish(selected_target_parish, master_members_df)
+
     rel_opts = [
         "HEAD OF FAMILY", "HUSBAND", "WIFE", "SON", "DAUGHTER",
         "FATHER", "MOTHER", "BROTHER", "SISTER", "GRANDFATHER",
         "GRANDMOTHER", "GRANDSON", "GRANDDAUGHTER", "RELATIVE", "OTHER"
     ]
     sex_opts = ["MALE", "FEMALE"]
-    cat_opts = ["ADULT", "YOUTH", "KIDS", "SENIOR CITIZEN"]
+    cat_opts = ["ADULT", "SENIOR CITIZEN"] if is_hk_add_mode else ["ADULT", "YOUTH", "KIDS", "SENIOR CITIZEN"]
     civ_opts = ["MARRIED", "SINGLE", "WIDOWED", "SEPARATED"]
-    sw_opts = ["WORKING", "STUDENT", "NONE", "OFW - WORKING", "PRIEST", "Church Staff", "Farmer", "Housekeeper"]
+    sw_opts = ["WORKING", "OFW - WORKING", "DOMESTIC HELPER", "CAREGIVER", "DRIVER", "F&B / HOSPITALITY", "OFFICE / PROFESSIONAL", "STUDENT", "NONE", "PRIEST", "Church Staff", "Farmer", "Housekeeper"]
     st_opts = ["ACTIVE", "INACTIVE", "NON-MEMBER", "ON GOING INDOC"]
     yn_opts = ["YES", "NO"]
-
-    def_p_val = prefill_m.get("Parish", def_p_auto if def_p_auto in allowed_parishes_add else allowed_parishes_add[0])
-    def_p_i = allowed_parishes_add.index(def_p_val) if def_p_val in allowed_parishes_add else 0
-    selected_target_parish = allowed_parishes_add[def_p_i]
-    suggested_next_fid = generate_next_family_id_for_parish(selected_target_parish, master_members_df)
+    hk_work_type_opts = ["DOMESTIC HELPER", "CAREGIVER", "DRIVER", "F&B / HOSPITALITY", "OFFICE / PROFESSIONAL", "RETAIL / SALES", "OTHER OFW", ""]
+    hk_day_off_opts = ["SUNDAY", "SATURDAY", "WEEKDAY", "ALTERNATE / SHIFTING", "FLEXIBLE", ""]
 
     def_rel_v = str(prefill_m.get("Relationship", "HEAD OF FAMILY")).upper()
     def_rel_i = rel_opts.index(def_rel_v) if def_rel_v in rel_opts else 0
-    def_sex_v = str(prefill_m.get("Sex", "MALE")).upper()
+    def_sex_v = str(prefill_m.get("Sex", "FEMALE" if is_hk_add_mode else "MALE")).upper()
     def_sex_i = sex_opts.index(def_sex_v) if def_sex_v in sex_opts else 0
     def_cat_v = str(prefill_m.get("Category", "ADULT")).upper()
     def_cat_i = cat_opts.index(def_cat_v) if def_cat_v in cat_opts else 0
@@ -13921,54 +14725,97 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
     def_bap_i = yn_opts.index(def_bap_v) if def_bap_v in yn_opts else 0
 
     dep_prefill_list = st.session_state.get("extracted_dependents_prefill", [])
-    num_dependents = st.number_input(
-        "👨‍👩‍👧‍👦 Bilang ng Dependents (No. 2, 3...) na isasama sa Pamilyang ito (0 kung Head of Family o single member lang):",
-        min_value=0,
-        max_value=15,
-        value=len(dep_prefill_list),
-        step=1
-    )
+    if is_hk_add_mode:
+        num_dependents = 0
+        st.info("🇭🇰 **HONG KONG PARISH — Individual OFW Member Registration:** Bawat miyembro sa Hongkong Parish ay may sariling **Member / Record ID** (`CTG-HK-FAM-0001`, `0002`...), **Work Type**, **Day Off**, at **Address (HK or Philippines)** (Walang Dependents / Walang Youth at Kids).")
+    else:
+        num_dependents = st.number_input(
+            "👨‍👩‍👧‍👦 Bilang ng Dependents (No. 2, 3...) na isasama sa Pamilyang ito (0 kung Head of Family o single member lang):",
+            min_value=0,
+            max_value=15,
+            value=len(dep_prefill_list),
+            step=1
+        )
 
     with st.form("add_form_two_step_workflow"):
-        st.markdown("##### ✍️ 2. Step 1 & Step 2 Registration Form (Review & Edit Before Saving to Database)")
-        st.info(
-            f"📌 **Two-Step Excel Sync:** Kapag nag-save ka ng bagong Head of Family, awtomatikong hahanapin ng app ang unang bakanteng pre-allocated slot para sa **{selected_target_parish}** sa `'HEAD OF FAMILY MASTER'` sheet (nang hindi binubura ang background formulas), at iru-route ang Head of Family (`No. 1`) at Dependents (`No. 2, 3...`) sa **`{selected_target_parish}`** sheet."
-        )
+        if is_hk_add_mode:
+            st.markdown("##### ✍️ 2. Hongkong Parish Individual OFW Member Registration Form (`HONG KONG PARISH - OFW MEMBERS`)")
+        else:
+            st.markdown("##### ✍️ 2. Step 1 & Step 2 Registration Form (Review & Edit Before Saving to Database)")
+            st.info(
+                f"📌 **Two-Step Excel Sync:** Kapag nag-save ka ng bagong Head of Family, awtomatikong hahanapin ng app ang unang bakanteng pre-allocated slot para sa **{selected_target_parish}** sa `'HEAD OF FAMILY MASTER'` sheet (nang hindi binubura ang background formulas), at iru-route ang Head of Family (`No. 1`) at Dependents (`No. 2, 3...`) sa **`{selected_target_parish}`** sheet."
+            )
         c1, c2, c3 = st.columns(3)
         with c1:
             mp = st.selectbox("Parish:", allowed_parishes_add, index=def_p_i, disabled=(st.session_state.user_role != "Master Admin"))
             fid_default = str(prefill_m.get("Family ID", "") or "").strip()
             if not fid_default or fid_default.endswith("-NEW"):
                 fid_default = suggested_next_fid
-            fid = st.text_input("Family ID (Auto-generated kung bakante):", value=fid_default).strip()
-            m_head = st.text_input("Head of Family (Col E Master / Col B Parish):", value=str(prefill_m.get("Head of Family", prefill_m.get("Full Name", "")))).strip()
-            fn = st.text_input("Full Name (Member No. 1 / Primary):", value=str(prefill_m.get("Full Name", ""))).strip()
-            m_rel = st.selectbox("Relationship:", rel_opts, index=def_rel_i)
+            fid = st.text_input(
+                "Member / Record ID (Auto-generated kung bakante):" if is_hk_add_mode else "Family ID (Auto-generated kung bakante):",
+                value=fid_default
+            ).strip()
+            fn = st.text_input(
+                "Full Name (OFW Member Name):" if is_hk_add_mode else "Full Name (Member No. 1 / Primary):",
+                value=str(prefill_m.get("Full Name", ""))
+            ).strip()
+            if is_hk_add_mode:
+                m_head = fn
+                m_rel = "HEAD OF FAMILY"
+            else:
+                m_head = st.text_input("Head of Family (Col E Master / Col B Parish):", value=str(prefill_m.get("Head of Family", prefill_m.get("Full Name", "")))).strip()
+                m_rel = st.selectbox("Relationship:", rel_opts, index=def_rel_i)
             m_sex = st.selectbox("Sex:", sex_opts, index=def_sex_i)
             m_bdate = st.text_input("Birthdate (YYYY-MM-DD):", value=str(prefill_m.get("Birthdate", "")), placeholder="Hal. 1985-03-12").strip()
         with c2:
             m_age = st.text_input("Age (Awtomatiko kung may Birthdate):", value=str(prefill_m.get("Age", ""))).strip()
             m_cat = st.selectbox("Category:", cat_opts, index=def_cat_i)
             m_civ = st.selectbox("Civil Status:", civ_opts, index=def_civ_i)
-            m_sw = st.selectbox("Student/Working:", sw_opts, index=def_sw_i)
+            m_sw = st.selectbox("Employment / Work (Col K):" if is_hk_add_mode else "Student/Working:", sw_opts, index=def_sw_i)
             m_con = st.text_input("Contact No. / Mobile Number:", value=str(prefill_m.get("Contact No.", ""))).strip()
             m_st = st.selectbox("Status:", st_opts, index=def_st_i)
             m_bap = st.selectbox("Baptized:", yn_opts, index=def_bap_i)
             m_bapd = st.text_input("Baptism Date (YYYY-MM-DD, optional):", value=str(prefill_m.get("Baptism Date", ""))).strip()
         with c3:
-            m_house = st.text_input("House / Street / Purok (Col AI Master):", value=str(prefill_m.get("House / Street / Purok", ""))).strip()
-            m_brgy = st.text_input("Barangay (Col H Master):", value=str(prefill_m.get("Barangay", ""))).strip()
-            m_city = st.text_input("City/Municipality (Col I Master):", value=str(prefill_m.get("City/Municipality", ""))).strip()
-            m_prov = st.text_input("Province / Area (Col J Master):", value=str(prefill_m.get("Province / Area", ""))).strip()
-            m_addr = st.text_input("Manual / Full Address (Col AJ Master / Col Q Parish):", value=str(prefill_m.get("Current Address (If living separately)", ""))).strip()
-            m_area = st.text_input("Area/Zone (Optional, Col C Master):", value=str(prefill_m.get("Area/Zone", ""))).strip()
-            m_cell = st.text_input("Cell Group (Optional, Col D Master):", value=str(prefill_m.get("Cell Group", ""))).strip()
+            if is_hk_add_mode:
+                m_addr = st.text_input(
+                    "Address (HK or Philippines) (Col Q):",
+                    value=str(prefill_m.get("Current Address (If living separately)", ""))
+                ).strip()
+                pref_wt = str(prefill_m.get("Work Type", "")).strip()
+                m_work_type = st.text_input(
+                    "Work Type (Col R — hal. Domestic Helper, Caregiver, F&B):",
+                    value=pref_wt,
+                    placeholder="Hal. Domestic Helper / Caregiver"
+                ).strip()
+                pref_do = str(prefill_m.get("Day Off", "")).strip()
+                m_day_off = st.text_input(
+                    "Day Off (Col S — hal. Sunday, Saturday, Alternate):",
+                    value=pref_do,
+                    placeholder="Hal. Sunday"
+                ).strip()
+                m_house = ""
+                m_brgy = ""
+                m_city = "Hong Kong"
+                m_prov = "Hong Kong SAR"
+                m_area = st.text_input("Area/District sa HK (Optional):", value=str(prefill_m.get("Area/Zone", ""))).strip()
+                m_cell = st.text_input("Cell Group (Optional):", value=str(prefill_m.get("Cell Group", ""))).strip()
+            else:
+                m_house = st.text_input("House / Street / Purok (Col AI Master):", value=str(prefill_m.get("House / Street / Purok", ""))).strip()
+                m_brgy = st.text_input("Barangay (Col H Master):", value=str(prefill_m.get("Barangay", ""))).strip()
+                m_city = st.text_input("City/Municipality (Col I Master):", value=str(prefill_m.get("City/Municipality", ""))).strip()
+                m_prov = st.text_input("Province / Area (Col J Master):", value=str(prefill_m.get("Province / Area", ""))).strip()
+                m_addr = st.text_input("Manual / Full Address (Col AJ Master / Col Q Parish):", value=str(prefill_m.get("Current Address (If living separately)", ""))).strip()
+                m_area = st.text_input("Area/Zone (Optional, Col C Master):", value=str(prefill_m.get("Area/Zone", ""))).strip()
+                m_cell = st.text_input("Cell Group (Optional, Col D Master):", value=str(prefill_m.get("Cell Group", ""))).strip()
+                m_work_type = ""
+                m_day_off = ""
             pho = st.file_uploader("Litrato (Optional, i-save sa Google Drive):", type=["jpg", "png", "jpeg"])
 
         m_rem = st.text_area("Remarks / Tala para sa Miyembro:", value=str(prefill_m.get("Remarks", ""))).strip()
 
         dependents_inputs = []
-        if num_dependents > 0:
+        if num_dependents > 0 and not is_hk_add_mode:
             st.markdown("##### 👨‍👩‍👧‍👦 Dependents Routing (Member No. 2, 3... sa Parish Sheet)")
             for d_i in range(int(num_dependents)):
                 d_pref = dep_prefill_list[d_i] if d_i < len(dep_prefill_list) else {}
@@ -13990,7 +14837,7 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                     d_age = st.text_input(f"Age (#{d_i + 1}):", value=str(d_pref.get("Age", "")), key=f"dep_age_{d_i}").strip()
                 with dc6:
                     d_cat_v = str(d_pref.get("Category", "KIDS")).upper()
-                    d_cat_idx = cat_opts.index(d_cat_v) if d_cat_v in cat_opts else 2
+                    d_cat_idx = cat_opts.index(d_cat_v) if d_cat_v in cat_opts else (2 if len(cat_opts) > 2 else 0)
                     d_cat = st.selectbox(f"Category (#{d_i + 1}):", cat_opts, index=d_cat_idx, key=f"dep_cat_{d_i}")
 
                 dc7, dc8, dc9, dc10 = st.columns([1.1, 1.1, 1.1, 1.7])
@@ -14023,7 +14870,6 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
             if fn:
                 target_parish_final = mp if st.session_state.user_role == "Master Admin" else st.session_state.assigned_parish
                 final_fid = fid if fid else generate_next_family_id_for_parish(target_parish_final, master_members_df)
-                drive_link_text = "Walang inilakip na litrato."
                 if pho is not None:
                     with st.spinner(f"Ina-upload ang litrato sa CTG MEMBERS DATABASE ALL PARISH ({target_parish_final})..."):
                         file_bytes = pho.read()
@@ -14034,72 +14880,58 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                             target_parish_final
                         )
                         if link:
-                            drive_link_text = f"Google Drive Link: {link}"
                             st.success(f"✅ Matagumpay na na-upload ang litrato sa **CTG MEMBERS DATABASE ALL PARISH → {target_parish_final}**! ([Buksan ang Link]({link}))")
                         else:
                             st.warning(f"⚠️ {msg}")
 
                 calc_age = m_age or compute_age_from_birthdate(m_bdate)
                 calc_cat = m_cat or compute_category_from_age(calc_age)
+                if target_parish_final == "HONGKONG PARISH" and calc_cat in ("YOUTH", "KIDS", ""):
+                    calc_cat = "ADULT"
                 full_addr_fallback = m_addr or ", ".join([x for x in [m_house, m_brgy, m_city, m_prov] if x])
 
                 new_member_payload = {
                     "Parish": target_parish_final,
                     "Family ID": final_fid,
-                    "Head of Family": m_head if m_head else fn,
+                    "Area/Zone": m_area,
+                    "Cell Group": m_cell,
+                    "Head of Family": fn if target_parish_final == "HONGKONG PARISH" else (m_head or fn),
+                    "No.": "1",
                     "Full Name": fn,
-                    "Relationship": m_rel,
+                    "Relationship": "HEAD OF FAMILY" if target_parish_final == "HONGKONG PARISH" else m_rel,
                     "Sex": m_sex,
                     "Birthdate": m_bdate,
                     "Age": calc_age,
                     "Category": calc_cat,
                     "Civil Status": m_civ,
                     "Student/Working": m_sw,
-                    "Status": m_st,
                     "Contact No.": m_con,
+                    "Church Member": "NO" if "NON" in m_st else "YES",
+                    "Status": m_st,
                     "Baptized": m_bap,
                     "Baptism Date": m_bapd,
                     "House / Street / Purok": m_house,
                     "Barangay": m_brgy,
                     "City/Municipality": m_city,
                     "Province / Area": m_prov,
-                    "Area/Zone": m_area,
-                    "Cell Group": m_cell,
-                    "Manual / Previous Full Address": full_addr_fallback,
                     "Current Address (If living separately)": full_addr_fallback,
-                    "Church Member": "NO" if "NON" in m_st else "YES",
-                    "Remarks": f"{m_rem} ({drive_link_text})".strip() if drive_link_text != "Walang inilakip na litrato." else m_rem,
+                    "Work Type": m_work_type if target_parish_final == "HONGKONG PARISH" else "",
+                    "Day Off": m_day_off if target_parish_final == "HONGKONG PARISH" else "",
+                    "Remarks": m_rem,
                 }
-
-                valid_dependents = [d for d in dependents_inputs if str(d.get("Full Name", "")).strip()]
-
-                with st.spinner("Executing Step 1 (HEAD OF FAMILY MASTER slot allocation) & Step 2 (Parish Sheet routing & Google Drive sync)..."):
-                    ok_ex, ex_msg = append_new_member_to_excel_and_sync(ACTIVE_SPREADSHEET_URL, new_member_payload, dependents_list=valid_dependents)
-                    if ok_ex:
+                valid_deps = [] if target_parish_final == "HONGKONG PARISH" else [d for d in dependents_inputs if d.get("Full Name")]
+                with st.spinner(f"Sine-save sa Step 1 (HEAD OF FAMILY MASTER) at Step 2 ({target_parish_final}) at sini-sync sa Google Drive..."):
+                    ok_excel, sync_msg = append_new_member_to_excel_and_sync(ACTIVE_SPREADSHEET_URL, new_member_payload, valid_deps)
+                    if ok_excel:
                         st.session_state.pop("extracted_member_form_prefill", None)
                         st.session_state.pop("extracted_dependents_prefill", None)
-                        st.success(f"✅ Matagumpay na naidagdag si **{fn}** (+ {len(valid_dependents)} dependents) sa `{target_parish_final}` (`{final_fid}`)! {ex_msg}")
+                        st.session_state.pop("extracted_members_batch", None)
+                        st.success(f"✅ {sync_msg}")
                     else:
-                        st.warning(f"⚠️ {ex_msg}")
-
-                backup_action_to_admin_cloud(
-                    "New Member Added (2-Step Excel Workflow)",
-                    fn,
-                    target_parish_final,
-                    f"Family ID: {final_fid} (+{len(valid_dependents)} dependents)",
-                    f"Head: {m_head or fn} | Rel: {m_rel} | Status: {m_st} | Cat: {calc_cat} | Contact: {m_con} | {drive_link_text}",
-                    f"Remarks: {m_rem}",
-                    get_current_chat_identity()
-                )
-                if pho is not None and 'link' in locals() and link:
-                    st.image(pho, caption=f"Litrato ni {fn} (Naka-save sa Drive)", width=180)
+                        st.warning(f"⚠️ {sync_msg}")
             else:
-                st.warning("Pakipunan ang Buong Pangalan (Full Name).")
-    st.stop()
+                st.warning("Pakilagay ang Full Name.")
 
-# =====================================================================
-# 5. PRAYER WALL & CATEGORIZER
-# =====================================================================
 elif app_mode == "🙏 Prayer Wall & Categorizer":
     render_title_with_logo("AI Prayer Request Categorizer")
     plang = st.selectbox("Wika:", ["Tagalog", "Ilokano", "English"])
@@ -14838,187 +15670,4 @@ elif app_mode == "🛠️ App Settings":
 # =====================================================================
 # 8. MADALING SUNDAN NA AI CHAT ASSISTANT (STEP-BY-STEP GUIDE + ONE-CLICK BUTTONS)
 # =====================================================================
-def query_weekly_monitoring_reports(search_query: str = "") -> str:
-    """Naghahanap sa 2027 Weekly Reports (Attendance, Liturgical Officers, Preachers, Topics, Outreach, at Remarks) ng mga Parokya."""
-    try:
-        db = load_weekly_monitoring_records()
-        if not db:
-            return "Wala pang naka-save na Weekly Report sa database."
-        q_low = str(search_query or "").strip().lower()
-        lines = []
-        for k, rec in db.items():
-            if not isinstance(rec, dict) or not rec.get("has_data"):
-                continue
-            p_n = rec.get("parish", "")
-            m_n = rec.get("month", "")
-            w_n = rec.get("week", "")
-            summary_str = (
-                f"Parish: {p_n} | Month/Week: {m_n} 2027 ({w_n}) | Date: {rec.get('report_date','')} | "
-                f"Submitted PH Time: {rec.get('submitted_at_ph','')} | "
-                f"Priest: {rec.get('priest','')} | Sakristan: {rec.get('sakristan','')} | "
-                f"Tema Misa: {rec.get('tema_misa','')} | Adal Topic: {rec.get('adal_evangelio','')} | "
-                f"Mass(A:{rec.get('mass_a',0)}, Y:{rec.get('mass_y',0)}) | "
-                f"Pampamilya(A:{rec.get('pampamilya_a',0)}, Y:{rec.get('pampamilya_y',0)}) | "
-                f"Online(A:{rec.get('online_a',0)}, Y:{rec.get('online_y',0)}) | "
-                f"Youth:{rec.get('youth_y',0)} | Kids:{rec.get('kids_k',0)} | "
-                f"Remarks: {rec.get('remarks','')[:180]}"
-            )
-            if not q_low or q_low in summary_str.lower():
-                lines.append(summary_str)
-        if not lines:
-            return f"Walang nahanap na Weekly Report para sa '{search_query}'."
-        return "Mga 2027 Weekly Reports:\n" + "\n".join(lines[:20])
-    except Exception as e:
-        return f"Error sa pagbasa ng Weekly Reports: {str(e)}"
-
-render_title_with_logo(
-    "💬 CTG Gabay AI — Madaling Sundan na Ministry Assistant",
-    f"Opisyal na AI Assistant ng Church of the Temple of God ({st.session_state.assigned_parish}) • 🇵🇭 {get_philippine_datetime_str()}"
-)
-
-st.markdown(
-    "<div class='full-text-card'>"
-    "<b>🧭 Paano Gamitin ang AI Chat Assistant (3 Madaling Hakbang):</b><br>"
-    "<b>1️⃣ Pumili ng Wika at Mode sa Ibaba</b> (Tagalog, Ilokano, o English).<br>"
-    "<b>2️⃣ Pindutin ang Kahit Aling 'Mabilisang Tanong' Button</b> sa ibaba kung ayaw mong mag-type, O<br>"
-    "<b>3️⃣ Mag-type sa Chat Box sa Pinakababa</b> (hal. <i>'Hanapin si Pacita Agasen'</i> o <i>'Gumawa ng mensahe para sa pagsamba sa Sabado'</i>)."
-    "</div>",
-    unsafe_allow_html=True
-)
-
-valid_keys = get_valid_gemini_keys()
-if not valid_keys:
-    st.warning("Wala pang GEMINI_API_KEY. Mangyaring ilagay ito sa App Settings.")
-    st.stop()
-
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "current_model" not in st.session_state:
-    st.session_state.current_model = selected_model
-
-col_chat_opt1, col_chat_opt2, col_chat_opt3 = st.columns([1.2, 1.6, 0.9])
-with col_chat_opt1:
-    pref_lang = st.selectbox("🌐 1. Pumili ng Wika:", ["Tagalog", "Ilokano", "English", "Awto (Kung ano ang tanong)"], index=0)
-with col_chat_opt2:
-    assistant_mode = st.selectbox(
-        "🤖 2. Pumili ng Gawain:",
-        [
-            "💬 All-in-One Assistant (Maghanap ng Miyembro, Attendance & Gabay)",
-            "✍️ Gawaan ng Mensahe / Tugon sa Miyembro (AI Draft Generator)"
-        ],
-        index=0
-    )
-with col_chat_opt3:
-    st.write("")
-    if st.button("🧹 Burahin ang Usapan", use_container_width=True):
-        st.session_state.messages = []
-        st.session_state.pop("chat_session", None)
-        st.rerun()
-
-st.markdown("##### ⚡ Mabilisang Tanong (Pindutin lang ang button para sumagot agad ang AI):")
-qb1, qb2, qb3 = st.columns(3)
-qb4, qb5, qb6 = st.columns(3)
-quick_clicked_prompt = None
-with qb1:
-    if st.button("📊 Buod ng Weekly Report & Attendance", use_container_width=True):
-        quick_clicked_prompt = f"Ipakita ang malinaw na buod ng pinakahuling Weekly Report, Attendance, at Liturgical Officers para sa {st.session_state.assigned_parish}."
-with qb2:
-    if st.button("👥 Ilan ang Active Members sa Census?", use_container_width=True):
-        quick_clicked_prompt = f"Ipakita ang bilang ng Active Members (Seniors, Adults, Youth, Kids) sa {st.session_state.assigned_parish} mula sa Excel Census."
-with qb3:
-    if st.button("✉️ Imbitasyon sa Pagsamba ngayong Sabado", use_container_width=True):
-        quick_clicked_prompt = f"Gumawa ng maikli, magalang, at nakaka-inspire na mensahe ng paanyaya para sa ating pagsamba ngayong Sabado sa Church of the Temple of God ({st.session_state.assigned_parish})."
-with qb4:
-    if st.button("🙏 Panalangin & Comforting Bible Verse", use_container_width=True):
-        quick_clicked_prompt = "Magbigay ng isang nakaka-comfort na Bible verse at maikling panalangin para sa pamilyang dumadaan sa pagsubok."
-with qb5:
-    if st.button("📥 Tingnan ang Pending Requests sa Inbox", use_container_width=True):
-        quick_clicked_prompt = f"Ano ang mga kasalukuyang Prayer Requests, Questions, o Counselling sa Notion CRM para sa {st.session_state.assigned_parish}?"
-with qb6:
-    if st.button("🏠 Gabay sa House Visitation & Outreach", use_container_width=True):
-        quick_clicked_prompt = "Magbigay ng 5 madaling hakbang at gabay para sa aming House Visitation (10 families requirement) at Missionary Work ngayong linggo."
-
-lang_rule = "Sumagot gamit ang wikang ginamit ng nagtatanong." if "Awto" in pref_lang else f"Sumagot nang buo sa wikang {pref_lang}."
-sys_inst = (
-    f"Ikaw si CTG Gabay AI, ang opisyal, magalang, at napakadaling sundan na AI assistant ng Church of the Temple of God (CTG) "
-    f"para sa parokya ng {st.session_state.assigned_parish}. Tandaan na ang opisyal na pangalan ng simbahan ay "
-    f"'Church of the Temple of God' at ang araw ng pagsamba at pangunahing pagtitipon (Worship / Sabbath Service) ay tuwing SABADO (Saturday).\n"
-    f"- {lang_rule}\n"
-    f"- Isulat ang iyong sagot sa malinaw na bullet points o numbered steps (1, 2, 3) upang hindi mahirapan ang mga users sa pagbasa sa cellphone, tablet, o computer.\n"
-    f"- Gamitin ang `query_excel_database` kapag naghahanap ng miyembro o Family ID sa Excel Census.\n"
-    f"- Gamitin ang `query_weekly_monitoring_reports` kapag tinatanong ang 2027 Weekly Reports, Attendance, Officers, o Remarks.\n"
-    f"- Gamitin ang `query_notion_crm` kapag tinatanong ang Prayer Requests, Questions, Counselling, o Visitors sa Notion.\n"
-    f"- Gamitin ang `search_web_for_answers` para sa real-time internet facts."
-)
-
-def resolve_callable_gemini_model(requested_model: str) -> str:
-    if requested_model == "gemini-3.8-flash":
-        return "gemini-2.5-flash"
-    return requested_model or "gemini-2.5-flash"
-
-def create_chat(api_key, model_name):
-    client = genai.Client(api_key=api_key)
-    actual_m = resolve_callable_gemini_model(model_name)
-    return client.chats.create(
-        model=actual_m,
-        config=types.GenerateContentConfig(
-            system_instruction=sys_inst,
-            tools=[query_excel_database, query_weekly_monitoring_reports, query_notion_crm, send_email_via_gmail, search_web_for_answers],
-            temperature=0.3
-        )
-    )
-
-if "chat_session" not in st.session_state or st.session_state.current_model != selected_model:
-    st.session_state.current_model = selected_model
-    st.session_state.chat_session = create_chat(valid_keys[0], selected_model)
-
-def stream_chat_response(prompt_text: str):
-    final_prompt = prompt_text
-    if "Gawaan ng Mensahe" in assistant_mode or "AI Draft" in assistant_mode:
-        final_prompt = (
-            f"Gumawa ng opisyal, malinaw, at magalang na AI Draft Answer / Mensahe mula sa Church of the Temple of God ({st.session_state.assigned_parish}) "
-            f"(kung saan ang araw ng pagsamba ay tuwing Sabado / Saturday) na may kasamang Bible verse at comforting message para dito ({lang_rule}):\n\n{prompt_text}"
-        )
-    elif "Awto" not in pref_lang:
-        final_prompt = f"[Sagutin nang malinaw at madaling sundan sa wikang {pref_lang}] {prompt_text}"
-
-    try:
-        for chunk in st.session_state.chat_session.send_message_stream(final_prompt):
-            if chunk.text:
-                yield chunk.text
-        return
-    except Exception:
-        pass
-
-    for backup_key in valid_keys:
-        for fallback_m in ["gemini-2.5-flash", resolve_callable_gemini_model(selected_model)]:
-            try:
-                st.session_state.chat_session = create_chat(backup_key, fallback_m)
-                for chunk in st.session_state.chat_session.send_message_stream(final_prompt):
-                    if chunk.text:
-                        yield chunk.text
-                return
-            except Exception:
-                continue
-
-    try:
-        client = genai.Client(api_key=valid_keys[0])
-        res = safe_generate_content(client, "gemini-2.5-flash", final_prompt)
-        yield res.text
-    except Exception as e:
-        yield f"⚠️ Paumanhin, nagkaroon ng pansamantalang aberya sa koneksyon: {str(e)}"
-
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
-
-typed_prompt = st.chat_input("✍️ Mag-type dito ng iyong tanong (hal. 'Hanapin si Pacita Agasen' o 'Gumawa ng panalangin')...")
-active_prompt = quick_clicked_prompt or typed_prompt
-
-if active_prompt:
-    st.session_state.messages.append({"role": "user", "content": active_prompt})
-    with st.chat_message("user"):
-        st.markdown(active_prompt)
-    with st.chat_message("assistant"):
-        full_reply = st.write_stream(stream_chat_response(active_prompt))
-        st.session_state.messages.append({"role": "assistant", "content": str(full_reply)})
+render_ctg_gabay_ai_assistant_section(show_top_banner=True, key_prefix="dedicated_gabay")
