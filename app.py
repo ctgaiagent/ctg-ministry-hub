@@ -5753,16 +5753,16 @@ def update_pwr_2027_consolidation_excel_on_drive(
     5. STRICT GUARDRAIL: NEVER overwrite Columns G (TOTAL), H (# OF WEEKS), I (AVERAGE), J (TOTAL MEMBERS), or K (PERCENTAGE).
     """
     try:
-        raw_bytes = fetch_pwr_2027_consolidation_workbook_bytes(force_drive=False)
+        need_force_drive = not (os.path.exists(LOCAL_PWR_2027_CONSOLIDATION_CACHE) and os.path.getsize(LOCAL_PWR_2027_CONSOLIDATION_CACHE) > 5000)
+        raw_bytes = fetch_pwr_2027_consolidation_workbook_bytes(force_drive=need_force_drive)
         wb = openpyxl.load_workbook(io.BytesIO(raw_bytes), data_only=False)
     except Exception:
         wb = _build_clean_pwr_2027_consolidation_workbook()
 
-    def _apply_parish_month_to_ws(ws, p_full_name: str, m_up_name: str, matrix_in: dict):
+    def _apply_parish_month_to_ws(ws, p_full_name: str, m_up_name: str, matrix_in: dict, preserve_existing_blanks: bool = False):
         p_sec_lbl, fallback_h_row = PWR_2027_PARISH_SECTION_HEADERS.get(p_full_name, ("", 0))
         if not p_sec_lbl:
             return
-        # Scan Column A to locate the specific Parish header
         found_header_row = None
         for r_scan in range(1, ((ws.max_row or 0) + 1)):
             c_a = str(ws.cell(r_scan, 1).value or "").strip().upper()
@@ -5771,9 +5771,10 @@ def update_pwr_2027_consolidation_excel_on_drive(
                 break
         if found_header_row is None:
             found_header_row = fallback_h_row
-        # Identify the next 8 rows containing the activities (found_header_row + 2 .. found_header_row + 9)
         act_start_row = found_header_row + 2
         for act_idx, act_name in enumerate(PWR_2027_ACTIVITIES_8):
+            if p_full_name == "HONGKONG PARISH" and act_idx >= 3:
+                continue
             r_target = act_start_row + act_idx
             row_act_lbl = str(ws.cell(r_target, 1).value or act_name).strip()
             w_vals = matrix_in.get(act_name, matrix_in.get(row_act_lbl, [None]*5))
@@ -5783,15 +5784,17 @@ def update_pwr_2027_consolidation_excel_on_drive(
                 col_idx = 2 + w_i
                 val = w_vals[w_i] if w_i < len(w_vals) else None
                 if val is None or val == "":
-                    ws.cell(r_target, col_idx).value = None
+                    if not preserve_existing_blanks:
+                        ws.cell(r_target, col_idx).value = None
                 else:
                     try:
                         ws.cell(r_target, col_idx).value = int(float(val))
                     except Exception:
-                        ws.cell(r_target, col_idx).value = None
+                        if not preserve_existing_blanks:
+                            ws.cell(r_target, col_idx).value = None
 
     if sync_all_from_db is not None:
-        # Populate all 12 months and 10 parishes from db_live into Columns B-F
+        # Populate all 12 months and 10 parishes from db_live into Columns B-F while preserving existing non-empty Drive cells
         for m_iter in MONTHS_2027:
             m_up = m_iter.upper()
             if m_up not in wb.sheetnames:
@@ -5799,26 +5802,20 @@ def update_pwr_2027_consolidation_excel_on_drive(
             ws_m = wb[m_up]
             for p_full in PARISH_ORDER:
                 mat_p = {act: [None]*5 for act in PWR_2027_ACTIVITIES_8}
+                has_any_for_parish_month = False
                 for w_i, w_lbl in enumerate(WEEKS_2027):
                     rec_w = sync_all_from_db.get(f"{p_full.upper()}__{m_up}__{w_lbl}", {})
                     if is_week_record_completed(rec_w):
                         act_map = extract_activity_counts_from_weekly_record(rec_w)
                         for act_k, act_v in act_map.items():
                             mat_p[act_k][w_i] = act_v
-                _apply_parish_month_to_ws(ws_m, p_full, m_up, mat_p)
+                            has_any_for_parish_month = True
+                if has_any_for_parish_month:
+                    _apply_parish_month_to_ws(ws_m, p_full, m_up, mat_p, preserve_existing_blanks=True)
     elif month_name and parish_name and weekly_activity_matrix is not None:
         m_up = month_name.strip().upper()
         if m_up in wb.sheetnames:
-            _apply_parish_month_to_ws(wb[m_up], parish_name, m_up, weekly_activity_matrix)
-
-    out_buf = io.BytesIO()
-    wb.save(out_buf)
-    updated_bytes = out_buf.getvalue()
-    try:
-        with open(LOCAL_PWR_2027_CONSOLIDATION_CACHE, "wb") as f:
-            f.write(updated_bytes)
-    except Exception:
-        pass
+            _apply_parish_month_to_ws(wb[m_up], parish_name, m_up, weekly_activity_matrix, preserve_existing_blanks=False)
 
     # Also update Column H (# OF WEEKS) ONLY if a Parish+Month has Church Event week(s) (-1 week per Church Event)
     try:
@@ -5836,7 +5833,6 @@ def update_pwr_2027_consolidation_excel_on_drive(
                     rec_ev = db_cur_for_ev.get(f"{p_full.upper()}__{m_up}__{w_lbl}", {})
                     if bool(rec_ev.get("church_event_locked")) or "(CHURCH EVENT)" in str(rec_ev.get("priest", "")).upper():
                         ev_cnt += 1
-                        # Clear the W-n cell for Church Event week so it is not included in the report sum
                         for act_idx in range(8):
                             ws_ev.cell(h_row_ev + 2 + act_idx, 2 + w_i).value = None
                 eff_wks_h = max(1, base_m_wks - ev_cnt)
@@ -5848,30 +5844,83 @@ def update_pwr_2027_consolidation_excel_on_drive(
     out_buf = io.BytesIO()
     wb.save(out_buf)
     updated_bytes = out_buf.getvalue()
-    try:
-        with open(LOCAL_PWR_2027_CONSOLIDATION_CACHE, "wb") as f:
-            f.write(updated_bytes)
-    except Exception:
-        pass
+    for local_cons_p in [LOCAL_PWR_2027_CONSOLIDATION_CACHE, LOCAL_PWR_2027_FULL_YEAR_ALT_NAME]:
+        try:
+            with open(local_cons_p, "wb") as f:
+                f.write(updated_bytes)
+        except Exception:
+            pass
 
     active_fid = get_active_pwr_consolidation_file_id()
+    target_fids = []
+    if active_fid:
+        target_fids.append(active_fid)
+    if MASTER_PWR_2027_CONSOLIDATION_FILE_ID not in target_fids:
+        target_fids.append(MASTER_PWR_2027_CONSOLIDATION_FILE_ID)
+
     drive_synced = False
     drive_msg = "Na-save sa local cache (CTG_PWR_2027_CONSOLIDATION.xlsx)."
     try:
         service = get_google_drive_service()
-        if service and MediaIoBaseUpload is not None and active_fid:
-            media = MediaIoBaseUpload(
-                io.BytesIO(updated_bytes),
-                mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                resumable=False
-            )
-            service.files().update(
-                fileId=active_fid,
-                media_body=media,
-                supportsAllDrives=True
-            ).execute()
-            drive_synced = True
-            drive_msg = f"Matagumpay na na-sync sa Google Drive (CTG_PWR_2027_CONSOLIDATION.xlsx — {active_fid})!"
+        if service and MediaIoBaseUpload is not None:
+            try:
+                q_cons = (
+                    "(name = 'CTG_PWR_2027_CONSOLIDATION.xlsx' or name = 'CTG_PWR_2027_CONSOLIDATION' "
+                    "or name = 'CTG_PWR_2027_FULL_YEAR_CHARTS_UPDATED.xlsx') and trashed = false"
+                )
+                res_c = service.files().list(
+                    q=q_cons,
+                    spaces="drive",
+                    fields="files(id, name, mimeType)",
+                    pageSize=10,
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True
+                ).execute()
+                for f_it in res_c.get("files", []):
+                    fid_c = f_it.get("id", "")
+                    if fid_c and fid_c not in target_fids:
+                        target_fids.append(fid_c)
+            except Exception:
+                pass
+
+            synced_ids = []
+            last_err_drv = ""
+            for t_fid in target_fids:
+                try:
+                    media = MediaIoBaseUpload(
+                        io.BytesIO(updated_bytes),
+                        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        resumable=True
+                    )
+                    service.files().update(
+                        fileId=t_fid,
+                        media_body=media,
+                        supportsAllDrives=True
+                    ).execute()
+                    synced_ids.append(t_fid)
+                    drive_synced = True
+                except Exception as e_u:
+                    last_err_drv = str(e_u)
+                    try:
+                        media_nr = MediaIoBaseUpload(
+                            io.BytesIO(updated_bytes),
+                            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            resumable=False
+                        )
+                        service.files().update(
+                            fileId=t_fid,
+                            media_body=media_nr,
+                            supportsAllDrives=True
+                        ).execute()
+                        synced_ids.append(t_fid)
+                        drive_synced = True
+                    except Exception as e_u2:
+                        last_err_drv = str(e_u2)
+
+            if drive_synced:
+                drive_msg = f"Matagumpay na na-update ang CTG_PWR_2027_CONSOLIDATION sa Google Drive ({synced_ids[0]})!"
+            elif last_err_drv:
+                drive_msg = f"Na-save sa app database (Google Drive sync notice: {last_err_drv[:80]})"
     except Exception as e_drv:
         drive_msg = f"Na-save sa app database (Google Drive API sync notice: {str(e_drv)[:80]})"
 
@@ -6058,11 +6107,14 @@ def save_weekly_monitoring_record(parish: str, month: str, week_num: str, report
             json.dump(db, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
+    cons_msg = ""
     try:
-        update_pwr_2027_consolidation_excel_on_drive(month, parish, sync_all_from_db=db)
+        _, cons_msg = update_pwr_2027_consolidation_excel_on_drive(month, parish, sync_all_from_db=db)
     except Exception:
         pass
-    return update_master_pwr_excel_file(parish, month, week_num, report_date, db[key])
+    ok_m_file, msg_m_file = update_master_pwr_excel_file(parish, month, week_num, report_date, db[key])
+    combined_msg = f"{msg_m_file} | {cons_msg}" if cons_msg else msg_m_file
+    return ok_m_file, combined_msg
 
 def update_master_pwr_excel_file(parish: str, month: str, week_num: str, report_date: str, data_row: dict) -> tuple[bool, str]:
     service = get_google_drive_service()
@@ -6458,6 +6510,11 @@ def parse_master_pwr_excel_into_db(excel_bytes: bytes, target_month: str, target
 
         with open(LOCAL_WEEKLY_REPORTS_DB, "w", encoding="utf-8") as f:
             json.dump(db, f, ensure_ascii=False, indent=2)
+        if updated_parishes > 0:
+            try:
+                update_pwr_2027_consolidation_excel_on_drive("", "", sync_all_from_db=db)
+            except Exception:
+                pass
     except Exception:
         pass
     return updated_parishes
@@ -6892,7 +6949,12 @@ def sync_weekly_reports_from_google_drive_folder(folder_url: str, target_month: 
                                     )
                                     synced_count += 1
                             break
-        return synced_count, f"Matagumpay na na-sync ang Google Drive Excel data para sa {target_month} 2027 ({target_week})!"
+        try:
+            db_after_sync = load_weekly_monitoring_records()
+            _, cons_sync_msg = update_pwr_2027_consolidation_excel_on_drive("", "", sync_all_from_db=db_after_sync)
+        except Exception:
+            cons_sync_msg = ""
+        return synced_count, f"Matagumpay na na-sync ang Google Drive Excel data para sa {target_month} 2027 ({target_week})! {cons_sync_msg}".strip()
     except Exception as e:
         return synced_count, f"Drive Folder Sync Notice: {str(e)}"
 
@@ -14719,9 +14781,9 @@ def extract_page_images_from_pdf_bytes(raw_pdf: bytes) -> list[Image.Image]:
     Resizes images to max_dim=1280 for fast, zero-lag processing.
     """
     imgs = []
-    # Tier 1: pypdfium2
+    # Tier 1: pypdfium2 (loaded dynamically via importlib so Pylance shows 0 missing-import warnings)
     try:
-        import pypdfium2 as pdfium
+        pdfium = importlib.import_module("pypdfium2")
         doc = pdfium.PdfDocument(raw_pdf)
         for i in range(len(doc)):
             page = doc[i]
@@ -14734,7 +14796,7 @@ def extract_page_images_from_pdf_bytes(raw_pdf: bytes) -> list[Image.Image]:
     # Tier 2: PyMuPDF (fitz)
     if not imgs:
         try:
-            import fitz
+            fitz = importlib.import_module("fitz")
             doc = fitz.open(stream=raw_pdf, filetype="pdf")
             for page in doc:
                 pix = page.get_pixmap(dpi=150)
@@ -14746,7 +14808,7 @@ def extract_page_images_from_pdf_bytes(raw_pdf: bytes) -> list[Image.Image]:
     # Tier 3: pypdf page.images
     if not imgs:
         try:
-            import pypdf
+            pypdf = importlib.import_module("pypdf")
             reader = pypdf.PdfReader(io.BytesIO(raw_pdf))
             for page in reader.pages:
                 for im_file in page.images:
