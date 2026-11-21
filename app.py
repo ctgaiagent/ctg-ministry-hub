@@ -4322,8 +4322,15 @@ def load_all_ministry_DataFrames():
     except Exception:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
-df_crm_global, df_p_global, df_q_global, df_co_global = load_all_ministry_DataFrames()
-global_records_df = build_combined_records_df(df_p_global, df_q_global, df_co_global)
+df_crm_global, df_p_global, df_q_global, df_co_global = pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+global_records_df = pd.DataFrame()
+
+def _ensure_notion_records_loaded():
+    global df_crm_global, df_p_global, df_q_global, df_co_global, global_records_df
+    if global_records_df.empty and df_crm_global.empty:
+        df_crm_global, df_p_global, df_q_global, df_co_global = load_all_ministry_DataFrames()
+        global_records_df = build_combined_records_df(df_p_global, df_q_global, df_co_global)
+    return df_crm_global, df_p_global, df_q_global, df_co_global, global_records_df
 all_chat_msgs_global = load_internal_chat_messages()
 my_chat_id = get_current_chat_identity()
 
@@ -4352,6 +4359,7 @@ def query_excel_database(search_query: str) -> str:
 def query_notion_crm(search_query: str = "") -> str:
     """Naghahanap ng Prayer Requests, Church Questions, Counselling, at Visitors sa Notion Database."""
     try:
+        _ensure_notion_records_loaded()
         frames = []
         if not global_records_df.empty:
             frames.append(global_records_df)
@@ -12370,7 +12378,7 @@ with st.sidebar:
         st.rerun()
 
     if st.session_state.user_role == "Master Admin":
-        with st.expander("📡 Live Update & Activity Monitor", expanded=True):
+        with st.expander("📡 Live Update & Activity Monitor", expanded=False):
             if not global_records_df.empty:
                 c_s1, c_s2 = st.columns(2)
                 cnt_sub = len(global_records_df[global_records_df["Status"].str.contains("For Master Admin Approval", case=False, na=False)])
@@ -13786,11 +13794,10 @@ def render_ctg_gabay_ai_assistant_section(show_top_banner: bool = True, key_pref
             )
         )
 
-    if "chat_session" not in st.session_state or st.session_state.current_model != selected_model:
-        st.session_state.current_model = selected_model
-        st.session_state.chat_session = create_chat(valid_keys[0], selected_model)
-
     def stream_chat_response(prompt_text: str):
+        if "chat_session" not in st.session_state or st.session_state.current_model != selected_model:
+            st.session_state.current_model = selected_model
+            st.session_state.chat_session = create_chat(valid_keys[0], selected_model)
         final_prompt = prompt_text
         if "Gawaan ng Mensahe" in assistant_mode or "AI Draft" in assistant_mode:
             final_prompt = (
@@ -13880,6 +13887,7 @@ elif app_mode == "🗣️ Ministry Messenger (Admin & Users Chat)":
 # 📥 PARISH INBOX & ACTION HUB (MINIMALIST & TASK-FOCUSED)
 # =====================================================================
 elif app_mode == "📥 Parish Inbox & Action Hub":
+    _ensure_notion_records_loaded()
     render_title_with_logo(f"📍 Parish Workspace: {st.session_state.assigned_parish}", "Task-focused inbox para sa pagtugon sa mga nag-aabang ng tulong o dasal.")
     df_crm, df_p, df_q, df_co = df_crm_global, df_p_global, df_q_global, df_co_global
     tp, tq, tc = st.tabs(["🙏 Prayer Requests", "📖 Church Questions", "🤝 Counselling"])
@@ -13911,6 +13919,7 @@ elif app_mode in ["📊 Parish Directory & Family Search", "📊 Parish Census &
 # 📈 LIVE ACTIVITY & UPDATE DASHBOARD (MASTER ADMIN ONLY)
 # =====================================================================
 elif app_mode == "📈 Live Activity & Update Dashboard":
+    _ensure_notion_records_loaded()
     if st.session_state.user_role != "Master Admin":
         st.error("Ang pahinang ito ay para lamang sa Master Admin.")
         st.stop()
@@ -14021,6 +14030,7 @@ elif app_mode == "📈 Live Activity & Update Dashboard":
 # 2. MASTER ADMIN CONTROLLER / APPROVAL HUB
 # =====================================================================
 elif app_mode == "🛡️ Master Admin Controller & Approval Queue":
+    _ensure_notion_records_loaded()
     render_title_with_logo(
         "Master Admin Controller & Approval Hub",
         "Ipasa ang mga request sa kaukulang Parokya, tingnan kung sino ang nag-submit, at i-approve/i-send sa Gmail o SMS."
@@ -14167,6 +14177,7 @@ elif app_mode == "🛡️ Master Admin Controller & Approval Queue":
 # 3. NOTION CRM (VISITORS & MEMBERS)
 # =====================================================================
 elif app_mode == "🤝 Notion CRM (Visitors & Members)":
+    _ensure_notion_records_loaded()
     render_title_with_logo("Church CRM: Visitors & Members (Notion)")
     if st.button("🔄 I-refresh"):
         st.cache_data.clear()
@@ -14931,6 +14942,7 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                         st.warning(f"⚠️ {sync_msg}")
             else:
                 st.warning("Pakilagay ang Full Name.")
+    st.stop()
 
 elif app_mode == "🙏 Prayer Wall & Categorizer":
     render_title_with_logo("AI Prayer Request Categorizer")
@@ -15670,4 +15682,6 @@ elif app_mode == "🛠️ App Settings":
 # =====================================================================
 # 8. MADALING SUNDAN NA AI CHAT ASSISTANT (STEP-BY-STEP GUIDE + ONE-CLICK BUTTONS)
 # =====================================================================
-render_ctg_gabay_ai_assistant_section(show_top_banner=True, key_prefix="dedicated_gabay")
+elif app_mode == "💬 AI Chat Assistant":
+    render_ctg_gabay_ai_assistant_section(show_top_banner=True, key_prefix="dedicated_gabay")
+    st.stop()
