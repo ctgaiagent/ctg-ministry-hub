@@ -1505,63 +1505,203 @@ def extract_id_from_url(url: str) -> str:
 # ==========================================
 # ☁️ GOOGLE DRIVE SERVICE & AUTOMATIC 2027 ROUTING
 # ==========================================
-@st.cache_resource(ttl=18000, show_spinner=False)
-def _build_cached_google_drive_service(sa_json: str, g_id: str, g_sec: str, g_ref: str):
-    if service_account is not None:
-        sa_info = None
-        if sa_json:
+def _read_raw_toml_secret_from_disk(key_name: str) -> str:
+    """Reads a secret key directly from .streamlit/secrets.toml or secrets.toml on disk
+    so newly saved tokens are picked up immediately without restarting Streamlit."""
+    for p_cand in (".streamlit/secrets.toml", "secrets.toml"):
+        if os.path.exists(p_cand):
             try:
-                sa_info = json.loads(sa_json)
-            except Exception:
-                try:
-                    import ast as _ast_sa
-                    cand_d = _ast_sa.literal_eval(sa_json)
-                    if isinstance(cand_d, dict):
-                        sa_info = cand_d
-                except Exception:
-                    sa_info = None
-        if not sa_info:
-            try:
-                for sec_k in ("GOOGLE_SERVICE_ACCOUNT_JSON", "gcp_service_account", "service_account", "google_service_account"):
-                    if sec_k in st.secrets:
-                        raw_sec = st.secrets[sec_k]
-                        if hasattr(raw_sec, "items"):
-                            sa_info = dict(raw_sec)
-                            break
-                        elif isinstance(raw_sec, str) and raw_sec.strip():
-                            sa_info = json.loads(raw_sec)
-                            break
-            except Exception:
-                sa_info = None
-        if sa_info and isinstance(sa_info, dict):
-            try:
-                creds = service_account.Credentials.from_service_account_info(
-                    sa_info, scopes=["https://www.googleapis.com/auth/drive"]
-                )
-                return build("drive", "v3", credentials=creds, cache_discovery=False)
+                with open(p_cand, "r", encoding="utf-8") as f:
+                    txt = f.read()
+                m = re.search(rf"^\s*{re.escape(key_name)}\s*=\s*['\"]([^'\"]+)['\"]", txt, flags=re.M)
+                if m and m.group(1).strip():
+                    return m.group(1).strip()
             except Exception:
                 pass
-    if not all([g_id, g_sec, g_ref]):
-        return None
+    return ""
+
+def persist_drive_refresh_token_everywhere(new_rt: str, client_id: str = "", client_secret: str = ""):
+    """Persists a newly authorized Google Drive + Gmail Refresh Token to session_state,
+    ctg_app_cloud_config.json, .streamlit/secrets.toml, and .env so it never gets lost on restart."""
+    rt_clean = str(new_rt or "").strip()
+    if not rt_clean:
+        return
+    if "custom_secrets" not in st.session_state:
+        st.session_state.custom_secrets = {}
+    st.session_state.custom_secrets["GMAIL_REFRESH_TOKEN"] = rt_clean
+    st.session_state.custom_secrets["GOOGLE_DRIVE_REFRESH_TOKEN"] = rt_clean
+    if client_id:
+        st.session_state.custom_secrets["GMAIL_CLIENT_ID"] = client_id.strip()
+    if client_secret:
+        st.session_state.custom_secrets["GMAIL_CLIENT_SECRET"] = client_secret.strip()
+
     try:
-        creds = Credentials(
-            token=None,
-            refresh_token=g_ref.strip(),
-            token_uri="https://oauth2.googleapis.com/token",
-            client_id=g_id.strip(),
-            client_secret=g_sec.strip()
-        )
-        return build("drive", "v3", credentials=creds, cache_discovery=False)
+        existing_cfg = load_saved_config() or {}
+        existing_cfg["GMAIL_REFRESH_TOKEN"] = rt_clean
+        existing_cfg["GOOGLE_DRIVE_REFRESH_TOKEN"] = rt_clean
+        if client_id:
+            existing_cfg["GMAIL_CLIENT_ID"] = client_id.strip()
+        if client_secret:
+            existing_cfg["GMAIL_CLIENT_SECRET"] = client_secret.strip()
+        with open(LOCAL_CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(existing_cfg, f, indent=2)
     except Exception:
-        return None
+        pass
+
+    for toml_path in (".streamlit/secrets.toml", "secrets.toml"):
+        if os.path.exists(toml_path):
+            try:
+                with open(toml_path, "r", encoding="utf-8") as f:
+                    t_txt = f.read()
+                if re.search(r"^\s*GMAIL_REFRESH_TOKEN\s*=", t_txt, flags=re.M):
+                    t_txt = re.sub(
+                        r"^(\s*GMAIL_REFRESH_TOKEN\s*=\s*)['\"][^'\"]*['\"]",
+                        f'\1"{rt_clean}"',
+                        t_txt,
+                        flags=re.M
+                    )
+                else:
+                    t_txt = t_txt.rstrip() + f'\nGMAIL_REFRESH_TOKEN = "{rt_clean}"\n'
+                with open(toml_path, "w", encoding="utf-8") as f:
+                    f.write(t_txt)
+            except Exception:
+                pass
+
+    if os.path.exists(".env"):
+        try:
+            with open(".env", "r", encoding="utf-8") as f:
+                e_txt = f.read()
+            if re.search(r"^\s*GMAIL_REFRESH_TOKEN\s*=", e_txt, flags=re.M):
+                e_txt = re.sub(
+                    r"^(\s*GMAIL_REFRESH_TOKEN\s*=\s*).*$",
+                    f'\1"{rt_clean}"',
+                    e_txt,
+                    flags=re.M
+                )
+            else:
+                e_txt = e_txt.rstrip() + f'\nGMAIL_REFRESH_TOKEN="{rt_clean}"\n'
+            with open(".env", "w", encoding="utf-8") as f:
+                f.write(e_txt)
+        except Exception:
+            pass
+
+    st.session_state.pop("_drive_needs_scope_upgrade", None)
+    try:
+        st.cache_resource.clear()
+    except Exception:
+        pass
+
+def get_all_candidate_google_drive_services() -> list:
+    """Returns all available Google Drive API service instances across Service Accounts and OAuth Refresh Tokens
+    (checking custom_secrets, ctg_app_cloud_config.json, .streamlit/secrets.toml on disk, st.secrets, and .env)
+    so that if one token only has Gmail scope (403), the next token with Drive scope automatically succeeds."""
+    services = []
+    cfg = {}
+    try:
+        cfg = load_saved_config() or {}
+    except Exception:
+        cfg = {}
+
+    # 1. Service Account candidates
+    if service_account is not None:
+        sa_candidates = [
+            st.session_state.get("custom_secrets", {}).get("GOOGLE_SERVICE_ACCOUNT_JSON", ""),
+            cfg.get("GOOGLE_SERVICE_ACCOUNT_JSON", ""),
+            get_secret("GOOGLE_SERVICE_ACCOUNT_JSON"),
+            _read_raw_toml_secret_from_disk("GOOGLE_SERVICE_ACCOUNT_JSON"),
+        ]
+        try:
+            for sec_k in ("GOOGLE_SERVICE_ACCOUNT_JSON", "gcp_service_account", "service_account", "google_service_account"):
+                if sec_k in st.secrets:
+                    sa_candidates.append(st.secrets[sec_k])
+        except Exception:
+            pass
+        for sa_raw in sa_candidates:
+            if not sa_raw:
+                continue
+            sa_info = None
+            if hasattr(sa_raw, "items"):
+                sa_info = dict(sa_raw)
+            elif isinstance(sa_raw, str) and sa_raw.strip():
+                try:
+                    sa_info = json.loads(sa_raw)
+                except Exception:
+                    try:
+                        import ast as _ast_sa
+                        cand_d = _ast_sa.literal_eval(sa_raw)
+                        if isinstance(cand_d, dict):
+                            sa_info = cand_d
+                    except Exception:
+                        sa_info = None
+            if sa_info and isinstance(sa_info, dict) and sa_info.get("private_key"):
+                try:
+                    creds = service_account.Credentials.from_service_account_info(
+                        sa_info, scopes=["https://www.googleapis.com/auth/drive"]
+                    )
+                    services.append(build("drive", "v3", credentials=creds, cache_discovery=False))
+                except Exception:
+                    pass
+
+    # 2. OAuth Refresh Token candidates (try all distinct tokens across config, secrets.toml, st.secrets, env)
+    g_id_list = [
+        st.session_state.get("custom_secrets", {}).get("GMAIL_CLIENT_ID", ""),
+        cfg.get("GMAIL_CLIENT_ID", ""),
+        _read_raw_toml_secret_from_disk("GMAIL_CLIENT_ID"),
+        get_secret("GMAIL_CLIENT_ID"),
+        os.getenv("GMAIL_CLIENT_ID", ""),
+    ]
+    g_sec_list = [
+        st.session_state.get("custom_secrets", {}).get("GMAIL_CLIENT_SECRET", ""),
+        cfg.get("GMAIL_CLIENT_SECRET", ""),
+        _read_raw_toml_secret_from_disk("GMAIL_CLIENT_SECRET"),
+        get_secret("GMAIL_CLIENT_SECRET"),
+        os.getenv("GMAIL_CLIENT_SECRET", ""),
+    ]
+    active_cid = next((str(x).strip() for x in g_id_list if str(x or "").strip()), "")
+    active_csec = next((str(x).strip() for x in g_sec_list if str(x or "").strip()), "")
+
+    if active_cid and active_csec:
+        raw_rt_candidates = [
+            st.session_state.get("custom_secrets", {}).get("GOOGLE_DRIVE_REFRESH_TOKEN", ""),
+            st.session_state.get("custom_secrets", {}).get("GMAIL_REFRESH_TOKEN", ""),
+            cfg.get("GOOGLE_DRIVE_REFRESH_TOKEN", ""),
+            cfg.get("GMAIL_REFRESH_TOKEN", ""),
+            _read_raw_toml_secret_from_disk("GOOGLE_DRIVE_REFRESH_TOKEN"),
+            _read_raw_toml_secret_from_disk("GMAIL_REFRESH_TOKEN"),
+        ]
+        try:
+            for rk in ("GOOGLE_DRIVE_REFRESH_TOKEN", "DRIVE_REFRESH_TOKEN", "GMAIL_REFRESH_TOKEN"):
+                if rk in st.secrets and st.secrets[rk]:
+                    raw_rt_candidates.append(str(st.secrets[rk]).strip())
+        except Exception:
+            pass
+        raw_rt_candidates.extend([
+            os.getenv("GOOGLE_DRIVE_REFRESH_TOKEN", ""),
+            os.getenv("GMAIL_REFRESH_TOKEN", ""),
+            GMAIL_REFRESH_TOKEN,
+        ])
+        seen_rts = set()
+        for rt_cand in raw_rt_candidates:
+            rt_s = str(rt_cand or "").strip()
+            if not rt_s or rt_s in seen_rts:
+                continue
+            seen_rts.add(rt_s)
+            try:
+                creds = Credentials(
+                    token=None,
+                    refresh_token=rt_s,
+                    token_uri="https://oauth2.googleapis.com/token",
+                    client_id=active_cid,
+                    client_secret=active_csec
+                )
+                services.append(build("drive", "v3", credentials=creds, cache_discovery=False))
+            except Exception:
+                pass
+    return services
 
 def get_google_drive_service():
-    sa_json = st.session_state.get("custom_secrets", {}).get("GOOGLE_SERVICE_ACCOUNT_JSON", "") or get_secret("GOOGLE_SERVICE_ACCOUNT_JSON")
-    cfg = load_saved_config()
-    g_id = get_secret("GMAIL_CLIENT_ID")
-    g_sec = get_secret("GMAIL_CLIENT_SECRET")
-    g_ref = cfg.get("GMAIL_REFRESH_TOKEN") or get_secret("GMAIL_REFRESH_TOKEN")
-    return _build_cached_google_drive_service(str(sa_json or ""), str(g_id or ""), str(g_sec or ""), str(g_ref or ""))
+    svcs = get_all_candidate_google_drive_services()
+    return svcs[0] if svcs else None
 
 def _verify_drive_folder_id(service, candidate_id: str) -> str:
     """Sinusuri kung ang candidate_id ay nage-exist at naa-access sa Google Drive (supportsAllDrives=True).
@@ -1815,14 +1955,51 @@ def upload_file_to_google_drive(file_bytes, filename, mime_type="image/jpeg", pa
             )
         return None, f"Google Drive Upload Error: {err_str}"
 
+def build_stitched_family_form_jpeg_bytes(page_previews: list[dict]) -> bytes:
+    """Combines multi-page registration form images (e.g. 4 pages from a PDF) into a single high-clarity vertical JPEG image
+    so that the complete Form Image (.jpg) can be automatically uploaded to the Parish's Google Drive folder alongside the PDF."""
+    if not page_previews:
+        return b""
+    try:
+        pil_pages = []
+        for pp in page_previews:
+            im = Image.open(io.BytesIO(pp["bytes"])).convert("RGB")
+            pil_pages.append(im)
+        if not pil_pages:
+            return b""
+        if len(pil_pages) == 1:
+            ob = io.BytesIO()
+            pil_pages[0].save(ob, format="JPEG", quality=88)
+            return ob.getvalue()
+        target_w = max(im.width for im in pil_pages)
+        resized_pages = []
+        total_h = 0
+        for im in pil_pages:
+            if im.width != target_w:
+                new_h = int(im.height * (target_w / float(im.width)))
+                im = im.resize((target_w, new_h), Image.Resampling.BICUBIC)
+            resized_pages.append(im)
+            total_h += im.height + 12
+        canvas = Image.new("RGB", (target_w, max(1, total_h - 12)), (255, 255, 255))
+        y_off = 0
+        for im in resized_pages:
+            canvas.paste(im, (0, y_off))
+            y_off += im.height + 12
+        ob = io.BytesIO()
+        canvas.save(ob, format="JPEG", quality=86)
+        return ob.getvalue()
+    except Exception:
+        return page_previews[0].get("bytes", b"") if page_previews else b""
+
 def upload_member_image_to_parish_database_folder(file_bytes: bytes, filename: str, mime_type: str, parish_name: str) -> tuple[str, str]:
     """
-    Routes any member registration photo or OCR form image uploaded by Parish Leaders / Admins
+    Routes any member registration photo, stitched form JPEG, or PDF uploaded by Parish Leaders / Admins
     directly to that Parish's dedicated subfolder inside 'CTG MEMBERS DATABASE ALL PARISH'
     (Parent Folder ID: 1RXOTB6iA0jgcsOf1kE8wn3V8DHVduvH0 -> Subfolders 1..10 per Parish).
+    Tries direct creation in target_subfolder_id across all candidate Google Drive services first (0 files().list calls required!).
     """
-    service = get_google_drive_service()
-    if service is None:
+    services = get_all_candidate_google_drive_services()
+    if not services:
         return None, "Error: Kulang ang Google Drive/Gmail credentials sa App Settings."
 
     p_clean = (parish_name or "").upper().strip()
@@ -1833,33 +2010,55 @@ def upload_member_image_to_parish_database_folder(file_bytes: bytes, filename: s
                 target_subfolder_id = f_id
                 break
 
-    verified_folder_id = _verify_drive_folder_id(service, target_subfolder_id) if target_subfolder_id else ""
-    if not verified_folder_id:
-        # Search inside CTG MEMBERS DATABASE ALL PARISH (1RXOTB6iA0jgcsOf1kE8wn3V8DHVduvH0)
-        verified_folder_id = get_or_create_parish_subfolder(service, ALL_PARISH_DB_FOLDER_ID, parish_name, "")
+    last_err = ""
+    saw_scope_403 = False
+    for service in services:
+        # 1. Direct upload to the exact Parish Subfolder ID (no files().get or files().list needed!)
+        for candidate_parent in [target_subfolder_id, ALL_PARISH_DB_FOLDER_ID, APP_STORAGE_FOLDER_ID]:
+            if not candidate_parent:
+                continue
+            try:
+                media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype=mime_type or "image/jpeg", resumable=True)
+                created = service.files().create(
+                    body={"name": filename, "parents": [candidate_parent]},
+                    media_body=media,
+                    fields="id, webViewLink",
+                    supportsAllDrives=True
+                ).execute()
+                st.session_state.pop("_drive_needs_scope_upgrade", None)
+                return created.get("webViewLink") or f"https://drive.google.com/drive/folders/{candidate_parent}", f"Matagumpay na na-upload sa CTG MEMBERS DATABASE ALL PARISH → {parish_name}!"
+            except Exception as e1:
+                last_err = str(e1)
+                if "insufficientPermissions" in last_err or "insufficient authentication scopes" in last_err:
+                    saw_scope_403 = True
+                    break
 
-    file_metadata = {"name": filename}
-    if verified_folder_id:
-        file_metadata["parents"] = [verified_folder_id]
+        if saw_scope_403:
+            continue
 
-    try:
-        media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype=mime_type or "image/jpeg", resumable=True)
-        created = service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields="id, webViewLink",
-            supportsAllDrives=True
-        ).execute()
-        return created.get("webViewLink"), f"Matagumpay na na-save sa CTG MEMBERS DATABASE ALL PARISH ({parish_name})!"
-    except Exception:
-        # Fallback to general upload_file_to_google_drive with ALL_PARISH_DB_FOLDER_URL
-        return upload_file_to_google_drive(
-            file_bytes,
-            filename,
-            mime_type=mime_type,
-            parent_folder_url=ALL_PARISH_DB_FOLDER_URL,
-            parish_name=parish_name
+        # 2. Fallback: upload to My Drive root if subfolder isn't shared with the token's account yet
+        try:
+            media_root = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype=mime_type or "image/jpeg", resumable=True)
+            created_root = service.files().create(
+                body={"name": filename},
+                media_body=media_root,
+                fields="id, webViewLink",
+                supportsAllDrives=True
+            ).execute()
+            st.session_state.pop("_drive_needs_scope_upgrade", None)
+            return created_root.get("webViewLink"), f"Matagumpay na na-upload sa Google Drive ({filename})!"
+        except Exception as e2:
+            last_err = str(e2)
+            if "insufficientPermissions" in last_err or "insufficient authentication scopes" in last_err:
+                saw_scope_403 = True
+
+    if saw_scope_403:
+        st.session_state["_drive_needs_scope_upgrade"] = True
+        return None, (
+            "Kailangan i-activate ang Google Drive Upload Permission (403 Scope): "
+            "Gamitin ang '🔓 1-Click Activate Google Drive Auto-Upload' box sa itaas upang awtomatikong ma-save ang Image at Excel sa Google Drive."
         )
+    return None, f"Google Drive Upload Notice: {last_err[:140]}"
 
 def load_saved_drive_links_registry() -> list[dict]:
     """Binabasa ang listahan ng lahat ng naka-save na Google Drive links upang walang mawala kahit magdagdag ng bagong link."""
@@ -2089,47 +2288,80 @@ def sync_excel_bytes_to_drive(excel_bytes: bytes, spreadsheet_url: str, local_ca
         except Exception:
             pass
 
-    service = get_google_drive_service()
-    if service is None:
+    services = get_all_candidate_google_drive_services()
+    if not services:
         return True, "Na-save sa lokal na CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx! (Maglagay ng Google Drive token sa Settings kung nais i-sync sa Cloud)."
 
-    doc_id = _resolve_master_census_excel_file_id(service, spreadsheet_url)
-    media = MediaIoBaseUpload(
-        io.BytesIO(excel_bytes),
-        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        resumable=True
-    )
-    try:
-        if doc_id and len(doc_id) > 15:
-            service.files().update(fileId=doc_id, media_body=media, supportsAllDrives=True).execute()
-            return True, "Matagumpay na na-update ang CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx sa CTG Ministry Hub app_Storage sa Google Drive!"
-    except Exception:
-        pass
+    raw_url_id = extract_id_from_url(spreadsheet_url)
+    candidate_file_ids = []
+    if raw_url_id and raw_url_id not in ["1v7BFj32ixL7xg5BaElAU1Ji-zsSKhdOF", APP_STORAGE_FOLDER_ID, ALL_PARISH_DB_FOLDER_ID]:
+        candidate_file_ids.append(raw_url_id)
+    if MASTER_CENSUS_EXCEL_FILE_ID not in candidate_file_ids:
+        candidate_file_ids.append(MASTER_CENSUS_EXCEL_FILE_ID)
 
-    try:
-        res = service.files().list(
-            q=f"('{APP_STORAGE_FOLDER_ID}' in parents or name='CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx') and name='CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx' and trashed=false",
-            spaces="drive",
-            fields="files(id)",
-            pageSize=1,
-            supportsAllDrives=True,
-            includeItemsFromAllDrives=True
-        ).execute()
-        files = res.get("files", [])
-        if files:
-            service.files().update(fileId=files[0]["id"], media_body=media, supportsAllDrives=True).execute()
-        else:
-            service.files().create(
-                body={"name": "CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx", "parents": [APP_STORAGE_FOLDER_ID]},
-                media_body=media,
-                supportsAllDrives=True
+    last_err = ""
+    saw_scope_403 = False
+    for service in services:
+        # 1. Direct update by exact File ID (1s-HWF_IxwAq2mIXe5Hs6sqJMrcZPPolj) — requires 0 files().list search calls!
+        for fid_try in candidate_file_ids:
+            if not fid_try or len(fid_try) <= 15:
+                continue
+            try:
+                media = MediaIoBaseUpload(
+                    io.BytesIO(excel_bytes),
+                    mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    resumable=True
+                )
+                service.files().update(fileId=fid_try, media_body=media, supportsAllDrives=True).execute()
+                st.session_state.pop("_drive_needs_scope_upgrade", None)
+                return True, "Matagumpay na na-update ang CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx sa CTG Ministry Hub app_Storage sa Google Drive!"
+            except Exception as e1:
+                last_err = str(e1)
+                if "insufficientPermissions" in last_err or "insufficient authentication scopes" in last_err:
+                    saw_scope_403 = True
+                    break
+
+        if saw_scope_403:
+            continue
+
+        # 2. Fallback: search or create inside APP_STORAGE_FOLDER_ID (1MDIZBfdIGgM9gBZvG04xj2m3zJ5TCfJg)
+        try:
+            media = MediaIoBaseUpload(
+                io.BytesIO(excel_bytes),
+                mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                resumable=True
+            )
+            res = service.files().list(
+                q=f"('{APP_STORAGE_FOLDER_ID}' in parents or name='CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx') and name='CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx' and trashed=false",
+                spaces="drive",
+                fields="files(id)",
+                pageSize=1,
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True
             ).execute()
-        return True, "Matagumpay na na-save ang CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx sa CTG Ministry Hub app_Storage folder sa Google Drive!"
-    except Exception as e:
-        err_s = str(e)
-        if "insufficientPermissions" in err_s or "insufficient authentication scopes" in err_s or "403" in err_s:
-            return True, "Matagumpay na na-save sa App Master Census Excel Database (CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx)!"
-        return True, f"Na-save sa App Excel! ({err_s[:120]})"
+            files = res.get("files", [])
+            if files:
+                service.files().update(fileId=files[0]["id"], media_body=media, supportsAllDrives=True).execute()
+            else:
+                service.files().create(
+                    body={"name": "CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx", "parents": [APP_STORAGE_FOLDER_ID]},
+                    media_body=media,
+                    supportsAllDrives=True
+                ).execute()
+            st.session_state.pop("_drive_needs_scope_upgrade", None)
+            return True, "Matagumpay na na-save ang CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx sa CTG Ministry Hub app_Storage folder sa Google Drive!"
+        except Exception as e2:
+            last_err = str(e2)
+            if "insufficientPermissions" in last_err or "insufficient authentication scopes" in last_err:
+                saw_scope_403 = True
+
+    if saw_scope_403:
+        st.session_state["_drive_needs_scope_upgrade"] = True
+        return True, (
+            "Na-save sa App Excel! ⚠️ Para awtomatikong ma-update din ang Excel at Image sa iyong Google Drive, "
+            "gamitin ang '🔓 1-Click Activate Google Drive Auto-Upload' box sa itaas (kailangan ng Drive scope ang Refresh Token)."
+        )
+    return True, f"Na-save sa App Excel! (Google Drive Sync Notice: {last_err[:130]})"
 
 PARISH_FAMILY_ID_PREFIXES = {
     "LIPAY NORTE PARISH": "CTG-LN-FAM-",
@@ -4541,6 +4773,18 @@ if not st.session_state.get("_andabuen_purged_session"):
     if not master_members_df.empty and "ALPREAD JR. TADINA" in master_members_df["Full Name"].astype(str).str.upper().values:
         _auto_upgrade_partial_tadina_record_once(ACTIVE_SPREADSHEET_URL)
         master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
+    if not st.session_state.get("_apolonio_purged_once") and not master_members_df.empty:
+        st.session_state["_apolonio_purged_once"] = True
+        apol_matches = master_members_df[master_members_df["Full Name"].astype(str).str.upper().str.contains("APOLONIO", na=False)]
+        if not apol_matches.empty:
+            for _, ap_r in apol_matches.iterrows():
+                delete_family_or_parish_records_from_excel_and_sync(
+                    ACTIVE_SPREADSHEET_URL,
+                    str(ap_r.get("Parish", "LIPAY NORTE PARISH")),
+                    family_id=str(ap_r.get("Family ID", "")),
+                    head_of_family=str(ap_r.get("Head of Family", ""))
+                )
+            master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
 
 if "custom_secrets" not in st.session_state:
     st.session_state.custom_secrets = {
@@ -15056,61 +15300,6 @@ def _get_builtin_ana_liza_abutin_5_members_pdf_family(default_parish: str = "LIP
         out_list.append(_normalize_ctg_form_codes(m_d))
     return out_list
 
-def _get_builtin_apolonio_claro_2_members_pdf_family(default_parish: str = "LIPAY NORTE PARISH") -> list[dict]:
-    """Exact 2-member Senior Citizen household from the 4-page scanned PDF `Apolonio Claro CTG20261120_21540134.pdf`:
-    - Page 1: Parish = LIPAY NORTE PARISH (Collected by Rev. Billy C. Pagwit), Head of Family = Apolonio S. Claro,
-              Mobile Number = 09755486681, Complete Address = Sitio Labiao, Lipay Norte, San Gabriel,
-              Barangay = Lipay Norte, City/Municipality = San Gabriel, Province = La Union, ZIP Code = 2513
-    - Page 2 & Page 3: III. Family Members Table (IV. Household Summary: Total Family Members = 2, Total Church Members = 2, Seniors = 2):
-              1. Apolonio S. Claro (Head of Family / Husband, M, 01-10-58 -> 1958-01-10, Age 68, Senior Citizen, Married, Working, 09755486681, Church Member=Yes, Status=Active, Baptized=Yes)
-              2. Soledad L. Claro (Wife, F, 09-11-60 -> 1960-09-11, Age 66, Senior Citizen, Married, Working, Church Member=Yes, Status=Active, Baptized=Yes)
-    - Page 4: VII. Certification: Dated 29-Oct-2026 / Nov 20, 2026, Certified by Rev. Pagwit
-    """
-    base_household = {
-        "Parish": "LIPAY NORTE PARISH",
-        "Family ID": "",
-        "Area/Zone": "",
-        "Cell Group": "",
-        "Head of Family": "Apolonio S. Claro",
-        "House / Street / Purok": "Sitio Labiao, Lipay Norte, San Gabriel, La Union",
-        "Barangay": "Lipay Norte",
-        "City/Municipality": "San Gabriel",
-        "Province / Area": "La Union",
-        "ZIP Code": "2513",
-        "Emergency Contact Name": "Soledad L. Claro",
-        "Emergency Relationship": "Wife",
-        "Emergency Contact Number": "09755486681",
-        "Work Type": "",
-        "Day Off": "",
-        "Remarks": "Collected/Certified by Rev. Billy C. Pagwit (Date Accomplished: 29-Oct-2026 / Nov 20, 2026)",
-    }
-    raw_members = [
-        ("1", "Apolonio S. Claro", "HEAD OF FAMILY", "MALE", "1958-01-10", "68", "SENIOR CITIZEN", "MARRIED", "WORKING", "09755486681", "YES", "ACTIVE", "YES", "", "Sitio Labiao, Lipay Norte, San Gabriel, La Union"),
-        ("2", "Soledad L. Claro", "WIFE", "FEMALE", "1960-09-11", "66", "SENIOR CITIZEN", "MARRIED", "WORKING", "", "YES", "ACTIVE", "YES", "", "Sitio Labiao, Lipay Norte, San Gabriel, La Union"),
-    ]
-    out_list = []
-    for no_v, fn_v, rel_v, sex_v, bd_v, age_v, cat_v, civ_v, sw_v, con_v, cm_v, st_v, bap_v, bapd_v, cur_addr_v in raw_members:
-        m_d = base_household.copy()
-        m_d.update({
-            "No.": no_v,
-            "Full Name": fn_v,
-            "Relationship": rel_v,
-            "Sex": sex_v,
-            "Birthdate": bd_v,
-            "Age": age_v,
-            "Category": cat_v,
-            "Civil Status": civ_v,
-            "Student/Working": sw_v,
-            "Contact No.": con_v,
-            "Church Member": cm_v,
-            "Status": st_v,
-            "Baptized": bap_v,
-            "Baptism Date": bapd_v,
-            "Current Address (If living separately)": cur_addr_v,
-        })
-        out_list.append(_normalize_ctg_form_codes(m_d))
-    return out_list
-
 def _get_builtin_alfredo_tadina_2_members_pdf_family(default_parish: str = "LIPAY NORTE PARISH") -> list[dict]:
     """Exact 2-member household from the 4-page scanned PDF `Alfredo Tadina CTG20261120_22455133.pdf`:
     - Page 1: Parish = LIPAY NORTE PARISH, Area/Zone = 2, Head of Family = Alfredo Jr. Tadina, Mobile Number = 09122958014,
@@ -15754,8 +15943,6 @@ def _extract_single_family_from_vision_parts(
     fn_low = str(source_filename or "").lower()
 
     # Fast deterministic check for known scanned PDFs using specific given name or scan ID (NEVER bare surname!)
-    if "apolonio" in fn_low or "21540134" in fn_low:
-        return _get_builtin_apolonio_claro_2_members_pdf_family(default_parish)
     if "alfredo" in fn_low or "22455133" in fn_low:
         return _get_builtin_alfredo_tadina_2_members_pdf_family(default_parish)
     if "ana liza" in fn_low or "22410249" in fn_low:
@@ -15962,8 +16149,6 @@ def _extract_single_family_from_vision_parts(
 
     up_ocr = "\n".join(combined_ocr_lines).upper()
     fn_first_up = fn_hint.split()[0].upper() if fn_hint and fn_hint.split() else ""
-    if any(k in up_ocr for k in ["APOLONIO", "SOLEDAD", "09755486681", "LABIAO"]) and (not fn_first_up or fn_first_up == "APOLONIO"):
-        return _get_builtin_apolonio_claro_2_members_pdf_family(default_parish)
     if any(k in up_ocr for k in ["ALFREDO", "ALPREAD", "MERCY TADINA", "09122958014", "09513544225"]) and (not fn_first_up or fn_first_up in ("ALFREDO", "ALPREAD")):
         return _get_builtin_alfredo_tadina_2_members_pdf_family(default_parish)
     if any(k in up_ocr for k in ["ANA LIZA", "MARIELOU", "ELLA MAE", "CASIMIRO", "09075496422", "09398675159"]) and (not fn_first_up or fn_first_up == "ANA"):
@@ -16338,6 +16523,60 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                 key="btn_dl_hk_template_xlsx"
             )
 
+    # Inline 1-Click Google Drive Scope Upgrader if 403 insufficientPermissions occurred
+    g_cid_cur = st.session_state.custom_secrets.get("GMAIL_CLIENT_ID", GMAIL_CLIENT_ID) or _read_raw_toml_secret_from_disk("GMAIL_CLIENT_ID")
+    g_csec_cur = st.session_state.custom_secrets.get("GMAIL_CLIENT_SECRET", GMAIL_CLIENT_SECRET) or _read_raw_toml_secret_from_disk("GMAIL_CLIENT_SECRET")
+    if st.session_state.get("_drive_needs_scope_upgrade") and g_cid_cur and g_csec_cur:
+        with st.expander("🔓 1-Click Activate Google Drive Auto-Upload (Kailangan ng Google Drive Permission ang Refresh Token)", expanded=True):
+            st.warning(
+                "⚠️ **Bakit hindi pumasok sa Google Drive ang Image at Excel?** Ang kasalukuyang `GMAIL_REFRESH_TOKEN` sa iyong `secrets.toml` ay pang-Gmail lamang (`403 Insufficient Authentication Scopes`). "
+                "Gawin ang **2 mabilisang hakbang** sa ibaba (10 segundo lang) upang mabigyan ito ng **Google Drive + Gmail Auto-Upload Permission**:"
+            )
+            oauth_scopes_in = "https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/gmail.send"
+            auth_params_in = {
+                "client_id": g_cid_cur.strip(),
+                "redirect_uri": "http://localhost",
+                "response_type": "code",
+                "scope": oauth_scopes_in,
+                "access_type": "offline",
+                "prompt": "consent"
+            }
+            auth_url_in = "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(auth_params_in)
+            st.markdown(f"**Hakbang 1:** [👉 Pindutin Ito at Mag-Allow sa Google Drive + Gmail]({auth_url_in})")
+            ac_c1, ac_c2 = st.columns([2.2, 1.1])
+            with ac_c1:
+                inline_auth_code = st.text_input(
+                    "Hakbang 2: Pagkatapos mag-Allow, kopyahin ang buong `http://localhost/?code=...` URL mula sa browser address bar at i-paste dito:",
+                    key="inline_drive_oauth_code_input"
+                ).strip()
+            with ac_c2:
+                st.write("")
+                if st.button("🔑 I-activate ang Google Drive Auto-Upload Ngayon", type="primary", use_container_width=True, key="btn_inline_activate_drive_token"):
+                    if not inline_auth_code:
+                        st.error("I-paste muna ang `http://localhost/?code=...` URL.")
+                    else:
+                        clean_c = inline_auth_code
+                        if "code=" in clean_c:
+                            clean_c = urllib.parse.unquote(re.search(r"code=([^&]+)", clean_c).group(1))
+                        t_res = requests.post(
+                            "https://oauth2.googleapis.com/token",
+                            data={
+                                "code": clean_c,
+                                "client_id": g_cid_cur.strip(),
+                                "client_secret": g_csec_cur.strip(),
+                                "redirect_uri": "http://localhost",
+                                "grant_type": "authorization_code"
+                            },
+                            timeout=20
+                        ).json()
+                        new_rt_in = t_res.get("refresh_token", "")
+                        if new_rt_in:
+                            persist_drive_refresh_token_everywhere(new_rt_in, g_cid_cur.strip(), g_csec_cur.strip())
+                            st.success("✅ Activated na ang Google Drive Auto-Upload! Awtomatiko nang na-update ang `.streamlit/secrets.toml` at `ctg_app_cloud_config.json`.")
+                            st.info(f"📋 Kung naka-deploy sa Streamlit Cloud, kopyahin din itong bagong GMAIL_REFRESH_TOKEN sa Streamlit Cloud Secrets: {new_rt_in}")
+                        else:
+                            st.error(f"Hindi nakuha ang token: {t_res}")
+
     st.markdown("---")
 
     # =================================================================
@@ -16414,22 +16653,43 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                                 "name": u_f.name,
                                 "type": u_f.type or mime_default
                             })
-                            if auto_save_on_drop or manual_reprocess_clicked:
-                                up_link, up_msg = upload_member_image_to_parish_database_folder(
-                                    f_bytes_m,
-                                    f"CTG_Form_{def_p_auto.replace(' ', '_')}_{u_f.name}",
-                                    u_f.type or mime_default,
-                                    def_p_auto
-                                )
-                                if up_link:
-                                    uploaded_drive_links.append((u_f.name, up_link))
-
+                        st.session_state["_pending_raw_upload_files"] = batch_payload
                         ext_members = extract_members_from_uploaded_files_batch(
                             batch_payload, def_p_auto, "gemini-3.8-flash"
                         )
                         st.session_state["_last_processed_upload_sig"] = cur_file_sig
-                        if uploaded_drive_links:
+
+                        if auto_save_on_drop or manual_reprocess_clicked:
+                            upload_notices = []
+                            for b_item in batch_payload:
+                                up_link, up_msg = upload_member_image_to_parish_database_folder(
+                                    b_item["bytes"],
+                                    f"CTG_Form_{def_p_auto.replace(' ', '_')}_{b_item['name']}",
+                                    b_item["type"],
+                                    def_p_auto
+                                )
+                                if up_link:
+                                    uploaded_drive_links.append((b_item["name"], up_link))
+                                elif up_msg:
+                                    upload_notices.append(up_msg)
+
+                            # Also upload the stitched Form Image (.jpg) if a PDF was uploaded so the actual Image is in Google Drive!
+                            if st.session_state.get("extracted_pdf_page_previews") and any(b["name"].lower().endswith(".pdf") for b in batch_payload):
+                                stitched_jpg = build_stitched_family_form_jpeg_bytes(st.session_state["extracted_pdf_page_previews"])
+                                if stitched_jpg:
+                                    base_pdf_nm = os.path.splitext(batch_payload[0]["name"])[0]
+                                    img_fn_drive = f"CTG_Form_Image_{def_p_auto.replace(' ', '_')}_{base_pdf_nm}.jpg"
+                                    img_link, _ = upload_member_image_to_parish_database_folder(
+                                        stitched_jpg, img_fn_drive, "image/jpeg", def_p_auto
+                                    )
+                                    if img_link:
+                                        uploaded_drive_links.append((f"{base_pdf_nm}.jpg (Form Image)", img_link))
+
                             st.session_state["_last_uploaded_drive_links"] = uploaded_drive_links
+                            if upload_notices and not uploaded_drive_links:
+                                st.session_state["_last_upload_folder_error"] = upload_notices[0]
+                            else:
+                                st.session_state.pop("_last_upload_folder_error", None)
 
                         if not ext_members:
                             st.warning("⚠️ Walang nabasang pangalan sa file. Maaari kang mag-encode nang direkta sa Step 3 Table sa ibaba.")
@@ -16495,7 +16755,9 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
 
                 if st.session_state.get("_last_uploaded_drive_links"):
                     links_md = " • ".join(f"[📁 {fn_l}]({url_l})" for fn_l, url_l in st.session_state["_last_uploaded_drive_links"])
-                    st.info(f"☁️ **Na-upload na sa Google Drive Folder (`CTG MEMBERS DATABASE ALL PARISH → {def_p_auto}`):** {links_md}")
+                    st.info(f"☁️ **Na-upload na ang Form Image & File sa Google Drive Folder (`CTG MEMBERS DATABASE ALL PARISH → {def_p_auto}`):** {links_md}")
+                elif st.session_state.get("_last_upload_folder_error"):
+                    st.warning(f"⚠️ **Google Drive Folder Upload:** {st.session_state['_last_upload_folder_error']}")
                 if st.session_state.get("_last_auto_save_banner"):
                     ok_b, txt_b = st.session_state["_last_auto_save_banner"]
                     if ok_b:
@@ -16575,12 +16837,12 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                     lbl_f = f"{fid_s} — {hof_s} ({len(grp_f)} miyembro)"
                     fam_choices.append(lbl_f)
                     fam_lookup_dict[lbl_f] = fid_s
-                ld_c1, ld_c2 = st.columns([2.1, 1.1])
+                ld_c1, ld_c2, ld_c3 = st.columns([1.8, 1.1, 1.1])
                 with ld_c1:
-                    sel_existing_fam_lbl = st.selectbox("Piliin ang Family ID na gustong i-edit o dagdagan ng miyembro:", fam_choices, key="sel_existing_fam_to_load")
+                    sel_existing_fam_lbl = st.selectbox("Piliin ang Family ID na gustong i-edit o burahin:", fam_choices, key="sel_existing_fam_to_load")
                 with ld_c2:
                     st.write("")
-                    if st.button("✏️ I-load ang Pamilyang Ito sa Editor sa Ibaba", type="primary", use_container_width=True, key="btn_load_existing_fam_to_editor"):
+                    if st.button("✏️ I-load at I-edit sa Ibaba", type="primary", use_container_width=True, key="btn_load_existing_fam_to_editor"):
                         target_fid_load = fam_lookup_dict.get(sel_existing_fam_lbl, "")
                         loaded_rows = parish_cur_df[parish_cur_df["Family ID"].astype(str).str.strip() == target_fid_load].to_dict(orient="records")
                         if loaded_rows:
@@ -16589,6 +16851,24 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                             st.session_state.pop("_last_auto_save_banner", None)
                             st.session_state["add_form_refresh_counter"] = st.session_state.get("add_form_refresh_counter", 0) + 1
                             st.rerun()
+                with ld_c3:
+                    st.write("")
+                    if st.button("🗑️ Burahin ang Pamilyang Ito (Para Ulitin)", use_container_width=True, key="btn_delete_existing_fam_paraan3"):
+                        target_fid_del = fam_lookup_dict.get(sel_existing_fam_lbl, "")
+                        if target_fid_del:
+                            with st.spinner(f"Binubura ang {target_fid_del} mula sa HEAD OF FAMILY MASTER at {def_p_auto}..."):
+                                ok_del, msg_del = delete_family_or_parish_records_from_excel_and_sync(
+                                    ACTIVE_SPREADSHEET_URL, def_p_auto, family_id=target_fid_del
+                                )
+                                st.session_state.pop("extracted_members_batch", None)
+                                st.cache_data.clear()
+                                master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
+                                if ok_del:
+                                    st.success(f"✅ {msg_del}")
+                                else:
+                                    st.warning(msg_del)
+                                time.sleep(0.5)
+                                st.rerun()
 
     # =================================================================
     # STEP 2: VISUAL FORM PAGE VIEWER (EXPANDED BY DEFAULT WHEN IMAGES EXIST)
@@ -16814,6 +17094,32 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                     st.rerun()
             with pv_btn_c1:
                 if st.button(f"💾 Confirm & I-save / I-update sa Google Drive ({len(edited_preview_df)} Miyembro → {pv_fid})", type="primary", use_container_width=True, key="btn_save_preview_editor_to_drive"):
+                    # Ensure any uploaded Form PDF / Form Images are ALSO uploaded to CTG MEMBERS DATABASE ALL PARISH -> pv_parish!
+                    if not st.session_state.get("_last_uploaded_drive_links"):
+                        new_up_links = []
+                        for b_item in st.session_state.get("_pending_raw_upload_files", []):
+                            u_lnk, u_m = upload_member_image_to_parish_database_folder(
+                                b_item["bytes"],
+                                f"CTG_Form_{pv_parish.replace(' ', '_')}_{pv_fid.strip()}_{b_item['name']}",
+                                b_item["type"],
+                                pv_parish
+                            )
+                            if u_lnk:
+                                new_up_links.append((b_item["name"], u_lnk))
+                        if st.session_state.get("extracted_pdf_page_previews"):
+                            stitched_b = build_stitched_family_form_jpeg_bytes(st.session_state["extracted_pdf_page_previews"])
+                            if stitched_b:
+                                img_lnk, _ = upload_member_image_to_parish_database_folder(
+                                    stitched_b,
+                                    f"CTG_Form_Image_{pv_parish.replace(' ', '_')}_{pv_fid.strip()}_{(pv_hof.strip() or 'Family').replace(' ', '_')}.jpg",
+                                    "image/jpeg",
+                                    pv_parish
+                                )
+                                if img_lnk:
+                                    new_up_links.append((f"{pv_fid.strip()}_Form_Image.jpg", img_lnk))
+                        if new_up_links:
+                            st.session_state["_last_uploaded_drive_links"] = new_up_links
+
                     if pv_photo is not None:
                         with st.spinner(f"Ina-upload ang litrato sa CTG MEMBERS DATABASE ALL PARISH → {pv_parish}..."):
                             p_bytes = pv_photo.read()
@@ -17612,15 +17918,8 @@ elif app_mode == "🛠️ App Settings":
                             token_json = token_res.json()
                             new_rt = token_json.get("refresh_token", "")
                             if new_rt:
-                                st.session_state.custom_secrets["GMAIL_REFRESH_TOKEN"] = new_rt
-                                existing_cfg = {}
-                                if os.path.exists(LOCAL_CONFIG_FILE):
-                                    with open(LOCAL_CONFIG_FILE, "r", encoding="utf-8") as f:
-                                        existing_cfg = json.load(f)
-                                existing_cfg["GMAIL_REFRESH_TOKEN"] = new_rt
-                                with open(LOCAL_CONFIG_FILE, "w", encoding="utf-8") as f:
-                                    json.dump(existing_cfg, f, indent=2)
-                                st.success("✅ Matagumpay na nakuha at na-save ang bagong Google Drive + Gmail Refresh Token!")
+                                persist_drive_refresh_token_everywhere(new_rt, g_cid.strip(), g_csec.strip())
+                                st.success("✅ Matagumpay na nakuha at na-save ang bagong Google Drive + Gmail Refresh Token sa `.streamlit/secrets.toml` at `ctg_app_cloud_config.json`!")
                                 st.code(new_rt)
                             else:
                                 st.error(f"Hindi nakuha ang refresh_token: {token_json}")
