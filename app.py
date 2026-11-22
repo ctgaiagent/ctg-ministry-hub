@@ -2568,7 +2568,10 @@ def load_complete_parish_members(spreadsheet_url: str):
         "Parish", "Family ID", "Head of Family", "No.", "Full Name", "Relationship",
         "Sex", "Birthdate", "Age", "Category", "Civil Status", "Student/Working",
         "Contact No.", "Church Member", "Status", "Baptized", "Baptism Date",
-        "Current Address (If living separately)", "Work Type", "Day Off", "Remarks"
+        "Current Address (If living separately)", "Work Type", "Day Off", "Remarks",
+        "Area/Zone", "Cell Group", "House / Street / Purok", "Barangay",
+        "City/Municipality", "Province / Area", "ZIP Code",
+        "Emergency Contact Name", "Emergency Relationship", "Emergency Contact Number"
     ]
     excel_bytes = b""
     src_label = "CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx"
@@ -2609,13 +2612,29 @@ def load_complete_parish_members(spreadsheet_url: str):
                         addr_parts = [p for p in [house_v, brgy_v, city_v, prov_v] if p and p.lower() != "nan"]
                         resolved_addr = ", ".join(addr_parts) if addr_parts else man_v
 
+                    zip_v = str(r.get("ZIP Code", "") if pd.notna(r.get("ZIP Code", "")) else "").strip()
+                    if zip_v.endswith(".0"):
+                        zip_v = zip_v[:-2]
+                    em_n_v = str(r.get("Emergency Contact Name", "") if pd.notna(r.get("Emergency Contact Name", "")) else "").strip()
+                    em_r_v = str(r.get("Emergency Relationship", "") if pd.notna(r.get("Emergency Relationship", "")) else "").strip()
+                    em_c_v = str(r.get("Emergency Contact Number", "") if pd.notna(r.get("Emergency Contact Number", "")) else "").strip()
+                    if em_c_v.endswith(".0"):
+                        em_c_v = em_c_v[:-2]
                     hof_lookup[fid_v.upper()] = {
                         "Parish": parish_v,
-                        "Area/Zone": area_v,
+                        "Area/Zone": area_v[:-2] if area_v.endswith(".0") else area_v,
                         "Cell Group": cell_v,
                         "Head of Family": hof_v,
                         "Mobile Number": mob_v,
                         "Complete Address": resolved_addr,
+                        "House / Street / Purok": house_v or resolved_addr,
+                        "Barangay": brgy_v,
+                        "City/Municipality": city_v,
+                        "Province / Area": prov_v,
+                        "ZIP Code": zip_v,
+                        "Emergency Contact Name": em_n_v,
+                        "Emergency Relationship": em_r_v,
+                        "Emergency Contact Number": em_c_v,
                     }
 
             for p_name in PARISH_ORDER:
@@ -2768,6 +2787,16 @@ def load_complete_parish_members(spreadsheet_url: str):
                         "Work Type": wt_str,
                         "Day Off": do_str,
                         "Remarks": rem_str,
+                        "Area/Zone": hof_info.get("Area/Zone", ""),
+                        "Cell Group": hof_info.get("Cell Group", ""),
+                        "House / Street / Purok": hof_info.get("House / Street / Purok", addr_str),
+                        "Barangay": hof_info.get("Barangay", ""),
+                        "City/Municipality": hof_info.get("City/Municipality", ""),
+                        "Province / Area": hof_info.get("Province / Area", ""),
+                        "ZIP Code": hof_info.get("ZIP Code", ""),
+                        "Emergency Contact Name": hof_info.get("Emergency Contact Name", ""),
+                        "Emergency Relationship": hof_info.get("Emergency Relationship", ""),
+                        "Emergency Contact Number": hof_info.get("Emergency Contact Number", ""),
                     })
         except Exception:
             pass
@@ -14249,6 +14278,57 @@ elif app_mode == "🧭 Parish Leader Portal (Wizard & Summary)":
     render_church_leadership_and_priests_directory(context_key="home_portal")
     st.divider()
 
+    # Live Parish Census & Ministry Executive Dashboard Bar
+    is_master_dash = (st.session_state.user_role == "Master Admin")
+    dash_scope_lbl = "Lahat ng 10 Parokya (Master Overview)" if is_master_dash else st.session_state.assigned_parish
+    if not master_members_df.empty:
+        df_home_scope = master_members_df.copy() if is_master_dash else master_members_df[master_members_df["Parish"] == st.session_state.assigned_parish].copy()
+    else:
+        df_home_scope = pd.DataFrame()
+
+    tot_fam_home = df_home_scope["Family ID"].replace("", pd.NA).dropna().nunique() if not df_home_scope.empty and "Family ID" in df_home_scope.columns else 0
+    tot_mem_home = len(df_home_scope)
+    if not df_home_scope.empty:
+        act_mask_h = df_home_scope.apply(
+            lambda r: (not is_removed_or_deceased_record(r)) and classify_member_status(r.get("Status", ""), r.get("Church Member", "")) == "ACTIVE",
+            axis=1
+        )
+        df_act_home = df_home_scope[act_mask_h]
+        act_adults_seniors_h = sum(1 for _, r in df_act_home.iterrows() if classify_category(r.get("Category", "")) in ("Adults", "Seniors"))
+        act_youth_kids_h = sum(1 for _, r in df_act_home.iterrows() if classify_category(r.get("Category", "")) in ("Youth", "Kids"))
+    else:
+        df_act_home = pd.DataFrame()
+        act_adults_seniors_h = 0
+        act_youth_kids_h = 0
+
+    st.markdown(f"### 📊 Live Census & Ministry Summary — **{dash_scope_lbl}**")
+    hk1, hk2, hk3, hk4, hk5 = st.columns(5)
+    hk1.metric("👨‍👩‍👧‍👦 Registered Families", tot_fam_home)
+    hk2.metric("👥 Total Members", tot_mem_home)
+    hk3.metric("🟢 Active Members", len(df_act_home))
+    hk4.metric("🧑👴 Active Adults & Seniors", act_adults_seniors_h)
+    hk5.metric("👦👶 Active Youth & Kids", act_youth_kids_h)
+
+    qa1, qa2, qa3, qa4 = st.columns(4)
+    with qa1:
+        if st.button("➕ Mag-upload / Magdagdag ng Miyembro", type="primary", use_container_width=True, key="home_qa_add_mem"):
+            st.session_state.app_mode_override = "➕ Magdagdag ng Miyembro & Litrato"
+            st.rerun()
+    with qa2:
+        if st.button("📊 Buksan ang Parish Census & Directory", use_container_width=True, key="home_qa_census"):
+            st.session_state.app_mode_override = "📊 Parish Census & Member Manager"
+            st.rerun()
+    with qa3:
+        if st.button("📑 Mag-upload ng Weekly Report", use_container_width=True, key="home_qa_weekly"):
+            st.session_state.app_mode_override = "📑 Weekly Report & Parish Monitoring"
+            st.rerun()
+    with qa4:
+        if st.button("🔄 I-sync ang Database Mula sa Google Drive", use_container_width=True, key="home_qa_sync_drive"):
+            st.cache_data.clear()
+            fetch_live_excel_bytes(ACTIVE_SPREADSHEET_URL, force_cloud=True)
+            st.rerun()
+
+    st.divider()
     st.markdown("### 📂 Mga Pahina at Module Controls (`▶` Pindutin ang `>` upang Buksan at Kontrolin ang Bawat Pahina)")
     st.caption("Pindutin ang arrow (`▶`) sa bawat pahina sa ibaba upang makita ang mabilisang kontrol at direktang buksan ang module.")
 
@@ -16092,196 +16172,369 @@ def extract_members_from_uploaded_image_or_file(file_bytes: bytes, filename: str
 # =====================================================================
 if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
     render_title_with_logo(
-        "➕ Magdagdag ng Miyembro (Multi-Page Form Gemini Vision, Preview Table & 2-Step Google Drive Excel Sync)",
-        "Step 1: I-upload ang Registration Form Images (Page 1 & Page 2) o Excel file, i-review sa Preview Table (st.data_editor), at i-save sa HEAD OF FAMILY MASTER at Parish Sheet sa Google Drive."
+        "➕ Magdagdag at Mag-upload ng Miyembro (Guided 3-Step Family Registration & Google Drive Sync)",
+        "Malinaw at madaling sundan na proseso: (1) Piliin ang Parokya at i-upload ang Form PDF/Image/Excel (o mag-encode nang manual), (2) Tingnan ang Form Image at i-check sa iisang Validated Table, at (3) I-save sa Google Drive."
     )
     allowed_parishes_add = [st.session_state.assigned_parish] if st.session_state.user_role != "Master Admin" else PARISH_ORDER
 
-    # Top Google Drive Sync & Refresh Bar (replaces the removed Delete Family expander)
-    sync_bar_c1, sync_bar_c2 = st.columns([1.65, 1.35])
-    with sync_bar_c1:
-        st.info(
-            "☁️ **Google Drive Live Sync (`CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx` & `CTG MEMBERS DATABASE ALL PARISH`):** "
-            "Kung may binago o in-update ka sa Excel file sa Google Drive, pindutin ang **Sync Mula sa Google Drive** sa kanan upang agad na ma-update ang app at Family ID."
+    # =================================================================
+    # TOP LIVE PARISH STATUS BAR & 1-CLICK GOOGLE DRIVE SYNC
+    # =================================================================
+    top_p_col1, top_p_col2, top_p_col3 = st.columns([1.25, 1.55, 1.2])
+    with top_p_col1:
+        def_p_auto = st.selectbox(
+            "🏛️ 1. Target na Parokya (RBAC Scoped):",
+            allowed_parishes_add,
+            disabled=(st.session_state.user_role != "Master Admin"),
+            key="auto_add_mem_parish"
         )
-    with sync_bar_c2:
-        if st.button("🔄 I-sync ang Master Census Excel File Mula sa Google Drive", type="primary", use_container_width=True, key="btn_add_page_sync_drive"):
-            with st.spinner("Binabasa at sini-sync ang pinakabagong CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx mula sa Google Drive..."):
+    is_hk_add_mode = (def_p_auto == "HONGKONG PARISH")
+    parish_cur_df = master_members_df[master_members_df["Parish"] == def_p_auto].copy() if not master_members_df.empty else pd.DataFrame()
+    cur_p_fams = parish_cur_df["Family ID"].replace("", pd.NA).dropna().nunique() if not parish_cur_df.empty else 0
+    cur_p_mems = len(parish_cur_df)
+    next_avail_fid = generate_next_family_id_for_parish(def_p_auto, master_members_df)
+    parish_folder_id_cur = CTG_MEMBERS_DB_PARISH_SUBFOLDER_IDS.get(def_p_auto, ALL_PARISH_DB_FOLDER_ID)
+    parish_folder_url_cur = f"https://drive.google.com/drive/folders/{parish_folder_id_cur}?usp=sharing"
+
+    with top_p_col2:
+        st.markdown(
+            f"<div class='full-text-card' style='padding:10px 14px;margin-bottom:0;border-left:4px solid #22c55e;'>"
+            f"<b>📊 {def_p_auto} Live Status:</b> <code>{cur_p_fams} Pamilya</code> • <code>{cur_p_mems} Miyembro</code><br>"
+            f"🆔 <b>Susunod na Family ID:</b> <code>{next_avail_fid}</code> | "
+            f"📂 <a href='{parish_folder_url_cur}' target='_blank'>Parish Drive Folder</a> • "
+            f"📗 <a href='{ACTIVE_SPREADSHEET_URL}' target='_blank'>Master Census Excel</a>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+    with top_p_col3:
+        if st.button("🔄 I-sync Mula sa Google Drive", use_container_width=True, key="btn_add_page_sync_drive"):
+            with st.spinner("Sini-sync ang pinakabagong CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx mula sa Google Drive..."):
                 st.cache_data.clear()
                 b_fresh_add, lbl_fresh_add = fetch_live_excel_bytes(ACTIVE_SPREADSHEET_URL, force_cloud=True)
                 master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
                 st.session_state["add_form_refresh_counter"] = st.session_state.get("add_form_refresh_counter", 0) + 1
-                st.success(f"✅ Matagumpay na na-sync ang pinakabagong datos mula sa Google Drive ({lbl_fresh_add})!")
-                time.sleep(0.5)
+                st.success(f"✅ Na-sync na mula sa Google Drive ({lbl_fresh_add})!")
+                time.sleep(0.4)
                 st.rerun()
-
-    with st.expander("📸 1. Multi-Page Form Image Upload (Gemini Vision `gemini-3.8-flash`) & Official Family Info Form Excel Upload", expanded=True):
-        st.caption(
-            "Mag-upload ng **1 o Higit Pang Pahina ng Physical Registration Form Image (`.jpg`, `.png` — Page 1 Top Household Info, Page 1 Bottom / Page 2 Family Members Table & Reference Guide, Page 2 Bottom Emergency Contact)** "
-            "o **Excel/CSV (`.xlsx`, `.csv` — tulad ng `CTG_Official_Family_Info_Form_Example_8_Members.xlsx` o `Hongkong Membership Data Base.xlsx`)**. "
-            "Awtomatikong babasahin ng **`gemini-3.8-flash`** ang lahat ng seksyon at ipapakita sa **Interactive Preview Table (`st.data_editor`)** upang ma-review at ma-edit mo bago i-save sa Google Drive!"
-        )
-        up_c1, up_c2 = st.columns([1.2, 1.8])
-        with up_c1:
-            def_p_auto = st.selectbox(
-                "Target na Parokya (RBAC Scoped):",
-                allowed_parishes_add,
-                disabled=(st.session_state.user_role != "Master Admin"),
-                key="auto_add_mem_parish"
-            )
-            if def_p_auto == "HONGKONG PARISH":
-                st.download_button(
-                    "📥 I-download ang Hongkong Membership Data Base Template (.xlsx)",
-                    data=build_hongkong_membership_template_excel_bytes(),
-                    file_name="Hongkong Membership Data Base.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                    key="btn_dl_hk_template_xlsx"
-                )
-        with up_c2:
-            auto_mem_files = st.file_uploader(
-                "📤 Mag-upload ng Family Registration Form PDF (.pdf — 1 PDF = 1 Family), Images (.jpg, .png), o Excel/CSV (.xlsx, .csv):",
-                type=["pdf", "jpg", "jpeg", "png", "xlsx", "csv"],
-                accept_multiple_files=True,
-                key="auto_add_mem_uploader_multi"
-            )
-
-        if auto_mem_files:
-            one_click_upload_and_save_btn = st.button(
-                f"🚀 1-Click Upload sa Google Drive, Basahin ang Form & I-save Agad sa Family Database + Excel ({def_p_auto})",
-                type="primary",
+        if is_hk_add_mode:
+            st.download_button(
+                "📥 Download HK Template (.xlsx)",
+                data=build_hongkong_membership_template_excel_bytes(),
+                file_name="Hongkong Membership Data Base.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
-                key="btn_single_one_click_upload_and_save_all"
+                key="btn_dl_hk_template_xlsx"
             )
 
-            if one_click_upload_and_save_btn:
-                with st.spinner(f"Ina-upload sa CTG MEMBERS DATABASE ALL PARISH → {def_p_auto}, binabasa ang buong pamilya mula sa PDF/Image/Excel, at direktang sine-save sa Family Database + Google Drive Excel..."):
-                    batch_payload = []
-                    for u_f in auto_mem_files:
-                        f_bytes_m = u_f.read()
-                        ext_low = u_f.name.split(".")[-1].lower()
-                        mime_default = (
-                            "application/pdf"
-                            if ext_low == "pdf"
-                            else (
-                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                                if ext_low == "xlsx"
-                                else ("text/csv" if ext_low == "csv" else "image/jpeg")
-                            )
-                        )
-                        batch_payload.append({
-                            "bytes": f_bytes_m,
-                            "name": u_f.name,
-                            "type": u_f.type or mime_default
-                        })
-                        up_link, up_msg = upload_member_image_to_parish_database_folder(
-                            f_bytes_m,
-                            f"CTG_Form_{def_p_auto.replace(' ', '_')}_{u_f.name}",
-                            u_f.type or mime_default,
-                            def_p_auto
-                        )
-                        if up_link:
-                            st.info(f"📁 Na-upload na ang `{u_f.name}` sa **CTG MEMBERS DATABASE ALL PARISH → {def_p_auto}** ([Buksan sa Google Drive]({up_link}))")
-                        elif up_msg:
-                            st.warning(f"⚠️ Google Drive Folder Upload Notice ({u_f.name}): {up_msg}")
+    st.markdown("---")
 
-                    ext_members = extract_members_from_uploaded_files_batch(
-                        batch_payload, def_p_auto, "gemini-3.8-flash"
-                    )
-                    if not ext_members:
-                        st.warning("Walang nabasang pangalan sa image/file. Maaari mong i-type nang direkta sa form sa ibaba.")
-                    else:
-                        target_p = def_p_auto if st.session_state.user_role == "Master Admin" else st.session_state.assigned_parish
-                        for em_it in ext_members:
-                            if st.session_state.user_role != "Master Admin":
-                                em_it["Parish"] = target_p
-                            elif not em_it.get("Parish"):
-                                em_it["Parish"] = target_p
+    # =================================================================
+    # STEP-BY-STEP MODE SELECTOR (NO DUPLICATE FORMS!)
+    # =================================================================
+    entry_mode_choice = st.radio(
+        "🧭 Piliin ang Paraan ng Pagpasok ng Miyembro / Pamilya:",
+        [
+            "📤 Paraan 1: Mag-upload ng Form (PDF / Image / Excel — Auto-Read & Review)",
+            "✍️ Paraan 2: Manual na Pag-encode ng Bagong Pamilya / Miyembro (Walang File)",
+            "📂 Paraan 3: Pumili at Mag-edit ng Naka-save nang Pamilya sa Parokya"
+        ],
+        horizontal=True,
+        key="member_upload_workflow_mode_radio"
+    )
 
-                        total_saved_members = 0
-                        save_messages = []
-
-                        if target_p == "HONGKONG PARISH":
-                            for m_it in ext_members:
-                                m_copy = m_it.copy()
-                                m_copy["Parish"] = "HONGKONG PARISH"
-                                m_copy["Head of Family"] = _clean_cell_str(m_copy.get("Full Name", ""))
-                                m_copy["Relationship"] = "HEAD OF FAMILY"
-                                if m_copy.get("Category") in ("YOUTH", "KIDS", ""):
-                                    m_copy["Category"] = "ADULT"
-                                ok_1c, msg_1c = append_new_member_to_excel_and_sync(ACTIVE_SPREADSHEET_URL, m_copy, [])
-                                if ok_1c:
-                                    total_saved_members += 1
-                                    save_messages.append(msg_1c)
-                                else:
-                                    save_messages.append(f"⚠️ {msg_1c}")
-                        else:
-                            families_grouped = {}
-                            for m_it in ext_members:
-                                m_copy = m_it.copy()
-                                m_copy["Parish"] = target_p
-                                hof_k = _clean_cell_str(m_copy.get("Head of Family", "")) or _clean_cell_str(m_copy.get("Full Name", ""))
-                                families_grouped.setdefault(hof_k.upper(), []).append(m_copy)
-
-                            for _, fam_members in families_grouped.items():
-                                head_item = fam_members[0].copy()
-                                deps_items = [d.copy() for d in fam_members[1:]] if len(fam_members) > 1 else []
-                                ok_1c, msg_1c = append_new_member_to_excel_and_sync(ACTIVE_SPREADSHEET_URL, head_item, deps_items)
-                                assigned_fid_1c = _clean_cell_str(head_item.get("Family ID", ""))
-                                if assigned_fid_1c:
-                                    for fm_orig in fam_members:
-                                        fm_orig["Family ID"] = assigned_fid_1c
-                                    for em_orig in ext_members:
-                                        if _clean_cell_str(em_orig.get("Head of Family", "")).upper() == _clean_cell_str(head_item.get("Head of Family", "")).upper():
-                                            em_orig["Family ID"] = assigned_fid_1c
-                                if ok_1c:
-                                    total_saved_members += len(fam_members)
-                                    save_messages.append(msg_1c)
-                                else:
-                                    save_messages.append(f"⚠️ {msg_1c}")
-
-                        # Keep extracted members (with their locked Family ID) visible in the Preview Table & Form below so any edit updates the exact same Family ID in-place!
-                        st.session_state["extracted_members_batch"] = ext_members
-                        st.session_state["extracted_member_form_prefill"] = ext_members[0]
-                        st.session_state["extracted_dependents_prefill"] = ([] if target_p == "HONGKONG PARISH" else (ext_members[1:] if len(ext_members) > 1 else []))
-                        st.session_state["add_form_refresh_counter"] = st.session_state.get("add_form_refresh_counter", 0) + 1
-                        st.cache_data.clear()
-                        master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
-                        if total_saved_members > 0:
-                            st.success(f"✅ **1-Click Upload & Auto-Save Kumpleto ({total_saved_members} Miyembro naidagdag sa {target_p} Family Database & Google Drive Excel)!** " + " | ".join(save_messages))
-                        else:
-                            st.error(" | ".join(save_messages))
-
-        # SHOW EXTRACTED FORM PAGE IMAGES FROM UPLOADED PDF OR IMAGES (EXPANDED BY DEFAULT ABOVE EDITABLE TABLE)
-        if st.session_state.get("extracted_pdf_page_previews"):
-            pdf_prevs = st.session_state["extracted_pdf_page_previews"]
-            with st.expander(f"📄 Tingnan ang mga Form Images na Nakuha Mula sa PDF / Upload ({len(pdf_prevs)} Pages — Sundan Habang Nag-e-edit sa Ibaba)", expanded=True):
-                p_cols = st.columns(min(4, max(1, len(pdf_prevs))))
-                for idx_pp, pp_it in enumerate(pdf_prevs):
-                    with p_cols[idx_pp % len(p_cols)]:
-                        st.image(pp_it["bytes"], caption=pp_it["caption"], use_container_width=True)
-                zoom_opts = ["(Lahat ng Pahina sa Itaas — Pumili Dito Kung Gustong Palakihin ang Isang Pahina)"] + [
-                    f"🔍 Page {i_z + 1}: {p_z['caption']}" for i_z, p_z in enumerate(pdf_prevs)
-                ]
-                sel_zoom_page = st.selectbox(
-                    "🔍 Palakihin ang Pahina ng Form para Mas Malinaw Basahin Habang Nag-e-edit sa Ibaba:",
-                    zoom_opts,
-                    index=0,
-                    key="pdf_page_zoom_selector_box"
+    if entry_mode_choice.startswith("📤 Paraan 1"):
+        with st.container(border=True):
+            st.markdown(f"#### 📤 Step 1: I-upload ang Family Registration Form para sa **{def_p_auto}**")
+            st.caption(
+                "Mag-upload ng **Scanned Family Form PDF (`.pdf` — 1 PDF = 1 Buong Pamilya)**, **Form Images (`.jpg`, `.png`)**, o **Excel/CSV (`.xlsx`, `.csv`)**. "
+                "Pagka-pili mo ng file, **awtomatiko itong babasahin ng app** at ipapakita sa **Step 2 (Form Image Viewer)** at **Step 3 (Unified Household & Family Members Editor)** sa ibaba!"
+            )
+            up_opt_c1, up_opt_c2 = st.columns([1.85, 1.15])
+            with up_opt_c1:
+                auto_mem_files = st.file_uploader(
+                    "Piliin o I-drag ang Family Registration Form PDF (.pdf), Images (.jpg, .png), o Excel (.xlsx, .csv):",
+                    type=["pdf", "jpg", "jpeg", "png", "xlsx", "csv"],
+                    accept_multiple_files=True,
+                    key="auto_add_mem_uploader_multi"
                 )
-                if sel_zoom_page != zoom_opts[0]:
-                    z_idx = zoom_opts.index(sel_zoom_page) - 1
-                    if 0 <= z_idx < len(pdf_prevs):
-                        st.image(pdf_prevs[z_idx]["bytes"], caption=f"Full-Size View: {pdf_prevs[z_idx]['caption']}", use_container_width=True)
+            with up_opt_c2:
+                auto_save_on_drop = st.checkbox(
+                    "⚡ Auto-Upload sa Drive Folder & Auto-Save Agad sa Excel Pagka-pili ng File",
+                    value=True,
+                    help="Kapag naka-check, awtomatikong ia-upload ang file sa Google Drive folder ng Parokya at ise-save agad ang pamilya sa Excel, tapos ipapakita sa Step 3 sa ibaba para ma-check o ma-update mo kung may gustong baguhin.",
+                    key="chk_auto_save_on_file_drop"
+                )
+                if st.button("🧹 I-clear / Mag-upload ng Ibang File", use_container_width=True, key="btn_clear_current_upload_top"):
+                    st.session_state.pop("extracted_members_batch", None)
+                    st.session_state.pop("extracted_pdf_page_previews", None)
+                    st.session_state.pop("_last_processed_upload_sig", None)
+                    st.session_state["add_form_refresh_counter"] = st.session_state.get("add_form_refresh_counter", 0) + 1
+                    st.rerun()
 
-        # INTERACTIVE PREVIEW TABLE (st.data_editor) FOR REVIEWING & EDITING EXTRACTED JSON BEFORE SAVING TO GOOGLE DRIVE
-        if st.session_state.get("extracted_members_batch"):
-            ext_batch_cur = st.session_state["extracted_members_batch"]
-            first_rec_meta = ext_batch_cur[0]
-            pv_rev_k = st.session_state.get("add_form_refresh_counter", 0)
-            st.markdown("---")
-            st.markdown("##### 📋 Preview & Edit Extracted Registration Form Data (`st.data_editor` — Review & Edit Below)")
-            st.caption("Sundan ang Form Images sa itaas: maaari mong i-edit ang anumang field o magdagdag/mag-ayos ng row sa Family Members Table sa ibaba, at pindutin ang **💾 Save / I-update sa Google Drive** (o **✨ Auto-Ayusin & Kumpletuhin**).")
+            if auto_mem_files:
+                cur_file_sig = f"{def_p_auto}::" + "|".join(f"{uf.name}:{uf.size}" for uf in auto_mem_files)
+                manual_reprocess_clicked = st.button(
+                    f"🚀 Basahin Muli ang File & I-save Agad sa {def_p_auto} (Google Drive Folder + Master Excel)",
+                    type="primary",
+                    use_container_width=True,
+                    key="btn_single_one_click_upload_and_save_all"
+                )
+
+                if st.session_state.get("_last_processed_upload_sig") != cur_file_sig or manual_reprocess_clicked:
+                    with st.spinner(f"Binabasa ang lahat ng pahina at miyembro mula sa in-upload na form para sa {def_p_auto}..."):
+                        batch_payload = []
+                        uploaded_drive_links = []
+                        for u_f in auto_mem_files:
+                            u_f.seek(0)
+                            f_bytes_m = u_f.read()
+                            ext_low = u_f.name.split(".")[-1].lower()
+                            mime_default = (
+                                "application/pdf"
+                                if ext_low == "pdf"
+                                else (
+                                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                    if ext_low == "xlsx"
+                                    else ("text/csv" if ext_low == "csv" else "image/jpeg")
+                                )
+                            )
+                            batch_payload.append({
+                                "bytes": f_bytes_m,
+                                "name": u_f.name,
+                                "type": u_f.type or mime_default
+                            })
+                            if auto_save_on_drop or manual_reprocess_clicked:
+                                up_link, up_msg = upload_member_image_to_parish_database_folder(
+                                    f_bytes_m,
+                                    f"CTG_Form_{def_p_auto.replace(' ', '_')}_{u_f.name}",
+                                    u_f.type or mime_default,
+                                    def_p_auto
+                                )
+                                if up_link:
+                                    uploaded_drive_links.append((u_f.name, up_link))
+
+                        ext_members = extract_members_from_uploaded_files_batch(
+                            batch_payload, def_p_auto, "gemini-3.8-flash"
+                        )
+                        st.session_state["_last_processed_upload_sig"] = cur_file_sig
+                        if uploaded_drive_links:
+                            st.session_state["_last_uploaded_drive_links"] = uploaded_drive_links
+
+                        if not ext_members:
+                            st.warning("⚠️ Walang nabasang pangalan sa file. Maaari kang mag-encode nang direkta sa Step 3 Table sa ibaba.")
+                        else:
+                            target_p = def_p_auto if st.session_state.user_role == "Master Admin" else st.session_state.assigned_parish
+                            ext_members = _auto_clean_and_complete_family_records(ext_members, target_p, auto_mem_files[0].name)
+                            for em_it in ext_members:
+                                em_it["Parish"] = target_p
+
+                            if auto_save_on_drop or manual_reprocess_clicked:
+                                total_saved_members = 0
+                                save_messages = []
+                                if target_p == "HONGKONG PARISH":
+                                    for m_it in ext_members:
+                                        m_copy = m_it.copy()
+                                        m_copy["Parish"] = "HONGKONG PARISH"
+                                        m_copy["Head of Family"] = _clean_cell_str(m_copy.get("Full Name", ""))
+                                        m_copy["Relationship"] = "HEAD OF FAMILY"
+                                        if m_copy.get("Category") in ("YOUTH", "KIDS", ""):
+                                            m_copy["Category"] = "ADULT"
+                                        ok_1c, msg_1c = append_new_member_to_excel_and_sync(ACTIVE_SPREADSHEET_URL, m_copy, [])
+                                        if m_copy.get("Family ID"):
+                                            m_it["Family ID"] = m_copy["Family ID"]
+                                        if ok_1c:
+                                            total_saved_members += 1
+                                            save_messages.append(msg_1c)
+                                        else:
+                                            save_messages.append(f"⚠️ {msg_1c}")
+                                else:
+                                    families_grouped = {}
+                                    for m_it in ext_members:
+                                        m_copy = m_it.copy()
+                                        m_copy["Parish"] = target_p
+                                        hof_k = _clean_cell_str(m_copy.get("Head of Family", "")) or _clean_cell_str(m_copy.get("Full Name", ""))
+                                        families_grouped.setdefault(hof_k.upper(), []).append(m_copy)
+
+                                    for _, fam_members in families_grouped.items():
+                                        head_item = fam_members[0].copy()
+                                        deps_items = [d.copy() for d in fam_members[1:]] if len(fam_members) > 1 else []
+                                        ok_1c, msg_1c = append_new_member_to_excel_and_sync(ACTIVE_SPREADSHEET_URL, head_item, deps_items)
+                                        assigned_fid_1c = _clean_cell_str(head_item.get("Family ID", ""))
+                                        if assigned_fid_1c:
+                                            for em_orig in ext_members:
+                                                if _clean_cell_str(em_orig.get("Head of Family", "")).upper() == _clean_cell_str(head_item.get("Head of Family", "")).upper():
+                                                    em_orig["Family ID"] = assigned_fid_1c
+                                        if ok_1c:
+                                            total_saved_members += len(fam_members)
+                                            save_messages.append(msg_1c)
+                                        else:
+                                            save_messages.append(f"⚠️ {msg_1c}")
+
+                                st.cache_data.clear()
+                                master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
+                                st.session_state["_last_auto_save_banner"] = (
+                                    total_saved_members > 0,
+                                    f"✅ **Auto-Save Kumpleto ({total_saved_members} Miyembro naidagdag/na-update sa {target_p} Family Database & Google Drive Excel)!** "
+                                    f"Maaari mong i-review o i-edit ang lahat ng fields sa **Step 3** sa ibaba — naka-lock na ang Family ID (`{ext_members[0].get('Family ID', '')}`) kaya hindi ito madodoble. | "
+                                    + " | ".join(save_messages)
+                                )
+
+                            st.session_state["extracted_members_batch"] = ext_members
+                            st.session_state["add_form_refresh_counter"] = st.session_state.get("add_form_refresh_counter", 0) + 1
+
+                if st.session_state.get("_last_uploaded_drive_links"):
+                    links_md = " • ".join(f"[📁 {fn_l}]({url_l})" for fn_l, url_l in st.session_state["_last_uploaded_drive_links"])
+                    st.info(f"☁️ **Na-upload na sa Google Drive Folder (`CTG MEMBERS DATABASE ALL PARISH → {def_p_auto}`):** {links_md}")
+                if st.session_state.get("_last_auto_save_banner"):
+                    ok_b, txt_b = st.session_state["_last_auto_save_banner"]
+                    if ok_b:
+                        st.success(txt_b)
+                    else:
+                        st.error(txt_b)
+
+    elif entry_mode_choice.startswith("✍️ Paraan 2"):
+        with st.container(border=True):
+            st.markdown(f"#### ✍️ Step 1: Mag-encode ng Bagong Pamilya o Miyembro sa **{def_p_auto}**")
+            st.caption("Pindutin ang button sa ibaba upang magbukas ng malinis na Household & Family Members Table kung saan maaari kang mag-type nang direkta.")
+            mc_b1, mc_b2 = st.columns([1.4, 1.6])
+            with mc_b1:
+                init_rows_cnt = 1 if is_hk_add_mode else st.number_input("Ilang miyembro ng pamilya ang ie-encode?", min_value=1, max_value=15, value=3, step=1, key="manual_init_rows_cnt")
+            with mc_b2:
+                st.write("")
+                if st.button(f"➕ Buksan ang Blank Family Table ({init_rows_cnt} Rows → {next_avail_fid})", type="primary", use_container_width=True, key="btn_init_blank_manual_family"):
+                    def_brgy_m = "" if is_hk_add_mode else def_p_auto.replace("PARISH", "").strip().title()
+                    def_city_m = "Hong Kong" if is_hk_add_mode else ("San Gabriel" if any(k in def_p_auto for k in ["LIPAY", "POBLACION", "MALANAS", "DUPLAS"]) else "")
+                    def_prov_m = "Hong Kong SAR" if is_hk_add_mode else ("La Union" if any(k in def_p_auto for k in ["LIPAY", "POBLACION", "MALANAS", "DUPLAS", "CABA"]) else "")
+                    def_zip_m = "" if is_hk_add_mode else ("2513" if any(k in def_p_auto for k in ["LIPAY", "POBLACION", "MALANAS", "DUPLAS"]) else "")
+                    def_addr_m = ", ".join([x for x in [def_brgy_m, def_city_m, def_prov_m] if x])
+                    blank_batch = []
+                    for r_i in range(1, int(init_rows_cnt) + 1):
+                        blank_batch.append({
+                            "Parish": def_p_auto,
+                            "Family ID": next_avail_fid,
+                            "Area/Zone": "",
+                            "Cell Group": "",
+                            "Head of Family": "",
+                            "No.": str(r_i),
+                            "Full Name": "",
+                            "Relationship": "HEAD OF FAMILY" if r_i == 1 else ("WIFE" if r_i == 2 else "SON"),
+                            "Sex": "FEMALE" if (is_hk_add_mode or r_i == 2) else "MALE",
+                            "Birthdate": "",
+                            "Age": "",
+                            "Category": "ADULT" if r_i <= 2 else "KIDS",
+                            "Civil Status": "MARRIED" if r_i <= 2 else "SINGLE",
+                            "Student/Working": "WORKING" if r_i <= 2 else "STUDENT",
+                            "Contact No.": "",
+                            "Church Member": "YES",
+                            "Status": "ACTIVE",
+                            "Baptized": "YES",
+                            "Baptism Date": "",
+                            "House / Street / Purok": def_addr_m,
+                            "Barangay": def_brgy_m,
+                            "City/Municipality": def_city_m,
+                            "Province / Area": def_prov_m,
+                            "ZIP Code": def_zip_m,
+                            "Current Address (If living separately)": def_addr_m,
+                            "Work Type": "",
+                            "Day Off": "",
+                            "Emergency Contact Name": "",
+                            "Emergency Relationship": "",
+                            "Emergency Contact Number": "",
+                            "Remarks": "",
+                        })
+                    st.session_state["extracted_members_batch"] = blank_batch
+                    st.session_state.pop("extracted_pdf_page_previews", None)
+                    st.session_state.pop("_last_auto_save_banner", None)
+                    st.session_state["add_form_refresh_counter"] = st.session_state.get("add_form_refresh_counter", 0) + 1
+                    st.rerun()
+
+    elif entry_mode_choice.startswith("📂 Paraan 3"):
+        with st.container(border=True):
+            st.markdown(f"#### 📂 Step 1: Pumili ng Naka-save nang Pamilya sa **{def_p_auto}** para I-review o I-edit")
+            if parish_cur_df.empty:
+                st.info(f"Wala pang naka-save na pamilya sa {def_p_auto}.")
+            else:
+                fam_choices = []
+                fam_lookup_dict = {}
+                for fid_v, grp_f in parish_cur_df.groupby("Family ID", sort=True):
+                    fid_s = str(fid_v).strip()
+                    if not fid_s:
+                        continue
+                    hof_s = str(grp_f.iloc[0].get("Head of Family", "") or grp_f.iloc[0].get("Full Name", "")).strip()
+                    lbl_f = f"{fid_s} — {hof_s} ({len(grp_f)} miyembro)"
+                    fam_choices.append(lbl_f)
+                    fam_lookup_dict[lbl_f] = fid_s
+                ld_c1, ld_c2 = st.columns([2.1, 1.1])
+                with ld_c1:
+                    sel_existing_fam_lbl = st.selectbox("Piliin ang Family ID na gustong i-edit o dagdagan ng miyembro:", fam_choices, key="sel_existing_fam_to_load")
+                with ld_c2:
+                    st.write("")
+                    if st.button("✏️ I-load ang Pamilyang Ito sa Editor sa Ibaba", type="primary", use_container_width=True, key="btn_load_existing_fam_to_editor"):
+                        target_fid_load = fam_lookup_dict.get(sel_existing_fam_lbl, "")
+                        loaded_rows = parish_cur_df[parish_cur_df["Family ID"].astype(str).str.strip() == target_fid_load].to_dict(orient="records")
+                        if loaded_rows:
+                            st.session_state["extracted_members_batch"] = loaded_rows
+                            st.session_state.pop("extracted_pdf_page_previews", None)
+                            st.session_state.pop("_last_auto_save_banner", None)
+                            st.session_state["add_form_refresh_counter"] = st.session_state.get("add_form_refresh_counter", 0) + 1
+                            st.rerun()
+
+    # =================================================================
+    # STEP 2: VISUAL FORM PAGE VIEWER (EXPANDED BY DEFAULT WHEN IMAGES EXIST)
+    # =================================================================
+    if st.session_state.get("extracted_pdf_page_previews"):
+        pdf_prevs = st.session_state["extracted_pdf_page_previews"]
+        with st.expander(f"📄 Step 2: Tingnan ang Naka-upload na Registration Form Images ({len(pdf_prevs)} Pahina — Sundan Habang Nag-e-edit sa Step 3 sa Ibaba)", expanded=True):
+            p_cols = st.columns(min(4, max(1, len(pdf_prevs))))
+            for idx_pp, pp_it in enumerate(pdf_prevs):
+                with p_cols[idx_pp % len(p_cols)]:
+                    st.image(pp_it["bytes"], caption=pp_it["caption"], use_container_width=True)
+            zoom_opts = ["(Lahat ng Pahina sa Itaas — Pumili Dito Kung Gustong Palakihin ang Isang Pahina)"] + [
+                f"🔍 Page {i_z + 1}: {p_z['caption']}" for i_z, p_z in enumerate(pdf_prevs)
+            ]
+            sel_zoom_page = st.selectbox(
+                "🔍 Palakihin ang Pahina ng Form para Mas Malinaw Basahin Habang Nag-e-edit sa Ibaba:",
+                zoom_opts,
+                index=0,
+                key="pdf_page_zoom_selector_box"
+            )
+            if sel_zoom_page != zoom_opts[0]:
+                z_idx = zoom_opts.index(sel_zoom_page) - 1
+                if 0 <= z_idx < len(pdf_prevs):
+                    st.image(pdf_prevs[z_idx]["bytes"], caption=f"Full-Size View: {pdf_prevs[z_idx]['caption']}", use_container_width=True)
+
+    # =================================================================
+    # STEP 3: UNIFIED SINGLE HOUSEHOLD & FAMILY MEMBERS EDITOR (WITH DROPDOWN VALIDATION & AUTO-FIX)
+    # =================================================================
+    if st.session_state.get("extracted_members_batch"):
+        ext_batch_cur = st.session_state["extracted_members_batch"]
+        first_rec_meta = ext_batch_cur[0]
+        pv_rev_k = st.session_state.get("add_form_refresh_counter", 0)
+
+        with st.container(border=True):
+            st.markdown("#### 📋 Step 3: Unified Household Info & Family Members Editor (Review, Auto-Fix & Save to Google Drive)")
+            st.caption(
+                "Nasa iisang lugar na ang lahat ng fields mula sa **Section I (Parish Info)**, **Section II (Household Info)**, **Section III (Family Members Table)**, "
+                "**Section V (Emergency Contact)**, at **Section VI (Remarks)**. Maaari kang mag-edit o magdagdag ng row (`+`) sa table bago pindutin ang **💾 Confirm & Save / I-update sa Google Drive**."
+            )
+
+            # Live Data Completeness Audit Badge
+            missing_notes = []
+            if not _clean_cell_str(first_rec_meta.get("Head of Family", first_rec_meta.get("Full Name", ""))):
+                missing_notes.append("Head of Family")
+            if not _clean_cell_str(first_rec_meta.get("Area/Zone", "")) and not is_hk_add_mode:
+                missing_notes.append("Area/Zone")
+            if not _clean_cell_str(first_rec_meta.get("Contact No.", "")):
+                missing_notes.append("Household Mobile No.")
+            if not _clean_cell_str(first_rec_meta.get("Emergency Contact Name", "")) and not is_hk_add_mode:
+                missing_notes.append("Emergency Contact Name")
+            named_members_cnt = sum(1 for m_x in ext_batch_cur if _clean_cell_str(m_x.get("Full Name", "")))
+            if named_members_cnt == 0:
+                missing_notes.append("Walang nakalistang Full Name sa III. Family Members Table")
+
+            if not missing_notes:
+                st.success(f"✅ **Data Validation Check: Kumpleto ang Household Info at {named_members_cnt} Miyembro sa Family Members Table!**")
+            else:
+                st.warning(f"ℹ️ **Data Completeness Check ({named_members_cnt} Miyembro):** Pakisuri o punan ang: `{', '.join(missing_notes)}` (o pindutin ang **✨ Auto-Ayusin & Kumpletuhin ang Fields** sa ibaba).")
 
             pv_h1, pv_h2, pv_h3, pv_h4 = st.columns(4)
             with pv_h1:
@@ -16292,19 +16545,19 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                     disabled=(st.session_state.user_role != "Master Admin"),
                     key=f"pv_meta_parish_{pv_rev_k}"
                 )
-                pv_area = st.text_input("Area/Zone:", value=str(first_rec_meta.get("Area/Zone", "")), key=f"pv_meta_area_{pv_rev_k}")
-                pv_cell = st.text_input("Cell Group:", value=str(first_rec_meta.get("Cell Group", "")), key=f"pv_meta_cell_{pv_rev_k}")
+                pv_area = st.text_input("Area/Zone:", value=str(first_rec_meta.get("Area/Zone", "")), placeholder="Hal. 2 o Zone 1", key=f"pv_meta_area_{pv_rev_k}")
+                pv_cell = st.text_input("Cell Group:", value=str(first_rec_meta.get("Cell Group", "")), placeholder="Optional", key=f"pv_meta_cell_{pv_rev_k}")
             with pv_h2:
                 locked_fid_val = str(first_rec_meta.get("Family ID", "")).strip()
                 if not locked_fid_val:
                     locked_fid_val = generate_next_family_id_for_parish(pv_parish, master_members_df)
                 pv_fid = st.text_input(
-                    "II. Family ID / Record ID:",
+                    "II. Family ID / Record ID (Locked):",
                     value=locked_fid_val,
                     key=f"pv_meta_fid_{pv_rev_k}"
                 )
                 pv_hof = st.text_input("Head of Family:", value=str(first_rec_meta.get("Head of Family", first_rec_meta.get("Full Name", ""))), key=f"pv_meta_hof_{pv_rev_k}")
-                pv_mob = st.text_input("Household Mobile No.:", value=str(first_rec_meta.get("Contact No.", "")), key=f"pv_meta_mob_{pv_rev_k}")
+                pv_mob = st.text_input("Household Mobile No.:", value=str(first_rec_meta.get("Contact No.", "")), placeholder="09XXXXXXXXX", key=f"pv_meta_mob_{pv_rev_k}")
             with pv_h3:
                 pv_house = st.text_input("Complete Address (Street/Purok):", value=str(first_rec_meta.get("House / Street / Purok", "")), key=f"pv_meta_house_{pv_rev_k}")
                 pv_brgy = st.text_input("Barangay:", value=str(first_rec_meta.get("Barangay", "")), key=f"pv_meta_brgy_{pv_rev_k}")
@@ -16317,11 +16570,17 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                 pv_em_num = st.text_input(
                     "Emergency Contact No. & Rel.:",
                     value=f"{em_num_cur} ({em_rel_cur})".strip(" ()") if em_rel_cur else em_num_cur,
+                    placeholder="09XXXXXXXXX (Wife / Daughter)",
                     key=f"pv_meta_em_c_{pv_rev_k}"
                 )
 
-            pv_rem = st.text_input("VI. Household Remarks:", value=str(first_rec_meta.get("Remarks", "")), key=f"pv_meta_rem_{pv_rev_k}")
+            rem_c1, rem_c2 = st.columns([2.2, 1.1])
+            with rem_c1:
+                pv_rem = st.text_input("VI. Household Remarks / Certification Note:", value=str(first_rec_meta.get("Remarks", "")), key=f"pv_meta_rem_{pv_rev_k}")
+            with rem_c2:
+                pv_photo = st.file_uploader("📸 Optional Member/Family Photo (I-save sa Drive):", type=["jpg", "jpeg", "png"], key=f"pv_meta_photo_{pv_rev_k}")
 
+            st.markdown("##### 👨‍👩‍👧‍👦 III. Family Members Table (Pindutin ang Cell para Mag-edit o Pindutin ang `+` sa Ibaba ng Table para Magdagdag ng Miyembro)")
             preview_cols = [
                 "No.", "Full Name", "Relationship", "Sex", "Birthdate", "Age",
                 "Category", "Civil Status", "Student/Working", "Contact No.",
@@ -16336,17 +16595,48 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                 for m_r in ext_batch_cur
             ])
 
+            rel_valid_opts = [
+                "HEAD OF FAMILY", "HUSBAND", "WIFE", "SON", "DAUGHTER",
+                "FATHER", "MOTHER", "BROTHER", "SISTER", "GRANDFATHER",
+                "GRANDMOTHER", "GRANDSON", "GRANDDAUGHTER", "RELATIVE", "OTHER", "DEPENDENT"
+            ]
+            cat_valid_opts = ["ADULT", "SENIOR CITIZEN"] if pv_parish == "HONGKONG PARISH" else ["ADULT", "YOUTH", "KIDS", "SENIOR CITIZEN"]
+            sw_valid_opts = [
+                "WORKING", "STUDENT", "NONE", "OFW - WORKING", "DOMESTIC HELPER",
+                "CAREGIVER", "DRIVER", "F&B / HOSPITALITY", "OFFICE / PROFESSIONAL",
+                "PRIEST", "Church Staff", "Farmer", "Housekeeper"
+            ]
+
+            col_cfg_editor = {
+                "No.": st.column_config.TextColumn("No.", width="small"),
+                "Full Name": st.column_config.TextColumn("Full Name (Kumpletong Pangalan)", width="medium", required=True),
+                "Relationship": st.column_config.SelectboxColumn("Relationship", options=rel_valid_opts, width="medium"),
+                "Sex": st.column_config.SelectboxColumn("Sex", options=["MALE", "FEMALE"], width="small"),
+                "Birthdate": st.column_config.TextColumn("Birthdate (YYYY-MM-DD)", width="small"),
+                "Age": st.column_config.TextColumn("Age", width="small"),
+                "Category": st.column_config.SelectboxColumn("Category", options=cat_valid_opts, width="small"),
+                "Civil Status": st.column_config.SelectboxColumn("Civil Status", options=["MARRIED", "SINGLE", "WIDOWED", "SEPARATED"], width="small"),
+                "Student/Working": st.column_config.SelectboxColumn("Student/Working", options=sw_valid_opts, width="medium"),
+                "Contact No.": st.column_config.TextColumn("Contact No.", width="medium"),
+                "Church Member": st.column_config.SelectboxColumn("Church Member", options=["YES", "NO"], width="small"),
+                "Status": st.column_config.SelectboxColumn("Status", options=["ACTIVE", "INACTIVE", "NON-MEMBER", "ON GOING INDOC"], width="small"),
+                "Baptized": st.column_config.SelectboxColumn("Baptized", options=["YES", "NO"], width="small"),
+                "Baptism Date": st.column_config.TextColumn("Baptism Date", width="small"),
+                "Current Address (If living separately)": st.column_config.TextColumn("Current Address", width="large"),
+            }
+
             edited_preview_df = st.data_editor(
                 df_preview_in,
+                column_config=col_cfg_editor,
                 num_rows="dynamic",
                 use_container_width=True,
                 hide_index=True,
                 key=f"extracted_members_preview_data_editor_{pv_rev_k}"
             )
 
-            pv_btn_c1, pv_btn_c2, pv_btn_c3 = st.columns([1.6, 1.2, 1.2])
-            with pv_btn_c3:
-                if st.button("✨ Auto-Ayusin & Kumpletuhin ang Fields", use_container_width=True, key="btn_auto_fix_preview_fields"):
+            pv_btn_c1, pv_btn_c2, pv_btn_c3 = st.columns([1.8, 1.25, 1.05])
+            with pv_btn_c2:
+                if st.button("✨ Auto-Ayusin & Kumpletuhin ang Lahat ng Fields", use_container_width=True, key="btn_auto_fix_preview_fields"):
                     raw_to_fix = []
                     em_num_parsed = pv_em_num.split("(")[0].strip()
                     em_rel_parsed = pv_em_num.split("(")[1].rstrip(")").strip() if "(" in pv_em_num else str(first_rec_meta.get("Emergency Relationship", ""))
@@ -16374,15 +16664,35 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                     fixed_batch = _auto_clean_and_complete_family_records(raw_to_fix, pv_parish)
                     if fixed_batch:
                         st.session_state["extracted_members_batch"] = fixed_batch
-                        st.session_state["extracted_member_form_prefill"] = fixed_batch[0]
-                        st.session_state["extracted_dependents_prefill"] = ([] if pv_parish == "HONGKONG PARISH" else fixed_batch[1:])
                         st.session_state["add_form_refresh_counter"] = st.session_state.get("add_form_refresh_counter", 0) + 1
                         st.success("✨ Awtomatikong naayos at nakumpleto ang lahat ng fields, Age, Category, at Address!")
                         st.rerun()
+            with pv_btn_c3:
+                if st.button("🆕 Susunod na Pamilya (Reset)", use_container_width=True, key="btn_reset_for_next_family"):
+                    st.session_state.pop("extracted_members_batch", None)
+                    st.session_state.pop("extracted_pdf_page_previews", None)
+                    st.session_state.pop("_last_auto_save_banner", None)
+                    st.session_state.pop("_last_uploaded_drive_links", None)
+                    st.session_state["add_form_refresh_counter"] = st.session_state.get("add_form_refresh_counter", 0) + 1
+                    st.rerun()
             with pv_btn_c1:
-                if st.button(f"💾 Save / I-update sa Google Drive ({len(edited_preview_df)} Members → {pv_fid})", type="primary", use_container_width=True, key="btn_save_preview_editor_to_drive"):
+                if st.button(f"💾 Confirm & I-save / I-update sa Google Drive ({len(edited_preview_df)} Miyembro → {pv_fid})", type="primary", use_container_width=True, key="btn_save_preview_editor_to_drive"):
+                    if pv_photo is not None:
+                        with st.spinner(f"Ina-upload ang litrato sa CTG MEMBERS DATABASE ALL PARISH → {pv_parish}..."):
+                            p_bytes = pv_photo.read()
+                            p_link, p_msg = upload_member_image_to_parish_database_folder(
+                                p_bytes,
+                                f"CTG_Member_{pv_fid.strip()}_{pv_hof.strip() or 'Photo'}.jpg",
+                                pv_photo.type or "image/jpeg",
+                                pv_parish
+                            )
+                            if p_link:
+                                st.info(f"📸 Na-upload ang litrato sa Google Drive ([Buksan]({p_link}))")
+
                     valid_edited_rows = []
                     full_pv_addr = ", ".join([x for x in [pv_house, pv_brgy, pv_city, pv_prov] if x.strip()])
+                    em_num_clean = pv_em_num.split("(")[0].strip()
+                    em_rel_clean = pv_em_num.split("(")[1].rstrip(")").strip() if "(" in pv_em_num else str(first_rec_meta.get("Emergency Relationship", ""))
                     for idx_ed, erow in edited_preview_df.iterrows():
                         fn_ed = _clean_cell_str(erow.get("Full Name", ""))
                         if not fn_ed:
@@ -16416,16 +16726,17 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                             "Work Type": _clean_cell_str(erow.get("Work Type", "")) if pv_parish == "HONGKONG PARISH" else "",
                             "Day Off": _clean_cell_str(erow.get("Day Off", "")) if pv_parish == "HONGKONG PARISH" else "",
                             "Emergency Contact Name": pv_em_name.strip(),
-                            "Emergency Relationship": pv_em_num.split("(")[1].rstrip(")").strip() if "(" in pv_em_num else str(first_rec_meta.get("Emergency Relationship", "")),
-                            "Emergency Contact Number": pv_em_num.split("(")[0].strip(),
+                            "Emergency Relationship": em_rel_clean,
+                            "Emergency Contact Number": em_num_clean,
                             "Remarks": pv_rem.strip(),
                         }
-                        valid_edited_rows.append(_normalize_ctg_form_codes(m_dict))
+                        valid_edited_rows.append(m_dict)
 
+                    valid_edited_rows = _auto_clean_and_complete_family_records(valid_edited_rows, pv_parish)
                     if not valid_edited_rows:
-                        st.warning("Walang nakalistang Full Name sa Preview Table.")
+                        st.warning("⚠️ Walang nakalistang Full Name sa III. Family Members Table.")
                     else:
-                        with st.spinner(f"Sine-save ang {len(valid_edited_rows)} miyembro sa Google Drive (HEAD OF FAMILY MASTER + {pv_parish})..."):
+                        with st.spinner(f"Sine-save at ina-update ang {len(valid_edited_rows)} miyembro sa Google Drive (HEAD OF FAMILY MASTER + {pv_parish})..."):
                             if pv_parish == "HONGKONG PARISH":
                                 saved_c = 0
                                 msgs_c = []
@@ -16443,315 +16754,40 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                                     valid_edited_rows[1:] if len(valid_edited_rows) > 1 else []
                                 )
                             if ok_all_pv:
-                                st.session_state.pop("extracted_members_batch", None)
-                                st.session_state.pop("extracted_member_form_prefill", None)
-                                st.session_state.pop("extracted_dependents_prefill", None)
+                                saved_fid_now = _clean_cell_str(valid_edited_rows[0].get("Family ID", pv_fid.strip()))
+                                for vr in valid_edited_rows:
+                                    vr["Family ID"] = saved_fid_now
+                                st.session_state["extracted_members_batch"] = valid_edited_rows
+                                st.session_state["_last_auto_save_banner"] = (True, f"✅ {final_pv_msg}")
+                                st.session_state["add_form_refresh_counter"] = st.session_state.get("add_form_refresh_counter", 0) + 1
                                 st.cache_data.clear()
+                                master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
                                 st.success(f"✅ {final_pv_msg}")
-                                time.sleep(0.6)
+                                time.sleep(0.5)
                                 st.rerun()
                             else:
                                 st.error(final_pv_msg)
-            with pv_btn_c2:
-                if st.button("🔄 I-sync ang Binagong Preview Table sa Form sa Ibaba", use_container_width=True, key="btn_push_preview_to_form"):
-                    updated_form_list = []
-                    for _, erow in edited_preview_df.iterrows():
-                        fn_ed = _clean_cell_str(erow.get("Full Name", ""))
-                        if not fn_ed:
-                            continue
-                        d_copy = first_rec_meta.copy()
-                        for c_k in preview_cols:
-                            d_copy[c_k] = _clean_cell_str(erow.get(c_k, ""))
-                        d_copy["Parish"] = pv_parish
-                        d_copy["Family ID"] = pv_fid.strip()
-                        d_copy["Head of Family"] = pv_hof.strip() or fn_ed
-                        d_copy["Area/Zone"] = pv_area.strip()
-                        d_copy["Cell Group"] = pv_cell.strip()
-                        d_copy["House / Street / Purok"] = pv_house.strip()
-                        d_copy["Barangay"] = pv_brgy.strip()
-                        d_copy["City/Municipality"] = pv_city.strip()
-                        d_copy["Province / Area"] = pv_prov.strip()
-                        d_copy["Remarks"] = pv_rem.strip()
-                        updated_form_list.append(_normalize_ctg_form_codes(d_copy))
-                    if updated_form_list:
-                        st.session_state["extracted_members_batch"] = updated_form_list
-                        st.session_state["extracted_member_form_prefill"] = updated_form_list[0]
-                        st.session_state["extracted_dependents_prefill"] = ([] if pv_parish == "HONGKONG PARISH" else updated_form_list[1:])
-                        st.session_state["add_form_refresh_counter"] = st.session_state.get("add_form_refresh_counter", 0) + 1
-                        st.success("✅ Na-update na ang Step 1 & Step 2 Registration Form sa ibaba!")
-                        st.rerun()
 
-    prefill_m = st.session_state.get("extracted_member_form_prefill", {})
-    def_p_val = prefill_m.get("Parish", def_p_auto if def_p_auto in allowed_parishes_add else allowed_parishes_add[0])
-    def_p_i = allowed_parishes_add.index(def_p_val) if def_p_val in allowed_parishes_add else 0
-    selected_target_parish = allowed_parishes_add[def_p_i]
-    is_hk_add_mode = (selected_target_parish == "HONGKONG PARISH")
-    suggested_next_fid = generate_next_family_id_for_parish(selected_target_parish, master_members_df)
-
-    # Refresh Bar for Section 2: Step 1 & Step 2 Registration Form
-    rf_col_title, rf_col_btn1, rf_col_btn2 = st.columns([1.8, 1.1, 1.1])
-    with rf_col_title:
-        st.markdown("#### ✍️ 2. Step 1 & Step 2 Registration Form (Review & Edit Before Saving to Database)")
-    with rf_col_btn1:
-        if st.button("🔄 Refresh Form Data & Next Family ID", use_container_width=True, key="btn_refresh_step12_form_data"):
-            st.cache_data.clear()
-            fetch_live_excel_bytes(ACTIVE_SPREADSHEET_URL, force_cloud=True)
-            master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
-            st.session_state["add_form_refresh_counter"] = st.session_state.get("add_form_refresh_counter", 0) + 1
-            st.rerun()
-    with rf_col_btn2:
-        if st.button("🧹 I-clear ang Nakalagay na Data sa Form", use_container_width=True, key="btn_clear_step12_form_data"):
-            st.session_state.pop("extracted_members_batch", None)
-            st.session_state.pop("extracted_member_form_prefill", None)
-            st.session_state.pop("extracted_dependents_prefill", None)
-            st.session_state["add_form_refresh_counter"] = st.session_state.get("add_form_refresh_counter", 0) + 1
-            st.rerun()
-
-    rel_opts = [
-        "HEAD OF FAMILY", "HUSBAND", "WIFE", "SON", "DAUGHTER",
-        "FATHER", "MOTHER", "BROTHER", "SISTER", "GRANDFATHER",
-        "GRANDMOTHER", "GRANDSON", "GRANDDAUGHTER", "RELATIVE", "OTHER"
-    ]
-    sex_opts = ["MALE", "FEMALE"]
-    cat_opts = ["ADULT", "SENIOR CITIZEN"] if is_hk_add_mode else ["ADULT", "YOUTH", "KIDS", "SENIOR CITIZEN"]
-    civ_opts = ["MARRIED", "SINGLE", "WIDOWED", "SEPARATED"]
-    sw_opts = ["WORKING", "OFW - WORKING", "DOMESTIC HELPER", "CAREGIVER", "DRIVER", "F&B / HOSPITALITY", "OFFICE / PROFESSIONAL", "STUDENT", "NONE", "PRIEST", "Church Staff", "Farmer", "Housekeeper"]
-    st_opts = ["ACTIVE", "INACTIVE", "NON-MEMBER", "ON GOING INDOC"]
-    yn_opts = ["YES", "NO"]
-
-    def_rel_v = str(prefill_m.get("Relationship", "HEAD OF FAMILY")).upper()
-    def_rel_i = rel_opts.index(def_rel_v) if def_rel_v in rel_opts else 0
-    def_sex_v = str(prefill_m.get("Sex", "FEMALE" if is_hk_add_mode else "MALE")).upper()
-    def_sex_i = sex_opts.index(def_sex_v) if def_sex_v in sex_opts else 0
-    def_cat_v = str(prefill_m.get("Category", "ADULT")).upper()
-    def_cat_i = cat_opts.index(def_cat_v) if def_cat_v in cat_opts else 0
-    def_civ_v = str(prefill_m.get("Civil Status", "MARRIED")).upper()
-    def_civ_i = civ_opts.index(def_civ_v) if def_civ_v in civ_opts else 0
-    def_sw_v = str(prefill_m.get("Student/Working", "WORKING"))
-    def_sw_i = sw_opts.index(def_sw_v) if def_sw_v in sw_opts else 0
-    def_st_v = str(prefill_m.get("Status", "ACTIVE")).upper()
-    def_st_i = st_opts.index(def_st_v) if def_st_v in st_opts else 0
-    def_bap_v = str(prefill_m.get("Baptized", "YES")).upper()
-    def_bap_i = yn_opts.index(def_bap_v) if def_bap_v in yn_opts else 0
-
-    dep_prefill_list = st.session_state.get("extracted_dependents_prefill", [])
-    form_rev_k = st.session_state.get("add_form_refresh_counter", 0)
-    if is_hk_add_mode:
-        num_dependents = 0
-        st.info("🇭🇰 **HONG KONG PARISH — Individual OFW Member Registration:** Bawat miyembro sa Hongkong Parish ay may sariling **Member / Record ID** (`CTG-HK-FAM-0001`, `0002`...), **Work Type**, **Day Off**, at **Address (HK or Philippines)** (Walang Dependents / Walang Youth at Kids).")
-    else:
-        num_dependents = st.number_input(
-            "👨‍👩‍👧‍👦 Bilang ng Dependents (No. 2, 3...) na isasama sa Pamilyang ito (0 kung Head of Family o single member lang):",
-            min_value=0,
-            max_value=15,
-            value=len(dep_prefill_list),
-            step=1,
-            key=f"num_deps_in_{form_rev_k}"
-        )
-
-    with st.form(f"add_form_two_step_workflow_{form_rev_k}"):
-        if not is_hk_add_mode:
-            st.info(
-                f"📌 **Two-Step Excel Sync:** Kapag nag-save ka ng bagong Head of Family, awtomatikong hahanapin ng app ang unang bakanteng pre-allocated slot para sa **{selected_target_parish}** sa `'HEAD OF FAMILY MASTER'` sheet (nang hindi binubura ang background formulas), at iru-route ang Head of Family (`No. 1`) at Dependents (`No. 2, 3...`) sa **`{selected_target_parish}`** sheet."
-            )
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            mp = st.selectbox("Parish:", allowed_parishes_add, index=def_p_i, disabled=(st.session_state.user_role != "Master Admin"))
-            fid_default = str(prefill_m.get("Family ID", "") or "").strip()
-            if not fid_default or fid_default.endswith("-NEW"):
-                fid_default = suggested_next_fid
-            fid = st.text_input(
-                "Member / Record ID (Auto-generated kung bakante):" if is_hk_add_mode else "Family ID (Auto-generated kung bakante):",
-                value=fid_default
-            ).strip()
-            fn = st.text_input(
-                "Full Name (OFW Member Name):" if is_hk_add_mode else "Full Name (Member No. 1 / Primary):",
-                value=str(prefill_m.get("Full Name", ""))
-            ).strip()
-            if is_hk_add_mode:
-                m_head = fn
-                m_rel = "HEAD OF FAMILY"
-            else:
-                m_head = st.text_input("Head of Family (Col E Master / Col B Parish):", value=str(prefill_m.get("Head of Family", prefill_m.get("Full Name", "")))).strip()
-                m_rel = st.selectbox("Relationship:", rel_opts, index=def_rel_i)
-            m_sex = st.selectbox("Sex:", sex_opts, index=def_sex_i)
-            m_bdate = st.text_input("Birthdate (YYYY-MM-DD):", value=str(prefill_m.get("Birthdate", "")), placeholder="Hal. 1985-03-12").strip()
-        with c2:
-            m_age = st.text_input("Age (Awtomatiko kung may Birthdate):", value=str(prefill_m.get("Age", ""))).strip()
-            m_cat = st.selectbox("Category:", cat_opts, index=def_cat_i)
-            m_civ = st.selectbox("Civil Status:", civ_opts, index=def_civ_i)
-            m_sw = st.selectbox("Employment / Work (Col K):" if is_hk_add_mode else "Student/Working:", sw_opts, index=def_sw_i)
-            m_con = st.text_input("Contact No. / Mobile Number:", value=str(prefill_m.get("Contact No.", ""))).strip()
-            m_st = st.selectbox("Status:", st_opts, index=def_st_i)
-            m_bap = st.selectbox("Baptized:", yn_opts, index=def_bap_i)
-            m_bapd = st.text_input("Baptism Date (YYYY-MM-DD, optional):", value=str(prefill_m.get("Baptism Date", ""))).strip()
-        with c3:
-            if is_hk_add_mode:
-                m_addr = st.text_input(
-                    "Address (HK or Philippines) (Col Q):",
-                    value=str(prefill_m.get("Current Address (If living separately)", ""))
-                ).strip()
-                pref_wt = str(prefill_m.get("Work Type", "")).strip()
-                m_work_type = st.text_input(
-                    "Work Type (Col R — hal. Domestic Helper, Caregiver, F&B):",
-                    value=pref_wt,
-                    placeholder="Hal. Domestic Helper / Caregiver"
-                ).strip()
-                pref_do = str(prefill_m.get("Day Off", "")).strip()
-                m_day_off = st.text_input(
-                    "Day Off (Col S — hal. Sunday, Saturday, Alternate):",
-                    value=pref_do,
-                    placeholder="Hal. Sunday"
-                ).strip()
-                m_house = ""
-                m_brgy = ""
-                m_city = "Hong Kong"
-                m_prov = "Hong Kong SAR"
-                m_area = st.text_input("Area/District sa HK (Optional):", value=str(prefill_m.get("Area/Zone", ""))).strip()
-                m_cell = st.text_input("Cell Group (Optional):", value=str(prefill_m.get("Cell Group", ""))).strip()
-            else:
-                m_house = st.text_input("House / Street / Purok (Col AI Master):", value=str(prefill_m.get("House / Street / Purok", ""))).strip()
-                m_brgy = st.text_input("Barangay (Col H Master):", value=str(prefill_m.get("Barangay", ""))).strip()
-                m_city = st.text_input("City/Municipality (Col I Master):", value=str(prefill_m.get("City/Municipality", ""))).strip()
-                m_prov = st.text_input("Province / Area (Col J Master):", value=str(prefill_m.get("Province / Area", ""))).strip()
-                m_addr = st.text_input("Manual / Full Address (Col AJ Master / Col Q Parish):", value=str(prefill_m.get("Current Address (If living separately)", ""))).strip()
-                m_area = st.text_input("Area/Zone (Optional, Col C Master):", value=str(prefill_m.get("Area/Zone", ""))).strip()
-                m_cell = st.text_input("Cell Group (Optional, Col D Master):", value=str(prefill_m.get("Cell Group", ""))).strip()
-                m_work_type = ""
-                m_day_off = ""
-            pho = st.file_uploader("Litrato (Optional, i-save sa Google Drive):", type=["jpg", "png", "jpeg"])
-
-        m_rem = st.text_area("Remarks / Tala para sa Miyembro:", value=str(prefill_m.get("Remarks", ""))).strip()
-
-        dependents_inputs = []
-        if num_dependents > 0 and not is_hk_add_mode:
-            st.markdown("##### 👨‍👩‍👧‍👦 Dependents Routing (Member No. 2, 3... sa Parish Sheet)")
-            for d_i in range(int(num_dependents)):
-                d_pref = dep_prefill_list[d_i] if d_i < len(dep_prefill_list) else {}
-                st.markdown(f"**Dependent #{d_i + 1} (Member No. {d_i + 2})**")
-                dc1, dc2, dc3, dc4, dc5, dc6 = st.columns([1.6, 1.1, 0.8, 1.1, 1.0, 1.1])
-                with dc1:
-                    d_fn = st.text_input(f"Full Name (No. {d_i + 2}):", value=str(d_pref.get("Full Name", "")), key=f"dep_fn_{form_rev_k}_{d_i}").strip()
-                with dc2:
-                    d_rel_v = str(d_pref.get("Relationship", "SON")).upper()
-                    d_rel_idx = rel_opts.index(d_rel_v) if d_rel_v in rel_opts else 3
-                    d_rel = st.selectbox(f"Relationship (#{d_i + 1}):", rel_opts, index=d_rel_idx, key=f"dep_rel_{form_rev_k}_{d_i}")
-                with dc3:
-                    d_sex_v = str(d_pref.get("Sex", "MALE")).upper()
-                    d_sex_idx = sex_opts.index(d_sex_v) if d_sex_v in sex_opts else 0
-                    d_sex = st.selectbox(f"Sex (#{d_i + 1}):", sex_opts, index=d_sex_idx, key=f"dep_sex_{form_rev_k}_{d_i}")
-                with dc4:
-                    d_bdate = st.text_input(f"Birthdate (#{d_i + 1}):", value=str(d_pref.get("Birthdate", "")), placeholder="YYYY-MM-DD", key=f"dep_bd_{form_rev_k}_{d_i}").strip()
-                with dc5:
-                    d_age = st.text_input(f"Age (#{d_i + 1}):", value=str(d_pref.get("Age", "")), key=f"dep_age_{form_rev_k}_{d_i}").strip()
-                with dc6:
-                    d_cat_v = str(d_pref.get("Category", "KIDS")).upper()
-                    d_cat_idx = cat_opts.index(d_cat_v) if d_cat_v in cat_opts else (2 if len(cat_opts) > 2 else 0)
-                    d_cat = st.selectbox(f"Category (#{d_i + 1}):", cat_opts, index=d_cat_idx, key=f"dep_cat_{form_rev_k}_{d_i}")
-
-                dc7, dc8, dc9, dc10 = st.columns([1.1, 1.1, 1.1, 1.7])
-                with dc7:
-                    d_civ_v = str(d_pref.get("Civil Status", "SINGLE")).upper()
-                    d_civ_idx = civ_opts.index(d_civ_v) if d_civ_v in civ_opts else 1
-                    d_civ = st.selectbox(f"Civil Status (#{d_i + 1}):", civ_opts, index=d_civ_idx, key=f"dep_civ_{form_rev_k}_{d_i}")
-                with dc8:
-                    d_sw_v = str(d_pref.get("Student/Working", "STUDENT"))
-                    d_sw_idx = sw_opts.index(d_sw_v) if d_sw_v in sw_opts else 1
-                    d_sw = st.selectbox(f"Student/Working (#{d_i + 1}):", sw_opts, index=d_sw_idx, key=f"dep_sw_{form_rev_k}_{d_i}")
-                with dc9:
-                    d_st_v = str(d_pref.get("Status", "ACTIVE")).upper()
-                    d_st_idx = st_opts.index(d_st_v) if d_st_v in st_opts else 0
-                    d_st = st.selectbox(f"Status (#{d_i + 1}):", st_opts, index=d_st_idx, key=f"dep_st_{form_rev_k}_{d_i}")
-                with dc10:
-                    d_rem = st.text_input(f"Remarks (#{d_i + 1}):", value=str(d_pref.get("Remarks", "")), key=f"dep_rem_{form_rev_k}_{d_i}").strip()
-
-                dependents_inputs.append({
-                    "No.": str(d_i + 2),
-                    "Full Name": d_fn,
-                    "Relationship": d_rel,
-                    "Sex": d_sex,
-                    "Birthdate": d_bdate,
-                    "Age": d_age or compute_age_from_birthdate(d_bdate),
-                    "Category": d_cat or compute_category_from_age(d_age or compute_age_from_birthdate(d_bdate)),
-                    "Civil Status": d_civ,
-                    "Student/Working": d_sw,
-                    "Contact No.": str(d_pref.get("Contact No.", "")),
-                    "Status": d_st,
-                    "Church Member": str(d_pref.get("Church Member", "NO" if "NON" in d_st else "YES")),
-                    "Baptized": str(d_pref.get("Baptized", "YES")),
-                    "Baptism Date": str(d_pref.get("Baptism Date", "")),
-                    "Remarks": d_rem,
-                })
-
-        if st.form_submit_button("💾 Save to Google Drive (Step 1: HEAD OF FAMILY MASTER + Step 2: Parish Sheet)", type="primary", use_container_width=True):
-            if fn:
-                target_parish_final = mp if st.session_state.user_role == "Master Admin" else st.session_state.assigned_parish
-                final_fid = fid if fid else generate_next_family_id_for_parish(target_parish_final, master_members_df)
-                if pho is not None:
-                    with st.spinner(f"Ina-upload ang litrato sa CTG MEMBERS DATABASE ALL PARISH ({target_parish_final})..."):
-                        file_bytes = pho.read()
-                        link, msg = upload_member_image_to_parish_database_folder(
-                            file_bytes,
-                            f"CTG_Member_{final_fid}_{fn}.jpg",
-                            pho.type or "image/jpeg",
-                            target_parish_final
-                        )
-                        if link:
-                            st.success(f"✅ Matagumpay na na-upload ang litrato sa **CTG MEMBERS DATABASE ALL PARISH → {target_parish_final}**! ([Buksan ang Link]({link}))")
-                        else:
-                            st.warning(f"⚠️ {msg}")
-
-                calc_age = m_age or compute_age_from_birthdate(m_bdate)
-                calc_cat = m_cat or compute_category_from_age(calc_age)
-                if target_parish_final == "HONGKONG PARISH" and calc_cat in ("YOUTH", "KIDS", ""):
-                    calc_cat = "ADULT"
-                full_addr_fallback = m_addr or ", ".join([x for x in [m_house, m_brgy, m_city, m_prov] if x])
-
-                new_member_payload = {
-                    "Parish": target_parish_final,
-                    "Family ID": final_fid,
-                    "Area/Zone": m_area,
-                    "Cell Group": m_cell,
-                    "Head of Family": fn if target_parish_final == "HONGKONG PARISH" else (m_head or fn),
-                    "No.": "1",
-                    "Full Name": fn,
-                    "Relationship": "HEAD OF FAMILY" if target_parish_final == "HONGKONG PARISH" else m_rel,
-                    "Sex": m_sex,
-                    "Birthdate": m_bdate,
-                    "Age": calc_age,
-                    "Category": calc_cat,
-                    "Civil Status": m_civ,
-                    "Student/Working": m_sw,
-                    "Contact No.": m_con,
-                    "Church Member": "NO" if "NON" in m_st else "YES",
-                    "Status": m_st,
-                    "Baptized": m_bap,
-                    "Baptism Date": m_bapd,
-                    "House / Street / Purok": m_house,
-                    "Barangay": m_brgy,
-                    "City/Municipality": m_city,
-                    "Province / Area": m_prov,
-                    "ZIP Code": str(prefill_m.get("ZIP Code", "")),
-                    "Current Address (If living separately)": full_addr_fallback,
-                    "Work Type": m_work_type if target_parish_final == "HONGKONG PARISH" else "",
-                    "Day Off": m_day_off if target_parish_final == "HONGKONG PARISH" else "",
-                    "Emergency Contact Name": str(prefill_m.get("Emergency Contact Name", "")),
-                    "Emergency Relationship": str(prefill_m.get("Emergency Relationship", "")),
-                    "Emergency Contact Number": str(prefill_m.get("Emergency Contact Number", "")),
-                    "Remarks": m_rem,
-                }
-                valid_deps = [] if target_parish_final == "HONGKONG PARISH" else [d for d in dependents_inputs if d.get("Full Name")]
-                with st.spinner(f"Sine-save sa Step 1 (HEAD OF FAMILY MASTER) at Step 2 ({target_parish_final}) at sini-sync sa Google Drive..."):
-                    ok_excel, sync_msg = append_new_member_to_excel_and_sync(ACTIVE_SPREADSHEET_URL, new_member_payload, valid_deps)
-                    if ok_excel:
-                        st.session_state.pop("extracted_member_form_prefill", None)
-                        st.session_state.pop("extracted_dependents_prefill", None)
-                        st.session_state.pop("extracted_members_batch", None)
-                        st.success(f"✅ {sync_msg}")
-                    else:
-                        st.warning(f"⚠️ {sync_msg}")
-            else:
-                st.warning("Pakilagay ang Full Name.")
+    # =================================================================
+    # LIVE DATABASE VERIFICATION TABLE FOR THE SELECTED PARISH
+    # =================================================================
+    st.markdown("---")
+    with st.expander(f"📊 Live Verification: Mga Naka-save nang Pamilya at Miyembro sa {def_p_auto} ({cur_p_fams} Pamilya • {cur_p_mems} Miyembro)", expanded=True):
+        st.caption(f"Ito ang live na listahan ng lahat ng naka-save sa **`{def_p_auto}`** sheet at **`HEAD OF FAMILY MASTER`** sa `CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx`.")
+        if parish_cur_df.empty:
+            st.info(f"Wala pang naka-save na miyembro sa {def_p_auto}.")
+        else:
+            disp_cols_ver = [
+                c for c in [
+                    "Family ID", "No.", "Full Name", "Relationship", "Sex", "Birthdate", "Age",
+                    "Category", "Civil Status", "Student/Working", "Contact No.",
+                    "Church Member", "Status", "Baptized", "Area/Zone",
+                    "Emergency Contact Name", "Emergency Relationship", "Emergency Contact Number",
+                    "Current Address (If living separately)", "Remarks"
+                ]
+                if c in parish_cur_df.columns
+            ]
+            st.dataframe(parish_cur_df[disp_cols_ver], use_container_width=True, hide_index=True)
     st.stop()
 
 elif app_mode == "🙏 Prayer Wall & Categorizer":
