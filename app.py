@@ -1661,18 +1661,24 @@ def get_all_candidate_google_drive_services() -> list:
     active_csec = next((str(x).strip() for x in g_sec_list if str(x or "").strip()), "")
 
     if active_cid and active_csec:
+        # Priority order: ctg_app_cloud_config.json (newly generated Drive tokens) FIRST, then custom_secrets, then secrets.toml / st.secrets
         raw_rt_candidates = [
-            st.session_state.get("custom_secrets", {}).get("GOOGLE_DRIVE_REFRESH_TOKEN", ""),
-            st.session_state.get("custom_secrets", {}).get("GMAIL_REFRESH_TOKEN", ""),
             cfg.get("GOOGLE_DRIVE_REFRESH_TOKEN", ""),
             cfg.get("GMAIL_REFRESH_TOKEN", ""),
+            st.session_state.get("custom_secrets", {}).get("GOOGLE_DRIVE_REFRESH_TOKEN", ""),
+            st.session_state.get("custom_secrets", {}).get("GMAIL_REFRESH_TOKEN", ""),
             _read_raw_toml_secret_from_disk("GOOGLE_DRIVE_REFRESH_TOKEN"),
+            _read_raw_toml_secret_from_disk("DRIVE_REFRESH_TOKEN"),
             _read_raw_toml_secret_from_disk("GMAIL_REFRESH_TOKEN"),
         ]
         try:
             for rk in ("GOOGLE_DRIVE_REFRESH_TOKEN", "DRIVE_REFRESH_TOKEN", "GMAIL_REFRESH_TOKEN"):
                 if rk in st.secrets and st.secrets[rk]:
                     raw_rt_candidates.append(str(st.secrets[rk]).strip())
+            # Also scan all string values in st.secrets for any OAuth refresh token starting with "1//"
+            for _, sv in st.secrets.items():
+                if isinstance(sv, str) and sv.strip().startswith("1//"):
+                    raw_rt_candidates.append(sv.strip())
         except Exception:
             pass
         raw_rt_candidates.extend([
@@ -2011,8 +2017,9 @@ def upload_member_image_to_parish_database_folder(file_bytes: bytes, filename: s
                 break
 
     last_err = ""
-    saw_scope_403 = False
+    any_scope_403 = False
     for service in services:
+        this_svc_403 = False
         # 1. Direct upload to the exact Parish Subfolder ID (no files().get or files().list needed!)
         for candidate_parent in [target_subfolder_id, ALL_PARISH_DB_FOLDER_ID, APP_STORAGE_FOLDER_ID]:
             if not candidate_parent:
@@ -2026,14 +2033,15 @@ def upload_member_image_to_parish_database_folder(file_bytes: bytes, filename: s
                     supportsAllDrives=True
                 ).execute()
                 st.session_state.pop("_drive_needs_scope_upgrade", None)
-                return created.get("webViewLink") or f"https://drive.google.com/drive/folders/{candidate_parent}", f"Matagumpay na na-upload sa CTG MEMBERS DATABASE ALL PARISH → {parish_name}!"
+                return created.get("webViewLink") or f"https://drive.google.com/drive/folders/{candidate_parent}", f"Matagumpay na na-upload ang `{filename}` sa CTG MEMBERS DATABASE ALL PARISH → {parish_name}!"
             except Exception as e1:
                 last_err = str(e1)
                 if "insufficientPermissions" in last_err or "insufficient authentication scopes" in last_err:
-                    saw_scope_403 = True
+                    this_svc_403 = True
+                    any_scope_403 = True
                     break
 
-        if saw_scope_403:
+        if this_svc_403:
             continue
 
         # 2. Fallback: upload to My Drive root if subfolder isn't shared with the token's account yet
@@ -2046,16 +2054,42 @@ def upload_member_image_to_parish_database_folder(file_bytes: bytes, filename: s
                 supportsAllDrives=True
             ).execute()
             st.session_state.pop("_drive_needs_scope_upgrade", None)
-            return created_root.get("webViewLink"), f"Matagumpay na na-upload sa Google Drive ({filename})!"
+            return created_root.get("webViewLink"), f"Matagumpay na na-upload sa Google Drive (`{filename}`)!"
         except Exception as e2:
             last_err = str(e2)
             if "insufficientPermissions" in last_err or "insufficient authentication scopes" in last_err:
-                saw_scope_403 = True
+                any_scope_403 = True
 
-    if saw_scope_403:
+    # Queue the file locally so it can be auto-flushed to Google Drive as soon as Master Admin activates the Drive token!
+    try:
+        q_dir = "pending_drive_uploads"
+        os.makedirs(q_dir, exist_ok=True)
+        q_file_path = os.path.join(q_dir, re.sub(r"[^A-Za-z0-9._\- ]", "_", filename))
+        with open(q_file_path, "wb") as fq:
+            fq.write(file_bytes)
+        q_meta_path = os.path.join(q_dir, "queue_manifest.json")
+        q_list = []
+        if os.path.exists(q_meta_path):
+            with open(q_meta_path, "r", encoding="utf-8") as fm:
+                q_list = json.load(fm) or []
+        q_list = [x for x in q_list if x.get("filename") != filename]
+        q_list.append({
+            "path": q_file_path,
+            "filename": filename,
+            "mime_type": mime_type or "application/pdf",
+            "parish_name": parish_name
+        })
+        with open(q_meta_path, "w", encoding="utf-8") as fm:
+            json.dump(q_list, fm, indent=2)
+    except Exception:
+        pass
+
+    if any_scope_403:
         st.session_state["_drive_needs_scope_upgrade"] = True
-        return f"https://drive.google.com/drive/folders/{target_subfolder_id or ALL_PARISH_DB_FOLDER_ID}", f"Na-record sa {parish_name} Family Database!"
-    return f"https://drive.google.com/drive/folders/{target_subfolder_id or ALL_PARISH_DB_FOLDER_ID}", f"Na-record sa {parish_name} Family Database!"
+        return None, (
+            "⚠️ Naka-queue na ang Form File/Image para sa Google Drive! (Kailangan lang i-refresh ni Master Admin ang Google Drive Token sa '🛠️ App Settings -> 🔑 API & Google Drive / Gmail Credentials' dahil naka-Gmail-only scope ang token matapos mag-restart ang Streamlit Cloud)."
+        )
+    return None, f"⚠️ Hindi pa na-upload sa Google Drive Folder ({last_err[:120]})."
 
 def load_saved_drive_links_registry() -> list[dict]:
     """Binabasa ang listahan ng lahat ng naka-save na Google Drive links upang walang mawala kahit magdagdag ng bagong link."""
@@ -2297,8 +2331,9 @@ def sync_excel_bytes_to_drive(excel_bytes: bytes, spreadsheet_url: str, local_ca
         candidate_file_ids.append(MASTER_CENSUS_EXCEL_FILE_ID)
 
     last_err = ""
-    saw_scope_403 = False
+    any_scope_403 = False
     for service in services:
+        this_svc_403 = False
         # 1. Direct update by exact File ID (1s-HWF_IxwAq2mIXe5Hs6sqJMrcZPPolj) — requires 0 files().list search calls!
         for fid_try in candidate_file_ids:
             if not fid_try or len(fid_try) <= 15:
@@ -2311,14 +2346,15 @@ def sync_excel_bytes_to_drive(excel_bytes: bytes, spreadsheet_url: str, local_ca
                 )
                 service.files().update(fileId=fid_try, media_body=media, supportsAllDrives=True).execute()
                 st.session_state.pop("_drive_needs_scope_upgrade", None)
-                return True, "Matagumpay na na-update ang CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx sa CTG Ministry Hub app_Storage sa Google Drive!"
+                return True, "✅ Matagumpay na na-update ang live CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx sa Google Drive!"
             except Exception as e1:
                 last_err = str(e1)
                 if "insufficientPermissions" in last_err or "insufficient authentication scopes" in last_err:
-                    saw_scope_403 = True
+                    this_svc_403 = True
+                    any_scope_403 = True
                     break
 
-        if saw_scope_403:
+        if this_svc_403:
             continue
 
         # 2. Fallback: search or create inside APP_STORAGE_FOLDER_ID (1MDIZBfdIGgM9gBZvG04xj2m3zJ5TCfJg)
@@ -2346,16 +2382,66 @@ def sync_excel_bytes_to_drive(excel_bytes: bytes, spreadsheet_url: str, local_ca
                     supportsAllDrives=True
                 ).execute()
             st.session_state.pop("_drive_needs_scope_upgrade", None)
-            return True, "Matagumpay na na-save ang CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx sa CTG Ministry Hub app_Storage folder sa Google Drive!"
+            return True, "✅ Matagumpay na na-save ang live CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx sa Google Drive!"
         except Exception as e2:
             last_err = str(e2)
             if "insufficientPermissions" in last_err or "insufficient authentication scopes" in last_err:
-                saw_scope_403 = True
+                any_scope_403 = True
 
-    if saw_scope_403:
+    if any_scope_403:
         st.session_state["_drive_needs_scope_upgrade"] = True
-        return True, "Matagumpay na na-save sa Master Census Excel Database (CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx)!"
-    return True, "Matagumpay na na-save sa Master Census Excel Database (CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx)!"
+        return True, (
+            "⚠️ Na-save na sa App Excel, ngunit HINDI pa na-update sa Google Drive dahil naka-Gmail-only (403 Scope) ang Refresh Token sa Streamlit Cloud Secrets! "
+            "(Pumunta sa '🛠️ App Settings -> 🔑 API & Google Drive / Gmail Credentials' bilang Master Admin upang i-activate ang Google Drive Token at awtomatikong ma-push ito sa Google Drive)."
+        )
+    return True, f"⚠️ Na-save sa App Excel, ngunit hindi na-sync sa Google Drive ({last_err[:120]})."
+
+def flush_all_pending_drive_uploads_and_excel(spreadsheet_url: str) -> tuple[bool, str]:
+    """Automatically pushes the current local CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx (including Apolonio B. Claro & Soledad L. Claro)
+    AND any queued PDF/Image files in `pending_drive_uploads/` directly to Google Drive as soon as a Drive-scoped token is active!"""
+    msgs = []
+    ok_any = False
+    for cand_xl in ["CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx", LOCAL_EXCEL_CACHE]:
+        if os.path.exists(cand_xl):
+            try:
+                with open(cand_xl, "rb") as fx:
+                    xb = fx.read()
+                if _is_valid_census_excel_bytes(xb):
+                    ok_x, m_x = sync_excel_bytes_to_drive(xb, spreadsheet_url)
+                    msgs.append(m_x)
+                    if "✅" in m_x:
+                        ok_any = True
+                    break
+            except Exception:
+                pass
+
+    q_meta_path = os.path.join("pending_drive_uploads", "queue_manifest.json")
+    if os.path.exists(q_meta_path):
+        try:
+            with open(q_meta_path, "r", encoding="utf-8") as fm:
+                q_list = json.load(fm) or []
+            remaining = []
+            uploaded_cnt = 0
+            for item in q_list:
+                fp = item.get("path", "")
+                if fp and os.path.exists(fp):
+                    with open(fp, "rb") as fq:
+                        fb = fq.read()
+                    lnk, u_m = upload_member_image_to_parish_database_folder(
+                        fb, item.get("filename", "CTG_Form.pdf"), item.get("mime_type", "application/pdf"), item.get("parish_name", "LIPAY NORTE PARISH")
+                    )
+                    if lnk:
+                        uploaded_cnt += 1
+                        ok_any = True
+                    else:
+                        remaining.append(item)
+            with open(q_meta_path, "w", encoding="utf-8") as fm:
+                json.dump(remaining, fm, indent=2)
+            if uploaded_cnt > 0:
+                msgs.append(f"✅ Na-upload na rin sa Google Drive ang {uploaded_cnt} naka-queue na Form PDF/Image file(s)!")
+        except Exception:
+            pass
+    return ok_any, " | ".join(msgs) if msgs else "Walang naka-queue na file."
 
 PARISH_FAMILY_ID_PREFIXES = {
     "LIPAY NORTE PARISH": "CTG-LN-FAM-",
@@ -16699,15 +16785,25 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
             unsafe_allow_html=True
         )
     with top_p_col3:
-        if st.button("🔄 I-sync Mula sa Google Drive", use_container_width=True, key="btn_add_page_sync_drive"):
-            with st.spinner("Sini-sync ang pinakabagong CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx mula sa Google Drive..."):
-                st.cache_data.clear()
-                b_fresh_add, lbl_fresh_add = fetch_live_excel_bytes(ACTIVE_SPREADSHEET_URL, force_cloud=True)
-                master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
-                st.session_state["add_form_refresh_counter"] = st.session_state.get("add_form_refresh_counter", 0) + 1
-                st.success(f"✅ Na-sync na mula sa Google Drive ({lbl_fresh_add})!")
-                time.sleep(0.4)
-                st.rerun()
+        sb_c1, sb_c2 = st.columns(2)
+        with sb_c1:
+            if st.button("🔄 Sync Mula Drive", use_container_width=True, key="btn_add_page_sync_drive", help="Basahin ang pinakabagong Excel mula sa Google Drive"):
+                with st.spinner("Binabasa ang CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx mula sa Google Drive..."):
+                    st.cache_data.clear()
+                    b_fresh_add, lbl_fresh_add = fetch_live_excel_bytes(ACTIVE_SPREADSHEET_URL, force_cloud=True)
+                    master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
+                    st.session_state["add_form_refresh_counter"] = st.session_state.get("add_form_refresh_counter", 0) + 1
+                    st.success(f"✅ Na-sync mula sa Google Drive!")
+                    time.sleep(0.4)
+                    st.rerun()
+        with sb_c2:
+            if st.button("☁️ I-push sa Drive", type="primary", use_container_width=True, key="btn_add_page_push_drive", help="I-upload ngayon ang naka-save sa App Excel at Form PDF/Images papunta sa Google Drive"):
+                with st.spinner("Ina-upload ang App Excel at naka-queue na Form PDF/Images papunta sa Google Drive..."):
+                    ok_fl, msg_fl = flush_all_pending_drive_uploads_and_excel(ACTIVE_SPREADSHEET_URL)
+                    if ok_fl and not st.session_state.get("_drive_needs_scope_upgrade"):
+                        st.success(msg_fl)
+                    else:
+                        st.warning(msg_fl)
         if is_hk_add_mode:
             st.download_button(
                 "📥 Download HK Template (.xlsx)",
@@ -16719,6 +16815,15 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
             )
 
     st.markdown("---")
+
+    if st.session_state.get("_drive_needs_scope_upgrade") and st.session_state.user_role == "Master Admin":
+        st.warning(
+            "🔑 **Master Admin Notice:** Ang `GMAIL_REFRESH_TOKEN` sa Streamlit Cloud Secrets ay pang-Gmail lamang (`403 Scope`), kaya sa App pa lang naka-save ang bagong upload at hindi pa pumapasok sa Google Drive. "
+            "Pindutin ang button sa ibaba upang buksan ang **🛠️ App Settings**, gumawa ng bagong **Google Drive + Gmail Refresh Token**, at **awtomatikong ma-upload agad sa Google Drive ang lahat ng naka-save na pamilya at PDF**!"
+        )
+        if st.button("🛠️ Buksan ang Master Admin App Settings (Activate Google Drive Token & Push Pending Uploads)", type="primary", use_container_width=True, key="btn_jump_to_master_settings_token"):
+            st.session_state.app_mode_override = "🛠️ App Settings"
+            st.rerun()
 
     # =================================================================
     # STEP-BY-STEP MODE SELECTOR (NO DUPLICATE FORMS!)
@@ -18060,8 +18165,10 @@ elif app_mode == "🛠️ App Settings":
                             new_rt = token_json.get("refresh_token", "")
                             if new_rt:
                                 persist_drive_refresh_token_everywhere(new_rt, g_cid.strip(), g_csec.strip())
-                                st.success("✅ Matagumpay na nakuha at na-save ang bagong Google Drive + Gmail Refresh Token sa `.streamlit/secrets.toml` at `ctg_app_cloud_config.json`!")
-                                st.code(new_rt)
+                                ok_fl_s, msg_fl_s = flush_all_pending_drive_uploads_and_excel(ACTIVE_SPREADSHEET_URL)
+                                st.success(f"✅ Matagumpay na nakuha at na-save ang bagong Google Drive + Gmail Refresh Token! ({msg_fl_s})")
+                                st.info("📌 **MAHALAGA PARA SA STREAMLIT CLOUD:** Kopyahin ang linya sa ibaba at i-paste sa iyong **Streamlit Cloud Dashboard → App Settings → Secrets** (palitan ang lumang `GMAIL_REFRESH_TOKEN`) upang hindi na mawala ang Google Drive access kahit mag-restart ang app:")
+                                st.code(f'GMAIL_REFRESH_TOKEN = "{new_rt}"', language="toml")
                             else:
                                 st.error(f"Hindi nakuha ang refresh_token: {token_json}")
                     except Exception as ex:
