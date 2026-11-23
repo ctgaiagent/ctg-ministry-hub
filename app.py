@@ -15,6 +15,7 @@ Official Streamlit Web Application for Master Admin & 10 Parish Leaders:
 import os
 import io
 import re
+import ast
 import csv
 import html as html_lib
 import json
@@ -25,6 +26,7 @@ import hashlib
 import difflib
 import importlib
 import urllib.parse
+import concurrent.futures
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 
@@ -1488,7 +1490,7 @@ def render_master_admin_heads_editor_panel(context_key: str = "settings"):
                     }
                     save_leadership_and_priests_profiles(profiles)
                     st.success(f"✅ Matagumpay na na-save ang **{h_title}**!")
-                    time.sleep(0.4)
+                    time.sleep(0.1)
                     st.rerun()
 
 def extract_id_from_url(url: str) -> str:
@@ -1854,8 +1856,7 @@ def get_all_candidate_google_drive_services() -> list:
                     sa_info = json.loads(sa_raw)
                 except Exception:
                     try:
-                        import ast as _ast_sa
-                        cand_d = _ast_sa.literal_eval(sa_raw)
+                        cand_d = ast.literal_eval(sa_raw)
                         if isinstance(cand_d, dict):
                             sa_info = cand_d
                     except Exception:
@@ -7196,7 +7197,6 @@ def clean_officer_ocr_text(raw_s: str, is_topic: bool = False, field_key: str = 
 
     # Multi-Parish Fuzzy Name Spell-Check (para sa lahat ng 10 Parokya, Weeks 1-5, at buong 2027)
     try:
-        import difflib
         pool = build_canonical_officer_name_pool()
         semi_tokens = [tok.strip() for tok in s.split(";") if tok.strip()]
         corrected_tokens = []
@@ -10564,7 +10564,6 @@ def render_record_style_html_table(df: pd.DataFrame):
     if df is None or df.empty:
         st.caption("Walang nakatalang datos.")
         return
-    import html as html_lib
     ths = "".join(f"<th>{html_lib.escape(str(c))}</th>" for c in df.columns)
     trs = []
     for _, row in df.iterrows():
@@ -12736,7 +12735,7 @@ def render_weekly_report_page():
                             )
                         st.session_state["pwr_form_rev"] = st.session_state.get("pwr_form_rev", 0) + 1
                         st.success(f"✅ Na-update na sa PARISH WEEKLY REPORT at Monitoring Tables para sa **{v_parish}** ({v_month} {selected_year} - {v_week})! ({sync_msg})")
-                        time.sleep(0.5)
+                        time.sleep(0.1)
                         st.rerun()
                     except Exception as ex_ed:
                         dispatch_app_notification_and_messenger_alert(
@@ -12816,7 +12815,7 @@ def render_weekly_report_page():
                 st.session_state["pwr_form_rev"] = st.session_state.get("pwr_form_rev", 0) + 1
                 st.cache_data.clear()
                 st.success(f"{msg} | {msg_c}")
-                time.sleep(0.5)
+                time.sleep(0.1)
                 st.rerun()
     with top_f6:
         st.write("")
@@ -12955,7 +12954,7 @@ def render_weekly_report_page():
                             st.session_state["_next_mon_view_month"] = nr_target_month
                             st.session_state["_next_mon_view_week"] = nr_target_week
                             st.success(f"✅ Nalagyan na ng '(No Report)' ang {nr_target_parish} para sa {nr_target_month} {selected_year} ({nr_target_week})!")
-                            time.sleep(0.4)
+                            time.sleep(0.1)
                             st.rerun()
                     with nr_btn_2:
                         if st.button(f"♻️ Alisin ang '(No Report)' ({nr_target_parish} • {nr_target_month} {nr_target_week})", use_container_width=True, key="btn_clear_no_report"):
@@ -12968,7 +12967,7 @@ def render_weekly_report_page():
                             st.session_state["_next_mon_view_month"] = nr_target_month
                             st.session_state["_next_mon_view_week"] = nr_target_week
                             st.success(f"♻️ Inalis na ang '(No Report)' sa {nr_target_parish} para sa {nr_target_month} {selected_year} ({nr_target_week})!")
-                            time.sleep(0.4)
+                            time.sleep(0.1)
                             st.rerun()
 
                     marked_nr_parishes = [
@@ -13013,7 +13012,7 @@ def render_weekly_report_page():
                             st.session_state["_next_mon_view_month"] = ev_target_month
                             st.session_state["_next_mon_view_week"] = ev_target_week
                             st.success(f"🏛️ Nalagyan na ng '(Church Event: {ev_title_input})' ang {ev_target_parish} para sa {ev_target_month} {selected_year} ({ev_target_week}) at awtomatikong binawasan ng 1 week ang # OF WEEKS!")
-                            time.sleep(0.4)
+                            time.sleep(0.1)
                             st.rerun()
                     with ev_btn_2:
                         if st.button(f"♻️ Alisin ang '(Church Event)' & Ibalik ang Week Count ({ev_target_parish} • {ev_target_month} {ev_target_week})", use_container_width=True, key="btn_clear_church_event"):
@@ -13026,7 +13025,7 @@ def render_weekly_report_page():
                             st.session_state["_next_mon_view_month"] = ev_target_month
                             st.session_state["_next_mon_view_week"] = ev_target_week
                             st.success(f"♻️ Inalis na ang '(Church Event)' sa {ev_target_parish} para sa {ev_target_month} {selected_year} ({ev_target_week}) at naibalik na ang # OF WEEKS!")
-                            time.sleep(0.4)
+                            time.sleep(0.1)
                             st.rerun()
 
                     marked_ev_parishes = [
@@ -13081,7 +13080,7 @@ def render_weekly_report_page():
                                 )
                             st.cache_data.clear()
                             st.success("✅ Matagumpay na na-update ang mga Google Drive Links para sa Weekly Report at Consolidation!")
-                            time.sleep(0.5)
+                            time.sleep(0.1)
                             st.rerun()
                     with lu_b2:
                         if st.button("🔄 I-pull at I-sync sa App ang mga In-adjust na Data Mula sa Google Drive", use_container_width=True, key="btn_pull_adm_wk_drive"):
@@ -13090,7 +13089,7 @@ def render_weekly_report_page():
                                 cnt_f, msg_f = sync_weekly_reports_from_google_drive_folder(in_wk_folder_url or ACTIVE_WEEKLY_FOLDER_URL, view_month, view_week)
                                 st.cache_data.clear()
                                 st.success(f"✅ {msg_p} | {msg_f}")
-                                time.sleep(0.5)
+                                time.sleep(0.1)
                                 st.rerun()
 
                     # Edit or replace any saved Weekly Report link in-place
@@ -13114,7 +13113,7 @@ def render_weekly_report_page():
                                 save_drive_links_registry(reg_all_wk)
                                 st.cache_data.clear()
                                 st.success("✅ Na-update na ang Google Drive link sa listahan!")
-                                time.sleep(0.4)
+                                time.sleep(0.1)
                                 st.rerun()
         if is_master:
             st.divider()
@@ -13915,7 +13914,7 @@ def render_weekly_report_page():
                         with st.spinner("Inilalagay ang lahat ng isinumiteng datos ng 10 Parokya (Jan–Dec) sa CTG_PWR_2027_CONSOLIDATION.xlsx..."):
                             ok_all, msg_all = update_pwr_2027_consolidation_excel_on_drive("", "", sync_all_from_db=db_live)
                             st.success(f"✅ {msg_all}")
-                            time.sleep(0.5)
+                            time.sleep(0.1)
                             st.rerun()
 
                 cur_ed_rows = _compute_parish_month_8_activities_rows(pwr_ed_month, pwr_ed_parish)
@@ -14007,7 +14006,7 @@ def render_weekly_report_page():
                             pwr_ed_month, pwr_ed_parish, weekly_activity_matrix=matrix_to_save
                         )
                         st.success(f"✅ Na-save na ang Report para sa **{pwr_ed_parish}** ({pwr_ed_month.upper()} {selected_year})! ({sync_status_msg})")
-                        time.sleep(0.5)
+                        time.sleep(0.1)
                         st.rerun()
 
             # =================================================================
@@ -14377,7 +14376,7 @@ def render_weekly_report_page():
                         is_error=False
                     )
                     st.success(f"Binura na ang na-populate na data para sa {del_target_p} ({view_month} - {view_week})!")
-                    time.sleep(0.5)
+                    time.sleep(0.1)
                     st.rerun()
 
 def _format_grouped_ministry_percentages(pcts_dict: dict, is_hongkong: bool = False, lang: str = "English") -> str:
@@ -14782,7 +14781,7 @@ def render_outreach_visitation_missionary_page():
                     st.success(f"✅ {n_msg}")
                 else:
                     st.info(f"ℹ️ {n_msg}")
-                time.sleep(0.5)
+                time.sleep(0.1)
                 st.rerun()
 
     # =====================================================================
@@ -14959,7 +14958,7 @@ def render_outreach_visitation_missionary_page():
                 )
                 st.session_state["pwr_form_rev"] = st.session_state.get("pwr_form_rev", 0) + 1
                 st.success(f"✅ Matagumpay na na-save ang House Visitation, Missionary Work, Indoctrination & Remarks para sa **{sub_out_parish}** ({sub_out_month} {sub_out_week})! ({msg_o})")
-                time.sleep(0.4)
+                time.sleep(0.1)
                 st.rerun()
 
     st.divider()
@@ -15149,7 +15148,7 @@ with st.sidebar:
                         })
                     save_leadership_and_priests_profiles(_ldr_profiles_sb)
                     st.success("✅ Na-update na ang iyong Profile!")
-                    time.sleep(0.4)
+                    time.sleep(0.1)
                     st.rerun()
 
     if st.button("🔄 Sync Live Excel & Notion Data", use_container_width=True):
@@ -15578,7 +15577,7 @@ def render_ministry_messenger_page():
                         target_msg_id = msg_del_options[sel_msg_to_del][0]
                         delete_internal_chat_messages_by_ids({target_msg_id})
                         st.success("Binura na ang napiling mensahe!")
-                        time.sleep(0.3)
+                        time.sleep(0.1)
                         st.rerun()
                 with del_c3:
                     st.write("")
@@ -15586,7 +15585,7 @@ def render_ministry_messenger_page():
                         ids_filter = {m.get("id") for m in mon_list if m.get("id")}
                         delete_internal_chat_messages_by_ids(ids_filter)
                         st.success(f"Binura na ang {len(ids_filter)} mensahe!")
-                        time.sleep(0.3)
+                        time.sleep(0.1)
                         st.rerun()
 
 # =====================================================================
@@ -15624,7 +15623,7 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
                             st.success(f"✅ Matagumpay na na-sync ang Master Census Excel mula sa Google Drive ({lbl_cloud})!")
                         else:
                             st.info("ℹ️ Naka-load ang Master Census Database (CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx). Kung naka-private ang file sa Drive, maaari mo ring i-upload ang .xlsx file sa kanan.")
-                        time.sleep(0.6)
+                        time.sleep(0.1)
                         st.rerun()
             with up_cen_c2:
                 uploaded_census_xlsx = st.file_uploader(
@@ -15640,7 +15639,7 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
                                 ok_c, msg_c = sync_excel_bytes_to_drive(new_c_bytes, census_drive_link_in or ACTIVE_SPREADSHEET_URL)
                                 st.cache_data.clear()
                                 st.success(f"✅ Matagumpay na naipasok ang `{uploaded_census_xlsx.name}` sa Parish Census & Member Manager at Parish Directory & Family Search! ({msg_c})")
-                                time.sleep(0.7)
+                                time.sleep(0.1)
                                 st.rerun()
                             else:
                                 st.error("⚠️ Ang in-upload na Excel file ay walang 'HEAD OF FAMILY MASTER' o Parish Census sheets. Siguraduhing ang CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx ang in-upload.")
@@ -15995,7 +15994,7 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
                         st.cache_data.clear()
                         b_fresh, lbl_fresh = fetch_live_excel_bytes(ACTIVE_SPREADSHEET_URL, force_cloud=True)
                         st.success(f"✅ Na-update na ang App mula sa Google Drive ({lbl_fresh})!")
-                        time.sleep(0.5)
+                        time.sleep(0.1)
                         st.rerun()
             if is_hk_census_view:
                 edit_cols_order = [
@@ -16040,7 +16039,7 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
                             ok_b, msg_b = batch_update_members_in_excel_and_sync(ACTIVE_SPREADSHEET_URL, changed_payloads)
                             if ok_b:
                                 st.success(f"✅ {msg_b}")
-                                time.sleep(0.6)
+                                time.sleep(0.1)
                                 st.rerun()
                             else:
                                 st.error(msg_b)
@@ -16103,7 +16102,7 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
                             get_current_chat_identity()
                         )
                         st.success(f"✅ {msg}")
-                        time.sleep(0.7)
+                        time.sleep(0.1)
                         st.rerun()
                     else:
                         st.error(msg)
@@ -18187,8 +18186,6 @@ def _extract_single_family_from_vision_parts(
                                 }
                                 vision_members.append(_normalize_ctg_form_codes(raw_item))
                             interp_txt = _clean_cell_str(parsed_json.get("interpreted_summary_text", ""))
-                            if interp_txt:
-                                st.session_state["_last_interpreted_form_text"] = interp_txt
                             try:
                                 expected_tot = int(parsed_json.get("household_summary_total") or 0)
                             except Exception:
@@ -18436,8 +18433,7 @@ def _extract_single_family_from_vision_parts(
     overlay_extracted_rows = []
     if ocr_target_images:
         try:
-            import concurrent.futures as _cf
-            with _cf.ThreadPoolExecutor(max_workers=min(4, len(ocr_target_images))) as ex_ocr:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(ocr_target_images))) as ex_ocr:
                 for res_lines, res_ov_rows in ex_ocr.map(_ocr_single_zone, ocr_target_images):
                     combined_ocr_lines.extend(res_lines)
                     overlay_extracted_rows.extend(res_ov_rows)
@@ -18446,8 +18442,6 @@ def _extract_single_family_from_vision_parts(
                 r_lns, r_ovs = _ocr_single_zone(pil_img)
                 combined_ocr_lines.extend(r_lns)
                 overlay_extracted_rows.extend(r_ovs)
-    if combined_ocr_lines:
-        st.session_state["_last_interpreted_form_text"] = "\n".join(combined_ocr_lines)
 
     up_ocr = "\n".join(combined_ocr_lines).upper()
     fn_first_up = fn_hint.split()[0].upper() if fn_hint and fn_hint.split() else ""
@@ -18744,8 +18738,6 @@ def extract_members_from_uploaded_files_batch(uploaded_files_list: list, default
         if len(cached_mems) >= 2:
             if cached_entry.get("previews"):
                 st.session_state["extracted_pdf_page_previews"] = cached_entry["previews"]
-            if cached_entry.get("interp_text"):
-                st.session_state["_last_interpreted_form_text"] = cached_entry["interp_text"]
             return [m.copy() for m in cached_mems]
 
     all_extracted_members = []
@@ -18831,7 +18823,6 @@ def extract_members_from_uploaded_files_batch(uploaded_files_list: list, default
         st.session_state["extracted_pdf_page_previews"] = pdf_page_preview_jpegs
     else:
         st.session_state.pop("extracted_pdf_page_previews", None)
-        st.session_state.pop("_last_interpreted_form_text", None)
 
     if all_extracted_members:
         if "_fast_upload_extraction_memo" not in st.session_state or not isinstance(st.session_state["_fast_upload_extraction_memo"], dict):
@@ -18839,7 +18830,6 @@ def extract_members_from_uploaded_files_batch(uploaded_files_list: list, default
         st.session_state["_fast_upload_extraction_memo"][batch_cache_key] = {
             "members": [m.copy() for m in all_extracted_members],
             "previews": pdf_page_preview_jpegs,
-            "interp_text": st.session_state.get("_last_interpreted_form_text", "")
         }
 
     return all_extracted_members
@@ -18900,7 +18890,7 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                     master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
                     st.session_state["add_form_refresh_counter"] = st.session_state.get("add_form_refresh_counter", 0) + 1
                     st.success(f"✅ Na-sync mula sa Google Drive!")
-                    time.sleep(0.4)
+                    time.sleep(0.1)
                     st.rerun()
         with sb_c2:
             if st.button("☁️ I-push sa Drive", type="primary", use_container_width=True, key="btn_add_page_push_drive", help="I-upload ngayon ang naka-save sa App Excel at Form PDF/Images papunta sa Google Drive"):
@@ -18993,7 +18983,6 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                 if st.button("🧹 I-clear / Mag-upload ng Ibang File", use_container_width=True, key="btn_clear_current_upload_top"):
                     st.session_state.pop("extracted_members_batch", None)
                     st.session_state.pop("extracted_pdf_page_previews", None)
-                    st.session_state.pop("_last_interpreted_form_text", None)
                     st.session_state.pop("_last_processed_upload_sig", None)
                     st.session_state.pop("_last_auto_save_banner", None)
                     st.session_state.pop("_last_uploaded_drive_links", None)
@@ -19199,7 +19188,6 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                         })
                     st.session_state["extracted_members_batch"] = blank_batch
                     st.session_state.pop("extracted_pdf_page_previews", None)
-                    st.session_state.pop("_last_interpreted_form_text", None)
                     st.session_state.pop("_last_auto_save_banner", None)
                     st.session_state["add_form_refresh_counter"] = st.session_state.get("add_form_refresh_counter", 0) + 1
                     st.rerun()
@@ -19231,7 +19219,6 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                         if loaded_rows:
                             st.session_state["extracted_members_batch"] = loaded_rows
                             st.session_state.pop("extracted_pdf_page_previews", None)
-                            st.session_state.pop("_last_interpreted_form_text", None)
                             st.session_state.pop("_last_auto_save_banner", None)
                             st.session_state["add_form_refresh_counter"] = st.session_state.get("add_form_refresh_counter", 0) + 1
                             st.rerun()
@@ -19251,7 +19238,7 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                                     st.success(f"✅ {msg_del}")
                                 else:
                                     st.warning(msg_del)
-                                time.sleep(0.5)
+                                time.sleep(0.1)
                                 st.rerun()
 
     # =================================================================
@@ -19589,7 +19576,6 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                 if st.button("🆕 Susunod na Pamilya (Reset)", use_container_width=True, key="btn_reset_for_next_family"):
                     st.session_state.pop("extracted_members_batch", None)
                     st.session_state.pop("extracted_pdf_page_previews", None)
-                    st.session_state.pop("_last_interpreted_form_text", None)
                     st.session_state.pop("_last_processed_upload_sig", None)
                     st.session_state.pop("_last_auto_save_banner", None)
                     st.session_state.pop("_last_uploaded_drive_links", None)
@@ -19712,7 +19698,7 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                                 st.cache_data.clear()
                                 master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
                                 st.success(f"✅ {final_pv_msg}")
-                                time.sleep(0.5)
+                                time.sleep(0.1)
                                 st.rerun()
                             else:
                                 st.error(final_pv_msg)
@@ -19839,14 +19825,14 @@ elif app_mode == "🛠️ App Settings":
                 st.session_state.ui_default_lang = new_ui_lang
                 st.session_state.ui_show_side_records = new_side_rec
                 st.success("Na-update na ang Theme at App Controller!")
-                time.sleep(0.5)
+                time.sleep(0.1)
                 st.rerun()
         with col_btn_ui2:
             if st.button("🧹 I-clear ang App Cache & Refresh Data", use_container_width=True):
                 st.cache_data.clear()
                 st.cache_resource.clear()
                 st.success("Na-clear na ang cache at na-refresh ang data!")
-                time.sleep(0.5)
+                time.sleep(0.1)
                 st.rerun()
 
     with tab_heads:
@@ -19910,7 +19896,7 @@ elif app_mode == "🛠️ App Settings":
                                 save_encrypted_accounts_registry(acc_reg)
                                 st.session_state.logged_in_username = new_u_self
                                 st.success(f"✅ Matagumpay na na-save at na-encrypt ang iyong bagong Username (`{new_u_self}`) at Password!")
-                                time.sleep(0.7)
+                                time.sleep(0.1)
                                 st.rerun()
         else:
             st.markdown("#### 🛡️ Master Admin Control: Lahat ng User Accounts, Access Lock & Encrypted Password Manager")
@@ -19967,7 +19953,7 @@ elif app_mode == "🛠️ App Settings":
                         acc_reg[sel_acc_slot]["updated_at"] = f"{get_philippine_datetime_str()} (by Master Admin)"
                         save_encrypted_accounts_registry(acc_reg)
                         st.success(f"✅ Matagumpay na na-update ang Account at Security Settings para sa **{sel_acc_slot}**!")
-                        time.sleep(0.5)
+                        time.sleep(0.1)
                         st.rerun()
 
     with tab_excel:
@@ -20072,7 +20058,7 @@ elif app_mode == "🛠️ App Settings":
                                     _, s_msg = auto_sync_from_any_drive_link(w_url.strip(), eff_m, eff_w, w_parish)
                                     st.cache_data.clear()
                                     st.success(f"✅ Naidagdag sa Weekly Report Links ang '{auto_lbl}'! ({s_msg})")
-                                    time.sleep(0.5)
+                                    time.sleep(0.1)
                                     st.rerun()
                     else:
                         st.caption("I-paste ang maraming Google Drive links (isang link bawat linya, o `Label | Link`). Awtomatikong isasama ang lahat sa Weekly Report Links group!")
@@ -20114,7 +20100,7 @@ elif app_mode == "🛠️ App Settings":
                                     added_bulk += 1
                             if added_bulk > 0:
                                 st.success(f"✅ Matagumpay na naidagdag ang **{added_bulk}** Weekly Report Links!")
-                                time.sleep(0.5)
+                                time.sleep(0.1)
                                 st.rerun()
                             else:
                                 st.warning("Walang nakitang valid na `https://...` Google Drive link.")
@@ -20167,14 +20153,14 @@ elif app_mode == "🛠️ App Settings":
                             _, msg_w = auto_sync_from_any_drive_link(wk_chosen.get("url", ""), eff_m, eff_w, wk_chosen.get("parish", "Lahat ng Parokya (Master)"))
                             st.cache_data.clear()
                             st.success(f"✅ {msg_w}")
-                            time.sleep(0.5)
+                            time.sleep(0.1)
                             st.rerun()
                     with wk_btn_c2:
                         if len(saved_links_list) > 1 and st.button("🗑️ Alisin ang Napiling Weekly Report Link", use_container_width=True, key="btn_del_sel_wk"):
                             saved_links_list.pop(wk_orig_idx)
                             save_drive_links_registry(saved_links_list)
                             st.success("Inalis na ang napiling Weekly Report link.")
-                            time.sleep(0.4)
+                            time.sleep(0.1)
                             st.rerun()
                 else:
                     st.info("Walang Weekly Report link na tumugma sa kasalukuyang filter.")
@@ -20214,7 +20200,7 @@ elif app_mode == "🛠️ App Settings":
                             _, c_sync_msg = auto_sync_from_any_drive_link(c_url.strip(), "January", "1st Week", c_parish)
                             st.cache_data.clear()
                             st.success(f"✅ Na-save at na-sync na ang '{final_c_lbl}' para sa Parish Census & Member Manager at Parish Directory! ({c_sync_msg})")
-                            time.sleep(0.6)
+                            time.sleep(0.1)
                             st.rerun()
 
                 if census_links:
@@ -20273,7 +20259,7 @@ elif app_mode == "🛠️ App Settings":
                             _, o_msg = auto_sync_from_any_drive_link(o_url.strip(), "January", "1st Week", o_parish)
                             st.cache_data.clear()
                             st.success(f"✅ Naidagdag ang '{final_o_lbl}'! ({o_msg})")
-                            time.sleep(0.5)
+                            time.sleep(0.1)
                             st.rerun()
 
                 if other_links:
@@ -20315,7 +20301,7 @@ elif app_mode == "🛠️ App Settings":
                                     st.cache_data.clear()
                                     st.cache_resource.clear()
                                     st.success(f"✅ Matagumpay na naipasok ang `{cen_up_file.name}` sa Parish Census & Member Manager at Parish Directory & Family Search! ({msg_u})")
-                                    time.sleep(0.7)
+                                    time.sleep(0.1)
                                     st.rerun()
                                 else:
                                     st.error("⚠️ Ang in-upload na file ay walang 'HEAD OF FAMILY MASTER' o Parish sheets. Gamitin ang Panel B sa kanan kung Weekly Report ito.")
@@ -20377,7 +20363,7 @@ elif app_mode == "🛠️ App Settings":
                                             save_weekly_monitoring_record(chosen_wk_p, chosen_wk_m, chosen_wk_w, ext_d.get("report_date", "01/02/27"), ext_d, drive_link=chosen_wk_url)
                                         st.cache_data.clear()
                                         st.success(f"✅ {msg_w} (Na-update ang Weekly Monitoring para sa {chosen_wk_m} - {chosen_wk_w}!)")
-                                    time.sleep(0.7)
+                                    time.sleep(0.1)
                                     st.rerun()
                     else:
                         st.info("Magdagdag muna ng Weekly Report link sa Tab 1.")
@@ -20476,7 +20462,7 @@ elif app_mode == "🛠️ App Settings":
                     ok_fl_f, msg_fl_f = flush_all_pending_drive_uploads_and_excel(ACTIVE_SPREADSHEET_URL)
                     st.cache_data.clear()
                     st.success(f"✅ Na-save na ang mga credentials at na-sync sa Cloud Vault! ({msg_fl_f})")
-                    time.sleep(0.8)
+                    time.sleep(0.1)
                     st.rerun()
     st.stop()
 
