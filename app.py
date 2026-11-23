@@ -1507,6 +1507,34 @@ def extract_id_from_url(url: str) -> str:
 # ==========================================
 LOCAL_SAVED_FAMILIES_JOURNAL = "ctg_saved_families_journal.json"
 
+def _sanitize_user_input_str(val: str) -> str:
+    """Prevents CSV/Excel formula injection and strips control characters from untrusted user/OCR strings."""
+    s = str(val or "").strip()
+    s = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", s)
+    if s and s[0] in ("=", "+", "-", "@") and not s.startswith(("=IF(", "=UPPER(", "=DATEDIF(", "=COUNTA(")):
+        s = s.lstrip("=+-@").strip()
+    return s
+
+def _auto_harmonize_family_surname(member_name: str, head_of_family_name: str) -> str:
+    """Fixes 1-2 character OCR typos at the end of a family member's surname (e.g. 'Bing Joen G. Paguh/' -> 'Bing Joen G. Paquit')
+    by comparing their last token against the Head of Family's verified surname."""
+    m_clean = re.sub(r"[/\\|]+$", "", _sanitize_user_input_str(member_name)).strip(" ,.-")
+    h_clean = re.sub(r"[/\\|]+$", "", _sanitize_user_input_str(head_of_family_name)).strip(" ,.-")
+    if not m_clean or not h_clean:
+        return m_clean
+    m_parts = m_clean.split()
+    h_parts = [p for p in h_clean.split() if p.upper().rstrip(".") not in ("JR", "SR", "II", "III", "IV")]
+    if not m_parts or not h_parts:
+        return m_clean
+    h_last = re.sub(r"[^A-Za-z]", "", h_parts[-1])
+    m_last = re.sub(r"[^A-Za-z]", "", m_parts[-1])
+    if len(h_last) >= 4 and len(m_last) >= 4 and h_last.upper() != m_last.upper():
+        sim = difflib.SequenceMatcher(None, m_last.upper(), h_last.upper()).ratio()
+        if sim >= 0.65:
+            m_parts[-1] = h_last.title()
+            return " ".join(m_parts)
+    return m_clean
+
 def _get_vault_secret_key() -> str:
     """Returns a stable secret key derived from GMAIL_CLIENT_SECRET / GMAIL_CLIENT_ID for encrypting the Drive refresh token in Cloud Vaults."""
     for cand_k in ("GMAIL_CLIENT_SECRET", "GMAIL_CLIENT_ID", "NOTION_TOKEN"):
@@ -2935,11 +2963,36 @@ def generate_next_family_id_for_parish(parish_name: str, df_members: pd.DataFram
 
     return f"{prefix}{max_num + 1:04d}"
 
+def _encrypt_json_blob_for_disk(data_dict: dict) -> dict:
+    """Encrypts sensitive family member records on disk using SHA-256 stream cipher derived from vault secret key."""
+    try:
+        raw_s = json.dumps(data_dict, ensure_ascii=False)
+        sk = _get_vault_secret_key()
+        kb = hashlib.sha256(sk.encode("utf-8")).digest()
+        pt = raw_s.encode("utf-8")
+        enc = bytes(b ^ kb[i % len(kb)] for i, b in enumerate(pt))
+        return {"_ctg_encrypted_journal_v1": base64.urlsafe_b64encode(enc).decode("ascii")}
+    except Exception:
+        return data_dict
+
 def _load_saved_families_journal() -> dict:
     if os.path.exists(LOCAL_SAVED_FAMILIES_JOURNAL):
         try:
             with open(LOCAL_SAVED_FAMILIES_JOURNAL, "r", encoding="utf-8") as f:
                 d = json.load(f)
+            if isinstance(d, dict) and "_ctg_encrypted_journal_v1" in d:
+                raw_b64 = str(d["_ctg_encrypted_journal_v1"]).encode("ascii")
+                enc = base64.urlsafe_b64decode(raw_b64)
+                for sk_try in [_get_vault_secret_key(), "CTG_MINISTRY_HUB_DEFAULT_VAULT_KEY_2027"]:
+                    try:
+                        kb = hashlib.sha256(sk_try.encode("utf-8")).digest()
+                        dec_s = bytes(b ^ kb[i % len(kb)] for i, b in enumerate(enc)).decode("utf-8")
+                        dec_d = json.loads(dec_s)
+                        if isinstance(dec_d, dict):
+                            return dec_d
+                    except Exception:
+                        continue
+                return {}
             return d if isinstance(d, dict) else {}
         except Exception:
             pass
@@ -2959,7 +3012,7 @@ def _save_family_to_persistent_journal(family_id: str, parish_name: str, head_me
             "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
         with open(LOCAL_SAVED_FAMILIES_JOURNAL, "w", encoding="utf-8") as f:
-            json.dump(j_data, f, ensure_ascii=False, indent=2)
+            json.dump(_encrypt_json_blob_for_disk(j_data), f, ensure_ascii=False, indent=2)
     except Exception:
         pass
 
@@ -2981,7 +3034,7 @@ def _remove_family_from_persistent_journal(parish_name: str, fid_clean: str = ""
         for kd in keys_to_del:
             j_data.pop(kd, None)
         with open(LOCAL_SAVED_FAMILIES_JOURNAL, "w", encoding="utf-8") as f:
-            json.dump(j_data, f, ensure_ascii=False, indent=2)
+            json.dump(_encrypt_json_blob_for_disk(j_data), f, ensure_ascii=False, indent=2)
     except Exception:
         pass
 
@@ -3278,6 +3331,13 @@ def load_complete_parish_members(spreadsheet_url: str):
         excel_bytes, src_label = fetch_live_excel_bytes(spreadsheet_url)
     except Exception:
         pass
+
+    bytes_digest = hashlib.md5(excel_bytes).hexdigest() if excel_bytes else ""
+    mem_cache = st.session_state.get("_fast_census_df_memo", {})
+    if bytes_digest and isinstance(mem_cache, dict) and mem_cache.get("digest") == bytes_digest:
+        cached_df = mem_cache.get("df")
+        if isinstance(cached_df, pd.DataFrame) and not cached_df.empty:
+            return cached_df.copy(), mem_cache.get("label", src_label)
 
     all_rows = []
     if excel_bytes and _is_valid_census_excel_bytes(excel_bytes):
@@ -4432,6 +4492,17 @@ def append_new_member_to_excel_and_sync(spreadsheet_url: str, member_data: dict,
                 ws_rem.cell(row=rem_row, column=18).value = f"[{parish_name}] {clean_rem_excel}".strip()
 
             inserted_rows_info.append(f"{rec_fn} (No. {member_no}, Row {insert_row})")
+
+        # Clear any leftover/orphan rows of this same Family ID if a corrected family has fewer rows than before
+        if parish_name != "HONGKONG PARISH":
+            tpl_clr_r = 45
+            for r_t in range(25, (ws.max_row or 0) + 1):
+                if isinstance(ws.cell(r_t, 2).value, str) and str(ws.cell(r_t, 2).value).startswith("="):
+                    tpl_clr_r = r_t
+                    break
+            for orphan_r in all_existing_fid_rows:
+                if orphan_r not in used_target_rows:
+                    _clear_parish_sheet_row_preserving_formulas(ws, orphan_r, tpl_clr_r)
 
         _save_family_to_persistent_journal(family_id, parish_name, member_data, unique_records_to_insert)
         out_buf = io.BytesIO()
@@ -10851,7 +10922,10 @@ def render_weekly_report_page():
     # =====================================================================
     def _render_verification_editor_panel():
         st.markdown("### ✏️ Parish Weekly Report Data & Manual Verification Editor")
-        st.caption("Lahat ng datos dito ay direktang tinatype sa `PARISH WEEKLY REPORT` sheet (Liturgical Officers, Topics/Preachers, Adults/Youths/Kids Attendance, at Remarks). Naka-sync ang Buwan at Linggo rito sa Top Bar.")
+        st.caption(
+            "Lahat ng datos dito ay direktang tinatype sa `PARISH WEEKLY REPORT` sheet at `Parish Weekly Report Data (Adults/Youths/Kids Attendance)` "
+            "(Active Members lamang — hindi kasama ang Inactive, Non-Member, o lumipat sa Manila/Hongkong). Naka-sync ang Buwan at Linggo rito sa Top Bar."
+        )
 
         db_all = load_weekly_monitoring_records()
 
@@ -10888,6 +10962,38 @@ def render_weekly_report_page():
         ed_dl_info = evaluate_reporting_deadline(v_month, v_week, int(selected_year), parish_name=v_parish)
         ed_locked = (not is_master) and bool(ed_dl_info["is_past_deadline"])
 
+        # Build live Active Members list for Per-Member Attendance Checkboxes
+        saved_att_map = {}
+        for s_it in (list(cur_rec.get("adults_records", []) or []) + list(cur_rec.get("youths_records", []) or []) + list(cur_rec.get("kids_records", []) or [])):
+            if isinstance(s_it, dict) and str(s_it.get("name", "")).strip():
+                saved_att_map[str(s_it.get("name", "")).strip().upper()] = s_it
+
+        active_att_rows = []
+        try:
+            if master_members_df is not None and not master_members_df.empty and "Parish" in master_members_df.columns:
+                p_act_df = master_members_df[master_members_df["Parish"].astype(str).apply(lambda x: normalize_parish_match(x, v_parish))].copy()
+                p_act_df = p_act_df[p_act_df.apply(lambda r: _is_member_row_active_for_weekly_report(r, v_parish), axis=1)].copy()
+                for _, mr in p_act_df.iterrows():
+                    fn_m = str(mr.get("Full Name", "")).strip()
+                    if not fn_m:
+                        continue
+                    cat_raw = "ADULT" if v_parish == "HONGKONG PARISH" else str(mr.get("Category", "ADULT")).upper().strip()
+                    grp_lbl = "KIDS" if ("KID" in cat_raw or "CHILD" in cat_raw) else ("YOUTH" if "YOUTH" in cat_raw else "ADULT")
+                    prev_m = saved_att_map.get(fn_m.upper(), {})
+                    active_att_rows.append({
+                        "No.": len(active_att_rows) + 1,
+                        "Full Name": fn_m,
+                        "Group": grp_lbl,
+                        "Mass": bool(int(prev_m.get("mass", 0)) > 0) if prev_m else False,
+                        "Pampamilya": bool(int(prev_m.get("pampamilya", 0)) > 0) if prev_m else False,
+                        "Online": bool(int(prev_m.get("online", 0)) > 0) if prev_m else False,
+                        "Youth Fell.": bool(int(prev_m.get("youth", 0)) > 0) if (prev_m and grp_lbl == "YOUTH") else False,
+                        "Kids Fell.": bool(int(prev_m.get("kids", 0)) > 0) if (prev_m and grp_lbl == "KIDS") else False,
+                        "Adal": bool(int(prev_m.get("adal", 0)) > 0) if prev_m else False,
+                    })
+        except Exception:
+            pass
+
         with st.form("verify_weekly_counts_form"):
             with st.expander("⛪ Liturgical Officers & Preachers (Para sa PARISH WEEKLY REPORT Sheet)", expanded=True):
                 o1, o2, o3, o4 = st.columns(4)
@@ -10914,9 +11020,37 @@ def render_weekly_report_page():
                     v_misa_pr = st.text_input("Misa Preacher:", value=str(cur_rec.get("misa_preacher", "")), key=f"vmip_{f_rev}")
                     v_pam_pr = st.text_input("Pampamilya Preacher:", value=str(cur_rec.get("pampamilya_preacher", "")), key=f"vpap_{f_rev}")
 
+            edited_att_df = None
+            use_per_member_att = False
+            if active_att_rows:
+                with st.expander(f"☑️ Per-Member Attendance Checkboxes ({v_parish} — {len(active_att_rows)} Active Members)", expanded=False):
+                    st.caption("Lagyan ng check (✓) ang mga um-attend bawat miyembro upang awtomatikong mabilang sa **Parish Weekly Report Data (Adults/Youths/Kids Attendance)**.")
+                    use_per_member_att = st.checkbox(
+                        "🔄 Gamitin ang Checked Members sa ibaba para awtomatikong bilangin ang Attendance Totals",
+                        value=bool(saved_att_map),
+                        key=f"use_pm_att_{f_rev}"
+                    )
+                    edited_att_df = st.data_editor(
+                        pd.DataFrame(active_att_rows),
+                        column_config={
+                            "No.": st.column_config.NumberColumn("No.", width="small", disabled=True),
+                            "Full Name": st.column_config.TextColumn("Full Name (Active)", width="medium", disabled=True),
+                            "Group": st.column_config.TextColumn("Group", width="small", disabled=True),
+                            "Mass": st.column_config.CheckboxColumn("Mass", default=False),
+                            "Pampamilya": st.column_config.CheckboxColumn("Pampamilya", default=False),
+                            "Online": st.column_config.CheckboxColumn("Online", default=False),
+                            "Youth Fell.": st.column_config.CheckboxColumn("Youth Fell.", default=False),
+                            "Kids Fell.": st.column_config.CheckboxColumn("Kids Fell.", default=False),
+                            "Adal": st.column_config.CheckboxColumn("Adal", default=False),
+                        },
+                        use_container_width=True,
+                        hide_index=True,
+                        key=f"pm_att_editor_{f_rev}"
+                    )
+
             if v_parish == "HONGKONG PARISH":
                 st.caption("🇭🇰 **Hongkong Parish (OFW Members):** Tanging **Adults / OFW Attendance** lamang ang nire-report (Walang Youth Fellowship at Kids Fellowship).")
-                v_tot_say = st.number_input("Total Members (Adults / OFW):", min_value=0, value=int(cur_rec.get("total_members_say", 0)) or def_denoms["say"], key=f"vtsay_{f_rev}")
+                v_tot_say = st.number_input("Total Members (Adults / OFW):", min_value=0, value=def_denoms["say"] or int(cur_rec.get("total_members_say", 0)), key=f"vtsay_{f_rev}")
                 v_tot_y = 0
                 v_tot_k = 0
                 hk_a1, hk_a2, hk_a3, hk_a4 = st.columns(4)
@@ -10932,11 +11066,11 @@ def render_weekly_report_page():
             else:
                 tm1, tm2, tm3 = st.columns(3)
                 with tm1:
-                    v_tot_say = st.number_input("Total Members (Adults+Youths):", min_value=0, value=int(cur_rec.get("total_members_say", 0)) or def_denoms["say"], key=f"vtsay_{f_rev}")
+                    v_tot_say = st.number_input("Total Members (Adults+Youths):", min_value=0, value=def_denoms["say"] or int(cur_rec.get("total_members_say", 0)), key=f"vtsay_{f_rev}")
                 with tm2:
-                    v_tot_y = st.number_input("Total Youth Members:", min_value=0, value=int(cur_rec.get("total_members_y", 0)) or def_denoms["youth"], key=f"vty_{f_rev}")
+                    v_tot_y = st.number_input("Total Youth Members:", min_value=0, value=def_denoms["youth"] or int(cur_rec.get("total_members_y", 0)), key=f"vty_{f_rev}")
                 with tm3:
-                    v_tot_k = st.number_input("Total Kids Members:", min_value=0, value=int(cur_rec.get("total_members_k", 0)) or def_denoms["kids"], key=f"vtk_{f_rev}")
+                    v_tot_k = st.number_input("Total Kids Members:", min_value=0, value=def_denoms["kids"] or int(cur_rec.get("total_members_k", 0)), key=f"vtk_{f_rev}")
 
                 a1, a2, a3, a4, a5 = st.columns(5)
                 with a1:
@@ -10957,7 +11091,6 @@ def render_weekly_report_page():
 
             parsed_cur_ro = parse_remarks_into_mass_and_outreach(str(cur_rec.get("remarks", "")))
             v_date = st.text_input("Petsa ng Pagsamba / Sabado (MM/DD/YY):", value=default_wk_date, key=f"vdt_{f_rev}")
-            # Panatilihin ang kasalukuyang Outreach data mula sa nakahiwalay na pahina ng House Visitation, Missionary Work & Indoctrination
             v_hv = str(cur_rec.get("house_visitation", "0"))
             v_hv_names = str(cur_rec.get("hv_names", "") or parsed_cur_ro.get("hv_names", ""))
             v_hv_ppl = int(cur_rec.get("hv_people_count", 0) or parsed_cur_ro.get("hv_people_count", 0))
@@ -10998,6 +11131,34 @@ def render_weekly_report_page():
                 else:
                     try:
                         denoms = get_parish_member_denominators(v_parish)
+                        adults_recs_out, youths_recs_out, kids_recs_out = [], [], []
+                        if edited_att_df is not None and not edited_att_df.empty:
+                            pm_ma, pm_pa, pm_oa, pm_ada = 0, 0, 0, 0
+                            pm_my, pm_py, pm_oy, pm_yy, pm_ady = 0, 0, 0, 0, 0
+                            pm_kk = 0
+                            for _, arow in edited_att_df.iterrows():
+                                grp_u = str(arow.get("Group", "ADULT")).upper()
+                                nm_u = str(arow.get("Full Name", "")).strip()
+                                b_m = 1 if bool(arow.get("Mass", False)) else 0
+                                b_p = 1 if bool(arow.get("Pampamilya", False)) else 0
+                                b_o = 1 if bool(arow.get("Online", False)) else 0
+                                b_y = 1 if bool(arow.get("Youth Fell.", False)) else 0
+                                b_k = 1 if bool(arow.get("Kids Fell.", False)) else 0
+                                b_ad = 1 if bool(arow.get("Adal", False)) else 0
+                                if grp_u == "KIDS":
+                                    pm_kk += b_k
+                                    kids_recs_out.append({"name": nm_u, "mass": 0, "pampamilya": 0, "online": 0, "youth": 0, "kids": b_k, "adal": 0})
+                                elif grp_u == "YOUTH":
+                                    pm_my += b_m; pm_py += b_p; pm_oy += b_o; pm_yy += b_y; pm_ady += b_ad
+                                    youths_recs_out.append({"name": nm_u, "mass": b_m, "pampamilya": b_p, "online": b_o, "youth": b_y, "kids": 0, "adal": b_ad})
+                                else:
+                                    pm_ma += b_m; pm_pa += b_p; pm_oa += b_o; pm_ada += b_ad
+                                    adults_recs_out.append({"name": nm_u, "mass": b_m, "pampamilya": b_p, "online": b_o, "youth": 0, "kids": 0, "adal": b_ad})
+                            if use_per_member_att:
+                                m_a, p_a, o_a, ad_a = pm_ma, pm_pa, pm_oa, pm_ada
+                                m_y, p_y, o_y, y_y, ad_y = pm_my, pm_py, pm_oy, pm_yy, pm_ady
+                                k_k = pm_kk
+
                         updated_payload = {
                             "total_members_say": v_tot_say if v_tot_say > 0 else denoms["say"],
                             "total_members_y": v_tot_y if v_tot_y > 0 else denoms["youth"],
@@ -11007,34 +11168,19 @@ def render_weekly_report_page():
                             "online_a": o_a, "online_y": o_y,
                             "youth_y": y_y, "kids_k": k_k,
                             "adal_a": ad_a, "adal_y": ad_y,
-                            "house_visitation": v_hv,
-                            "hv_names": v_hv_names,
-                            "hv_people_count": v_hv_ppl,
-                            "hv_remarks": v_hv_rem,
-                            "missionary_work": v_mw,
-                            "mw_names": v_mw_names,
-                            "mw_people_count": v_mw_ppl,
-                            "mw_remarks": v_mw_rem,
-                            "indoctrination": v_ind,
-                            "ind_names": v_ind_names,
-                            "ind_people_count": v_ind_ppl,
-                            "ind_remarks": v_ind_rem,
+                            "adults_records": adults_recs_out if adults_recs_out else list(cur_rec.get("adults_records", []) or []),
+                            "youths_records": youths_recs_out if youths_recs_out else list(cur_rec.get("youths_records", []) or []),
+                            "kids_records": kids_recs_out if kids_recs_out else list(cur_rec.get("kids_records", []) or []),
+                            "house_visitation": v_hv, "hv_names": v_hv_names, "hv_people_count": v_hv_ppl, "hv_remarks": v_hv_rem,
+                            "missionary_work": v_mw, "mw_names": v_mw_names, "mw_people_count": v_mw_ppl, "mw_remarks": v_mw_rem,
+                            "indoctrination": v_ind, "ind_names": v_ind_names, "ind_people_count": v_ind_ppl, "ind_remarks": v_ind_rem,
                             "mass_remarks": v_mass_rem,
                             "remarks": v_rem,
-                            "priest": v_priest,
-                            "sakristan": v_sakristan,
-                            "epistula": v_epistula,
-                            "evangelio": v_evangelio,
-                            "casasaad": v_casasaad,
-                            "candle_holder": v_candle,
-                            "usher": v_usher,
-                            "marshal": v_marshal,
-                            "adal_evangelio": v_adal_topic,
-                            "adal_preacher": v_adal_pr,
-                            "tema_misa": v_misa_topic,
-                            "misa_preacher": v_misa_pr,
-                            "tema_pampamilya": v_pam_topic,
-                            "pampamilya_preacher": v_pam_pr,
+                            "priest": v_priest, "sakristan": v_sakristan, "epistula": v_epistula, "evangelio": v_evangelio,
+                            "casasaad": v_casasaad, "candle_holder": v_candle, "usher": v_usher, "marshal": v_marshal,
+                            "adal_evangelio": v_adal_topic, "adal_preacher": v_adal_pr,
+                            "tema_misa": v_misa_topic, "misa_preacher": v_misa_pr,
+                            "tema_pampamilya": v_pam_topic, "pampamilya_preacher": v_pam_pr,
                         }
                         ok_s, sync_msg = save_weekly_monitoring_record(v_parish, v_month, v_week, v_date, updated_payload, drive_link=cur_rec.get("drive_link", ""))
                         if not ok_s:
@@ -11069,9 +11215,6 @@ def render_weekly_report_page():
         return v_parish
 
 
-    # =====================================================================
-    # 🏠 HOME BANNER (SA HOME PAGE LAMANG) + 🎛️ TOP FILTER & WEEK BAR (SA ITAAS NG LAHAT NG PAGES PARA SA LAHAT NG ADMINS)
-    # =====================================================================
     render_quick_back_to_home_button("weekly_report_top")
     st.markdown("<div class='pmr-banner'>CHURCH OF THE TEMPLE OF GOD</div>", unsafe_allow_html=True)
     st.markdown(
@@ -16205,9 +16348,12 @@ def _auto_clean_and_complete_family_records(records: list[dict], default_parish:
         fn_m = _clean_cell_str(r.get("Full Name", ""))
         if not fn_m or _is_junk_ocr_header_name(fn_m):
             continue
+        fn_m = re.sub(r"[/\\|]+$", "", fn_m).strip(" ,.-")
         if idx_r == 1 and fn_ref_name and not is_hk:
             fn_m = _auto_correct_person_name_with_filename(fn_m, fn_ref_name)
             hof_raw = fn_m
+        elif idx_r > 1 and hof_raw and not is_hk:
+            fn_m = _auto_harmonize_family_surname(fn_m, hof_raw)
         r["Parish"] = matched_p
         r["Family ID"] = _clean_cell_str(r.get("Family ID", "")) or shared_fid
         r["Area/Zone"] = _clean_cell_str(r.get("Area/Zone", "")) or shared_area
@@ -16992,46 +17138,29 @@ def _extract_single_family_from_vision_parts(
     # FULL 4-PAGE + TABLE-CROP MULTI-LINE OCR PARSER
     # (Handles wrapped 2-line names in Section III, 2-digit birth years like 01-10-58, and Section IV Household Summary!)
     # =====================================================================
-    # Build a single compact composite strip of the handwritten zones across Pages 1..4 so OCR completes in 1 fast call (< 3s) without rate limits or timeouts!
+    # Send each page zone separately at full crisp resolution in parallel (~2s total) so handwriting is NEVER blurred!
     ocr_target_images = []
-    if pil_images_for_ocr:
+    if enhanced_pil_list:
         try:
-            zones = []
-            # Page 1: top 70% (Sections I & II)
-            p1 = pil_images_for_ocr[0]
-            zones.append(p1.crop((0, 0, p1.width, int(p1.height * 0.72))))
-            # Page 2 + Page 3 combined Section III Family Members table + Section IV Summary
-            if p2_table_crop_pil is not None:
-                zones.append(p2_table_crop_pil)
-            elif len(pil_images_for_ocr) >= 2:
-                zones.append(pil_images_for_ocr[1])
-            # Page 4: top 60% (Section V Emergency Contact & Section VI Remarks)
-            if len(pil_images_for_ocr) >= 4:
-                p4 = pil_images_for_ocr[3]
-                zones.append(p4.crop((0, 0, p4.width, int(p4.height * 0.62))))
-            tw = 1100
-            norm_zones = []
-            th_sum = 0
-            for z_im in zones:
-                nh = max(1, int(z_im.height * (tw / float(max(1, z_im.width)))))
-                zr = z_im.resize((tw, nh), Image.Resampling.BICUBIC)
-                norm_zones.append(zr)
-                th_sum += nh + 8
-            comp_ocr_im = Image.new("RGB", (tw, max(1, th_sum)), (255, 255, 255))
-            yo = 0
-            for zr in norm_zones:
-                comp_ocr_im.paste(zr, (0, yo))
-                yo += zr.height + 8
-            ocr_target_images.append(comp_ocr_im)
+            p1 = enhanced_pil_list[0]
+            ocr_target_images.append(p1.crop((0, 0, p1.width, int(p1.height * 0.72))))
+            if len(enhanced_pil_list) >= 2:
+                p2 = enhanced_pil_list[1]
+                ocr_target_images.append(p2.crop((0, int(p2.height * 0.44), p2.width, int(p2.height * 0.88))))
+            if len(enhanced_pil_list) >= 3:
+                p3 = enhanced_pil_list[2]
+                ocr_target_images.append(p3.crop((0, int(p3.height * 0.04), p3.width, int(p3.height * 0.88))))
+            if len(enhanced_pil_list) >= 4:
+                p4 = enhanced_pil_list[3]
+                ocr_target_images.append(p4.crop((0, 0, p4.width, int(p4.height * 0.62))))
         except Exception:
-            ocr_target_images = list(pil_images_for_ocr[:2])
+            ocr_target_images = list(enhanced_pil_list[:4])
 
-    combined_ocr_lines = []
-    for pil_img in ocr_target_images:
+    def _ocr_single_zone(pil_img):
         for eng_id in ("2", "1"):
             try:
                 ob = io.BytesIO()
-                _enhance_form_image_for_reading(pil_img).save(ob, format="JPEG", quality=85)
+                pil_img.save(ob, format="JPEG", quality=86)
                 b64_im = "data:image/jpeg;base64," + base64.b64encode(ob.getvalue()).decode("utf-8")
                 r_ocr = requests.post(
                     "https://api.ocr.space/parse/image",
@@ -17048,10 +17177,21 @@ def _extract_single_family_from_vision_parts(
                 if r_ocr.status_code == 200:
                     txt_page = "\n".join(str(pr.get("ParsedText", "")).strip() for pr in r_ocr.json().get("ParsedResults", []))
                     if txt_page.strip():
-                        combined_ocr_lines.extend([ln.strip() for ln in txt_page.splitlines() if ln.strip()])
-                        break
+                        return [ln.strip() for ln in txt_page.splitlines() if ln.strip()]
             except Exception:
                 pass
+        return []
+
+    combined_ocr_lines = []
+    if ocr_target_images:
+        try:
+            import concurrent.futures as _cf
+            with _cf.ThreadPoolExecutor(max_workers=min(4, len(ocr_target_images))) as ex_ocr:
+                for res_lines in ex_ocr.map(_ocr_single_zone, ocr_target_images):
+                    combined_ocr_lines.extend(res_lines)
+        except Exception:
+            for pil_img in ocr_target_images:
+                combined_ocr_lines.extend(_ocr_single_zone(pil_img))
     if combined_ocr_lines:
         st.session_state["_last_interpreted_form_text"] = "\n".join(combined_ocr_lines)
 
@@ -17245,12 +17385,58 @@ def _extract_single_family_from_vision_parts(
                         "Status": r_st,
                         "Baptized": r_bap,
                     })
-        elif in_members_sec:
-            # Case B: Wrapped upper line of a 2-line name cell (e.g. "1  Apolonio  M" or "2  Soledad")
+        elif in_members_sec or re.match(r"^\s*(?:[1-9]|10)\b[\s.|\t]+[A-Za-z]", ln):
+            # Case B1: Numbered row where OCR missed the Relationship code (e.g. "4 Chema Aling G. Paquit F Jan 30 2014 12 Y S S 09400070404 Yes Active")
+            m_num_row = re.match(r"^\s*([1-9]|10)\b[\s.|\t]+([A-Za-z][A-Za-z.,\-\s]{3,35}?)\s+(?:([MF])\b\s+)?(.*)$", ln)
+            if m_num_row and any(k_w in ln_u for k_w in ["YES", "NO", "ACTIVE", "INACTIVE", "19", "20", "09"]):
+                cand_nm = m_num_row.group(2).strip(" .-|\t/")
+                if pending_name_prefix and pending_name_prefix.upper() not in cand_nm.upper():
+                    cand_nm = f"{pending_name_prefix} {cand_nm}".strip()
+                pending_name_prefix = ""
+                if len(cand_nm) >= 4 and not _is_junk_ocr_header_name(cand_nm):
+                    r_sex_b = (m_num_row.group(3) or "").upper().strip()
+                    r_tail_b = m_num_row.group(4) or ""
+                    r_mob_mb = re.search(r"(09\d{2}[\s\-]?\d{3}[\s\-]?\d{4})", r_tail_b)
+                    r_mob_b = re.sub(r"\D", "", r_mob_mb.group(1)) if r_mob_mb else ""
+                    r_bd_mb = re.search(
+                        r"((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+(?:19|20)?\d\d|\d{1,2}[-/.]\d{1,2}[-/.](?:19|20)?\d\d|(?:19|20)\d\d[-/.]\d{1,2}[-/.]\d{1,2})",
+                        r_tail_b,
+                        flags=re.I
+                    )
+                    r_bd_b = _normalize_handwritten_date_to_iso(r_bd_mb.group(1)) if r_bd_mb else ""
+                    tail_no_bd = r_tail_b.replace(r_bd_mb.group(1), " ") if r_bd_mb else r_tail_b
+                    if r_mob_mb:
+                        tail_no_bd = tail_no_bd.replace(r_mob_mb.group(1), " ")
+                    r_age_mb = re.search(r"\b([1-9]\d?)\b", tail_no_bd)
+                    r_age_b = r_age_mb.group(1) if r_age_mb and int(r_age_mb.group(1)) <= 99 else ""
+                    inferred_rel = "HEAD OF FAMILY" if not ocr_table_members else (
+                        "DAUGHTER" if (r_sex_b == "F" and r_age_b.isdigit() and int(r_age_b) < 25) else (
+                            "SON" if (r_sex_b == "M" and r_age_b.isdigit() and int(r_age_b) < 25) else (
+                                "WIFE" if r_sex_b == "F" else "DEPENDENT"
+                            )
+                        )
+                    )
+                    norm_nk = re.sub(r"[^A-Z]", "", cand_nm.upper())
+                    if norm_nk and norm_nk not in seen_ocr_member_names:
+                        seen_ocr_member_names.add(norm_nk)
+                        ocr_table_members.append({
+                            "No.": str(len(ocr_table_members) + 1),
+                            "Full Name": cand_nm.title(),
+                            "Relationship": inferred_rel,
+                            "Birthdate": r_bd_b,
+                            "Age": r_age_b,
+                            "Category": "",
+                            "Contact No.": r_mob_b,
+                            "Church Member": "NO" if (re.search(r"\bNO\b", r_tail_b, flags=re.I) and not re.search(r"\bYES\b", r_tail_b, flags=re.I)) else "YES",
+                            "Status": "INACTIVE" if "INACTIVE" in r_tail_b.upper() else "ACTIVE",
+                            "Baptized": "YES",
+                        })
+                        continue
+            # Case B2: Wrapped upper line of a 2-line name cell (e.g. "1  Apolonio  M" or "2  Soledad")
             m_upper_name = re.match(r"^\s*(?:([1-9]|10)[\s.|\t]+)?([A-Za-z][A-Za-z.\-\s]{2,25}?)(?:\s+[MF])?\s*$", ln)
             if m_upper_name:
                 cand_prefix = m_upper_name.group(2).strip(" .-|\t")
-                if len(cand_prefix) >= 3 and cand_prefix.upper() not in ("NO", "FULL NAME", "NAME", "SEX", "AGE", "DATE", "STATUS"):
+                if len(cand_prefix) >= 3 and not _is_junk_ocr_header_name(cand_prefix):
                     pending_name_prefix = cand_prefix
 
     if hof_from_ocr and _is_junk_ocr_header_name(hof_from_ocr):
@@ -17344,6 +17530,20 @@ def extract_members_from_uploaded_files_batch(uploaded_files_list: list, default
     """
     if not uploaded_files_list:
         return []
+    batch_hash_parts = [default_parish]
+    for f_it in uploaded_files_list:
+        fb_h = hashlib.sha256(f_it.get("bytes", b"")).hexdigest()[:20]
+        batch_hash_parts.append(f"{f_it.get('name', '')}:{fb_h}")
+    batch_cache_key = "|".join(batch_hash_parts)
+    ext_memo = st.session_state.get("_fast_upload_extraction_memo", {})
+    if isinstance(ext_memo, dict) and batch_cache_key in ext_memo:
+        cached_entry = ext_memo[batch_cache_key]
+        if cached_entry.get("previews"):
+            st.session_state["extracted_pdf_page_previews"] = cached_entry["previews"]
+        if cached_entry.get("interp_text"):
+            st.session_state["_last_interpreted_form_text"] = cached_entry["interp_text"]
+        return [m.copy() for m in cached_entry.get("members", [])]
+
     all_extracted_members = []
     loose_image_parts = []
     loose_pil_images = []
@@ -17428,6 +17628,15 @@ def extract_members_from_uploaded_files_batch(uploaded_files_list: list, default
     else:
         st.session_state.pop("extracted_pdf_page_previews", None)
         st.session_state.pop("_last_interpreted_form_text", None)
+
+    if all_extracted_members:
+        if "_fast_upload_extraction_memo" not in st.session_state or not isinstance(st.session_state["_fast_upload_extraction_memo"], dict):
+            st.session_state["_fast_upload_extraction_memo"] = {}
+        st.session_state["_fast_upload_extraction_memo"][batch_cache_key] = {
+            "members": [m.copy() for m in all_extracted_members],
+            "previews": pdf_page_preview_jpegs,
+            "interp_text": st.session_state.get("_last_interpreted_form_text", "")
+        }
 
     return all_extracted_members
 
