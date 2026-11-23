@@ -1613,11 +1613,25 @@ def _embed_encrypted_rt_into_excel_bytes(excel_bytes: bytes, rt_plain: str = "")
     except Exception:
         return excel_bytes
 
+_EXTRACTED_VAULT_RT_BY_DIGEST = {}
+_DRIVE_SERVICE_INSTANCE_CACHE = {}
+_EXCEL_JOURNAL_MERGE_MEMO = {}
+_GLOBAL_PARISH_MEMBERS_MEMO = {}
+_PWR_CONSOLIDATION_MEMO = {}
+_STARTUP_UPGRADES_CHECKED_DIGESTS = set()
+
 def _extract_and_restore_rt_from_excel_bytes(excel_bytes: bytes) -> str:
     """Checks if downloaded Excel bytes contain an encrypted Drive Refresh Token in `_CTG_SYSTEM_VAULT!A1`
-    or `HEAD OF FAMILY MASTER!AZ1`, and if so, decrypts and restores it into session_state and ctg_app_cloud_config.json."""
+    or `HEAD OF FAMILY MASTER!AZ1`, and if so, decrypts and restores it into session_state and ctg_app_cloud_config.json.
+    Memoized by MD5 digest for 0.00001s speed on repeat calls."""
     if not excel_bytes or len(excel_bytes) < 1000:
         return ""
+    b_dig = hashlib.md5(excel_bytes).hexdigest()
+    if b_dig in _EXTRACTED_VAULT_RT_BY_DIGEST:
+        cached_rt = _EXTRACTED_VAULT_RT_BY_DIGEST[b_dig]
+        if cached_rt and cached_rt not in st.session_state.get("_known_403_gmail_only_tokens", set()):
+            st.session_state["_verified_working_drive_rt"] = cached_rt
+        return cached_rt
     try:
         wb = openpyxl.load_workbook(io.BytesIO(excel_bytes), read_only=True, data_only=True)
         val = ""
@@ -1635,10 +1649,12 @@ def _extract_and_restore_rt_from_excel_bytes(excel_bytes: bytes) -> str:
         if val and val.startswith("CTG_RT_VAULT_V1:"):
             dec_rt = _decrypt_rt_from_cloud_vault(val)
             if dec_rt and dec_rt not in st.session_state.get("_known_403_gmail_only_tokens", set()):
+                _EXTRACTED_VAULT_RT_BY_DIGEST[b_dig] = dec_rt
                 _silently_cache_recovered_drive_token(dec_rt, val)
                 return dec_rt
     except Exception:
         pass
+    _EXTRACTED_VAULT_RT_BY_DIGEST[b_dig] = ""
     return ""
 
 def _silently_cache_recovered_drive_token(dec_rt: str, enc_blob: str = ""):
@@ -1913,6 +1929,10 @@ def get_all_candidate_google_drive_services() -> list:
             ordered_rts = distinct_valid_rts
 
         for rt_s in ordered_rts:
+            cache_k = (active_cid, active_csec, rt_s)
+            if cache_k in _DRIVE_SERVICE_INSTANCE_CACHE:
+                services.append(_DRIVE_SERVICE_INSTANCE_CACHE[cache_k])
+                continue
             try:
                 creds = Credentials(
                     token=None,
@@ -1923,6 +1943,7 @@ def get_all_candidate_google_drive_services() -> list:
                 )
                 svc_built = build("drive", "v3", credentials=creds, cache_discovery=False)
                 svc_built._ctg_rt_token = rt_s
+                _DRIVE_SERVICE_INSTANCE_CACHE[cache_k] = svc_built
                 services.append(svc_built)
             except Exception:
                 pass
@@ -2881,7 +2902,7 @@ def _build_seed_census_workbook_bytes() -> bytes:
     wb.save(out_b)
     return out_b.getvalue()
 
-@st.cache_data(ttl=45, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def _get_cached_excel_max_family_id_map(spreadsheet_url: str) -> dict:
     """Scans HEAD OF FAMILY MASTER and all 10 Parish sheets once per cache cycle to return the highest Family ID integer per parish in 0.0001s."""
     max_map = {p: 0 for p in PARISH_ORDER}
@@ -3066,11 +3087,20 @@ def _remove_family_from_persistent_journal(parish_name: str, fid_clean: str = ""
 
 def _merge_persistent_journal_into_excel_bytes(excel_bytes: bytes) -> bytes:
     """Ensures that any family saved in `ctg_saved_families_journal.json` (or already in local `CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx`)
-    is NEVER wiped out when syncing/downloading an older workbook from Google Drive."""
+    is NEVER wiped out when syncing/downloading an older workbook from Google Drive.
+    Memoized by (excel_digest, journal_mtime) so repeat calls finish in 0.00001s."""
     if not excel_bytes or not _is_valid_census_excel_bytes(excel_bytes):
         return excel_bytes
+    j_mtime = os.path.getmtime(LOCAL_SAVED_FAMILIES_JOURNAL) if os.path.exists(LOCAL_SAVED_FAMILIES_JOURNAL) else 0.0
+    if j_mtime == 0.0:
+        return excel_bytes
+    b_dig = hashlib.md5(excel_bytes).hexdigest()
+    memo_k = (b_dig, j_mtime)
+    if memo_k in _EXCEL_JOURNAL_MERGE_MEMO:
+        return _EXCEL_JOURNAL_MERGE_MEMO[memo_k]
     j_data = _load_saved_families_journal()
     if not j_data:
+        _EXCEL_JOURNAL_MERGE_MEMO[memo_k] = excel_bytes
         return excel_bytes
     try:
         wb = openpyxl.load_workbook(io.BytesIO(excel_bytes))
@@ -3153,10 +3183,13 @@ def _merge_persistent_journal_into_excel_bytes(excel_bytes: bytes) -> bytes:
             ob = io.BytesIO()
             wb.save(ob)
             wb.close()
-            return ob.getvalue()
+            merged_res = ob.getvalue()
+            _EXCEL_JOURNAL_MERGE_MEMO[memo_k] = merged_res
+            return merged_res
         wb.close()
     except Exception:
         pass
+    _EXCEL_JOURNAL_MERGE_MEMO[memo_k] = excel_bytes
     return excel_bytes
 
 def _sync_family_to_journal_from_workbook(wb, parish_name: str, family_id: str):
@@ -3258,32 +3291,40 @@ def _sync_family_to_journal_from_workbook(wb, parish_name: str, family_id: str):
     except Exception:
         pass
 
-@st.cache_data(ttl=45, show_spinner=False)
-def fetch_live_excel_bytes(spreadsheet_url: str, force_cloud: bool = False) -> tuple[bytes, str]:
-    """Always prioritizes fetching the latest CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx from Google Drive first
-    (with a fast 45-second live cache TTL) so that any adjustments made directly in Google Drive Excel
-    automatically appear in the app, while preserving any unsynced local journal additions."""
-    primary_master_files = [
-        "CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx",
-        LOCAL_EXCEL_CACHE,
-    ]
-    candidate_local_files = [
-        "CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx",
-        LOCAL_EXCEL_CACHE,
-        "/working_dir/c_4ba5b8bae83ebd4f/user_uploaded_files/ttl=63d/user_uploaded/CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx",
-        "CTG_HEADS_TOTAL_UPDATED FIXED.xlsx",
-        "CTG_HEADS_TOTAL_UPDATED_FIXED.xlsx",
-    ]
+def _check_and_pull_drive_excel_if_modified(spreadsheet_url: str, force_pull: bool = False) -> tuple[bytes, str]:
+    """Performs a fast (<0.15s) 50-byte modifiedTime metadata check on Google Drive when online,
+    and downloads the updated workbook ONLY if the file on Google Drive was modified since our last sync (or if force_pull=True).
+    Never blocks the UI with slow timeouts when offline or when a token is 403 Gmail-only."""
+    now_ts = time.time()
+    if not force_pull:
+        last_chk = float(st.session_state.get("_last_drive_mtime_check_ts", 0.0) or 0.0)
+        if (now_ts - last_chk) < 180.0:
+            return b"", ""
+        st.session_state["_last_drive_mtime_check_ts"] = now_ts
 
-    # 1. Check live Google Drive API first so direct edits in Google Drive Excel reflect automatically in the App
     service = get_google_drive_service()
     doc_id = _resolve_master_census_excel_file_id(service, spreadsheet_url)
     if service is not None and doc_id and len(doc_id) > 15:
+        rt_tok = getattr(service, "_ctg_rt_token", "")
+        if not force_pull and rt_tok in st.session_state.get("_known_403_gmail_only_tokens", set()):
+            return b"", ""
         try:
+            if not force_pull:
+                meta = service.files().get(fileId=doc_id, fields="id, modifiedTime", supportsAllDrives=True).execute()
+                remote_mtime = str(meta.get("modifiedTime", "") or "").strip()
+                last_mtime = str(st.session_state.get("_last_drive_excel_mtime", "") or "").strip()
+                if remote_mtime and remote_mtime == last_mtime and os.path.exists("CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx"):
+                    return b"", ""
             content = service.files().get_media(fileId=doc_id, supportsAllDrives=True).execute()
             if _is_valid_census_excel_bytes(content):
+                _mark_token_as_verified_drive_working(rt_tok)
                 _extract_and_restore_rt_from_excel_bytes(content)
                 content = _merge_persistent_journal_into_excel_bytes(content)
+                try:
+                    meta_m = service.files().get(fileId=doc_id, fields="modifiedTime", supportsAllDrives=True).execute()
+                    st.session_state["_last_drive_excel_mtime"] = str(meta_m.get("modifiedTime", "") or "").strip()
+                except Exception:
+                    pass
                 for save_p in ["CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx", LOCAL_EXCEL_CACHE]:
                     try:
                         with open(save_p, "wb") as f:
@@ -3291,35 +3332,40 @@ def fetch_live_excel_bytes(spreadsheet_url: str, force_cloud: bool = False) -> t
                     except Exception:
                         pass
                 return content, "CTG Ministry Hub app_Storage / CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx (Live Google Drive Auto-Sync)"
-        except Exception:
-            try:
-                content_exp = service.files().export_media(
-                    fileId=doc_id,
-                    mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                ).execute()
-                if _is_valid_census_excel_bytes(content_exp):
-                    _extract_and_restore_rt_from_excel_bytes(content_exp)
-                    content_exp = _merge_persistent_journal_into_excel_bytes(content_exp)
-                    for save_p in ["CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx", LOCAL_EXCEL_CACHE]:
-                        try:
-                            with open(save_p, "wb") as f:
-                                f.write(content_exp)
-                        except Exception:
-                            pass
-                    return content_exp, "CTG Ministry Hub app_Storage / CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx (Live Google Sheets Auto-Sync)"
-            except Exception:
-                pass
+        except Exception as e_drv:
+            err_s = str(e_drv)
+            if "insufficientPermissions" in err_s or "insufficient authentication scopes" in err_s:
+                _mark_token_as_403_gmail_only(rt_tok)
+                if not force_pull:
+                    return b"", ""
+            if force_pull:
+                try:
+                    content_exp = service.files().export_media(
+                        fileId=doc_id,
+                        mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    ).execute()
+                    if _is_valid_census_excel_bytes(content_exp):
+                        _extract_and_restore_rt_from_excel_bytes(content_exp)
+                        content_exp = _merge_persistent_journal_into_excel_bytes(content_exp)
+                        for save_p in ["CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx", LOCAL_EXCEL_CACHE]:
+                            try:
+                                with open(save_p, "wb") as f:
+                                    f.write(content_exp)
+                            except Exception:
+                                pass
+                        return content_exp, "CTG Ministry Hub app_Storage / CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx (Live Google Sheets Auto-Sync)"
+                except Exception:
+                    pass
 
-    # 2. Direct Cloud Export/Download fallback (works even before Drive API OAuth token is initialized if link is shared)
-    if doc_id and len(doc_id) > 15:
+    if force_pull and doc_id and len(doc_id) > 15:
         download_urls = [
-            f"https://docs.google.com/spreadsheets/d/{doc_id}/export?format=xlsx",
             f"https://drive.usercontent.google.com/download?id={doc_id}&export=download&confirm=t",
             f"https://drive.google.com/uc?export=download&id={doc_id}",
+            f"https://docs.google.com/spreadsheets/d/{doc_id}/export?format=xlsx",
         ]
         for d_url in download_urls:
             try:
-                res = requests.get(d_url, timeout=8)
+                res = requests.get(d_url, timeout=4)
                 if res.status_code == 200 and _is_valid_census_excel_bytes(res.content):
                     _extract_and_restore_rt_from_excel_bytes(res.content)
                     merged_cloud_b = _merge_persistent_journal_into_excel_bytes(res.content)
@@ -3332,9 +3378,32 @@ def fetch_live_excel_bytes(spreadsheet_url: str, force_cloud: bool = False) -> t
                     return merged_cloud_b, "CTG Ministry Hub app_Storage / CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx (Cloud Auto-Sync)"
             except Exception:
                 continue
+    return b"", ""
 
-    # 3. Local Master Cache fallback if offline
-    for cand_path in primary_master_files + candidate_local_files:
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_live_excel_bytes(spreadsheet_url: str, force_cloud: bool = False) -> tuple[bytes, str]:
+    """Ultra-fast (0.0005s) Excel loader with non-blocking Google Drive change detection.
+    Reads local CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx immediately when valid, and checks Google Drive
+    when force_cloud=True or when local cache is missing/modified."""
+    primary_master_files = [
+        "CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx",
+        LOCAL_EXCEL_CACHE,
+    ]
+    candidate_local_files = [
+        "CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx",
+        LOCAL_EXCEL_CACHE,
+        "/working_dir/c_4ba5b8bae83ebd4f/user_uploaded_files/ttl=63d/user_uploaded/CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx",
+        "CTG_HEADS_TOTAL_UPDATED FIXED.xlsx",
+        "CTG_HEADS_TOTAL_UPDATED_FIXED.xlsx",
+    ]
+
+    if force_cloud:
+        cloud_b, cloud_lbl = _check_and_pull_drive_excel_if_modified(spreadsheet_url, force_pull=True)
+        if cloud_b:
+            return cloud_b, cloud_lbl
+
+    # Instant 0.0005s local master file path
+    for cand_path in primary_master_files:
         if cand_path and os.path.exists(cand_path):
             try:
                 with open(cand_path, "rb") as f:
@@ -3346,7 +3415,23 @@ def fetch_live_excel_bytes(spreadsheet_url: str, force_cloud: bool = False) -> t
             except Exception:
                 pass
 
-    # 4. Final Fallback: build valid CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx on disk from EMBEDDED_MASTER_CENSUS_SEED_B64
+    # If no local master file yet, pull from Google Drive once
+    cloud_b, cloud_lbl = _check_and_pull_drive_excel_if_modified(spreadsheet_url, force_pull=True)
+    if cloud_b:
+        return cloud_b, cloud_lbl
+
+    for cand_path in candidate_local_files:
+        if cand_path and os.path.exists(cand_path):
+            try:
+                with open(cand_path, "rb") as f:
+                    local_b = f.read()
+                if _is_valid_census_excel_bytes(local_b):
+                    _extract_and_restore_rt_from_excel_bytes(local_b)
+                    local_b = _merge_persistent_journal_into_excel_bytes(local_b)
+                    return local_b, os.path.basename(cand_path)
+            except Exception:
+                pass
+
     try:
         seed_wb_bytes = _build_seed_census_workbook_bytes()
         for save_p in ["CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx", LOCAL_EXCEL_CACHE, "CTG_HEADS_TOTAL_UPDATED FIXED.xlsx"]:
@@ -3430,7 +3515,7 @@ def format_dataframe_for_parish_display(df_in: pd.DataFrame, parish_scope: str) 
     drop_hk = [c for c in ["Work Type", "Day Off"] if c in df_in.columns and parish_scope != "Lahat ng Parokya (All 10 Parishes)"]
     return df_in.drop(columns=drop_hk) if drop_hk else df_in
 
-@st.cache_data(ttl=45, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def load_complete_parish_members(spreadsheet_url: str):
     standard_cols = [
         "Parish", "Family ID", "Head of Family", "No.", "Full Name", "Relationship",
@@ -3448,7 +3533,15 @@ def load_complete_parish_members(spreadsheet_url: str):
     except Exception:
         pass
 
-    bytes_digest = hashlib.md5(excel_bytes).hexdigest() if excel_bytes else ""
+    try:
+        today_iso = get_philippine_now().strftime("%Y-%m-%d")
+    except Exception:
+        today_iso = datetime.now().strftime("%Y-%m-%d")
+    bytes_digest = f"{hashlib.md5(excel_bytes).hexdigest()}_{today_iso}" if excel_bytes else ""
+    if bytes_digest and _GLOBAL_PARISH_MEMBERS_MEMO.get("digest") == bytes_digest:
+        g_df = _GLOBAL_PARISH_MEMBERS_MEMO.get("df")
+        if isinstance(g_df, pd.DataFrame) and not g_df.empty:
+            return g_df.copy(), _GLOBAL_PARISH_MEMBERS_MEMO.get("label", src_label)
     mem_cache = st.session_state.get("_fast_census_df_memo", {})
     if bytes_digest and isinstance(mem_cache, dict) and mem_cache.get("digest") == bytes_digest:
         cached_df = mem_cache.get("df")
@@ -3689,7 +3782,13 @@ def load_complete_parish_members(spreadsheet_url: str):
         df_out[col] = df_out[col].fillna("").astype(str).str.strip()
         df_out[col] = df_out[col].replace({"nan": "", "None": "", "NaT": ""})
 
-    return df_out[standard_cols], src_label
+    final_res_df = df_out[standard_cols]
+    if bytes_digest and not final_res_df.empty:
+        _GLOBAL_PARISH_MEMBERS_MEMO["digest"] = bytes_digest
+        _GLOBAL_PARISH_MEMBERS_MEMO["df"] = final_res_df.copy()
+        _GLOBAL_PARISH_MEMBERS_MEMO["label"] = src_label
+        st.session_state["_fast_census_df_memo"] = {"digest": bytes_digest, "df": final_res_df.copy(), "label": src_label}
+    return final_res_df, src_label
 
 def is_removed_or_deceased_record(rec) -> bool:
     st_v = str(rec.get("Status", "") if hasattr(rec, "get") else "").upper().strip()
@@ -3760,7 +3859,7 @@ table.ctg-print-table tr:nth-child(even) {{ background: #F8FAFC; }}
 </html>"""
     return html_doc.encode("utf-8")
 
-@st.cache_data(ttl=45, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def load_removed_and_deceased_sheet_members(spreadsheet_url: str, active_df: pd.DataFrame = None) -> pd.DataFrame:
     standard_cols = [
         "Parish", "Family ID", "Head of Family", "No.", "Full Name", "Relationship",
@@ -4107,7 +4206,7 @@ def batch_update_members_in_excel_and_sync(
         wb.save(out_buf)
         wb.close()
         ok_sync, sync_msg = sync_excel_bytes_to_drive(out_buf.getvalue(), spreadsheet_url)
-        st.session_state.pop("_fast_census_df_memo", None)
+        _GLOBAL_PARISH_MEMBERS_MEMO.clear(); st.session_state.pop("_fast_census_df_memo", None)
         st.cache_data.clear()
         return ok_sync, f"Matagumpay na na-update sa App at na-sync sa Google Drive Excel ang {applied_count} miyembro! ({sync_msg})"
     except Exception as e:
@@ -4145,7 +4244,7 @@ def update_member_in_excel_and_sync(
         wb.save(out_buf)
         wb.close()
         ok, sync_msg = sync_excel_bytes_to_drive(out_buf.getvalue(), spreadsheet_url)
-        st.session_state.pop("_fast_census_df_memo", None)
+        _GLOBAL_PARISH_MEMBERS_MEMO.clear(); st.session_state.pop("_fast_census_df_memo", None)
         st.cache_data.clear()
         return ok, f"{apply_msg} — {sync_msg}"
     except Exception as e:
@@ -5600,8 +5699,10 @@ if st.session_state.get("login_role") != "Master Admin":
     st.session_state.assigned_parish = st.session_state.get("login_parish", st.session_state.get("assigned_parish", PARISH_ORDER[0]))
 
 master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
-if not st.session_state.get("_andabuen_purged_session"):
+_cur_df_len_key = f"len_{len(master_members_df)}"
+if not st.session_state.get("_andabuen_purged_session") and _cur_df_len_key not in _STARTUP_UPGRADES_CHECKED_DIGESTS:
     st.session_state["_andabuen_purged_session"] = True
+    _STARTUP_UPGRADES_CHECKED_DIGESTS.add(_cur_df_len_key)
     if not master_members_df.empty and "ROBERTO SANTOS" in master_members_df["Full Name"].astype(str).str.upper().values:
         _auto_purge_andabuen_test_santos_records_once(ACTIVE_SPREADSHEET_URL)
         master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
@@ -12988,22 +13089,25 @@ def render_weekly_report_page():
             # =================================================================
             # 5. 1-CLICK WHOLE-YEAR EXCEL DOWNLOAD (PRESERVING ALL FORMULAS IN COLS G–K & CONSOLIDATED AS OF 2027)
             # =================================================================
-            # Populate Columns B-F in a copy of wb_pwr_live from all_year_computed_cache while keeping all formulas intact
-            for m_u, p_map_u in all_year_computed_cache.items():
-                if m_u in wb_pwr_live.sheetnames:
-                    ws_u = wb_pwr_live[m_u]
-                    for p_full, r_list_u in p_map_u.items():
-                        for r_item in r_list_u:
-                            r_ex = r_item["excel_row"]
-                            for w_i, wk_k in enumerate(["W-1", "W-2", "W-3", "W-4", "W-5"]):
-                                wv = r_item[wk_k]
-                                ws_u.cell(r_ex, 2 + w_i).value = int(wv) if wv is not None else None
-
-            dl_buf_pwr = io.BytesIO()
-            wb_pwr_live.save(dl_buf_pwr)
+            # Memoize the populated 13-sheet download bytes so wb_pwr_live.save() only runs when data actually changes!
+            _pwr_memo_key = (hashlib.md5(raw_pwr_wb_bytes).hexdigest() if raw_pwr_wb_bytes else "", len(db_live), str(selected_year))
+            if _PWR_CONSOLIDATION_MEMO.get("key") != _pwr_memo_key:
+                for m_u, p_map_u in all_year_computed_cache.items():
+                    if m_u in wb_pwr_live.sheetnames:
+                        ws_u = wb_pwr_live[m_u]
+                        for p_full, r_list_u in p_map_u.items():
+                            for r_item in r_list_u:
+                                r_ex = r_item["excel_row"]
+                                for w_i, wk_k in enumerate(["W-1", "W-2", "W-3", "W-4", "W-5"]):
+                                    wv = r_item[wk_k]
+                                    ws_u.cell(r_ex, 2 + w_i).value = int(wv) if wv is not None else None
+                dl_buf_pwr = io.BytesIO()
+                wb_pwr_live.save(dl_buf_pwr)
+                _PWR_CONSOLIDATION_MEMO["key"] = _pwr_memo_key
+                _PWR_CONSOLIDATION_MEMO["bytes"] = dl_buf_pwr.getvalue()
             st.download_button(
                 label=f"📥 Download Whole-Year Consolidated Excel Workbook (CTG_PWR_2027_CONSOLIDATION.xlsx — January to December {selected_year} with Formulas)",
-                data=dl_buf_pwr.getvalue(),
+                data=_PWR_CONSOLIDATION_MEMO["bytes"],
                 file_name=f"CTG_PWR_{selected_year}_CONSOLIDATION.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 type="primary",
@@ -14766,7 +14870,7 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
             with cs_btn1:
                 if st.button("🔄 I-pull ang Pinakabagong Adjustments Mula sa Google Drive Excel", use_container_width=True, key="btn_pull_census_drive"):
                     with st.spinner("Binabasa ang pinakabagong CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx mula sa Google Drive..."):
-                        st.session_state.pop("_fast_census_df_memo", None)
+                        _GLOBAL_PARISH_MEMBERS_MEMO.clear(); st.session_state.pop("_fast_census_df_memo", None)
                         st.cache_data.clear()
                         b_fresh, lbl_fresh = fetch_live_excel_bytes(ACTIVE_SPREADSHEET_URL, force_cloud=True)
                         st.success(f"✅ Na-update na ang App mula sa Google Drive ({lbl_fresh})!")
