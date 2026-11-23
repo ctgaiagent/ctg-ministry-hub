@@ -2685,24 +2685,50 @@ PARISH_FAMILY_ID_PREFIXES = {
 }
 
 def compute_age_from_birthdate(bdate_val) -> str:
-    if bdate_val is None or str(bdate_val).strip() == "" or str(bdate_val).strip().lower() in ["nan", "nat", "none"]:
-        return ""
-    if str(bdate_val).strip().startswith("="):
+    """Dynamically calculates exact current age as of today's Philippine date (Asia/Manila)
+    so that whenever a member's birthday arrives or Birthdate is edited, Age & Category auto-adjust."""
+    if bdate_val is None:
         return ""
     try:
-        if isinstance(bdate_val, (datetime, pd.Timestamp)):
-            dt = pd.to_datetime(bdate_val)
-        else:
-            dt = pd.to_datetime(str(bdate_val).strip(), errors="coerce")
-        if pd.isna(dt):
+        if pd.isna(bdate_val):
             return ""
-        today = datetime.now()
-        age_years = today.year - dt.year - ((today.month, today.day) < (dt.month, dt.day))
-        if 0 <= age_years <= 130:
-            return str(int(age_years))
     except Exception:
         pass
-    return ""
+    try:
+        today = get_philippine_now().date()
+    except Exception:
+        today = datetime.now().date()
+    if isinstance(bdate_val, (datetime, pd.Timestamp)):
+        bdate = bdate_val.date()
+    else:
+        s = str(bdate_val).strip()
+        if not s or s.lower() in ["nan", "nat", "none", ""]:
+            return ""
+        bdate = None
+        for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%Y/%m/%d", "%m-%d-%Y", "%d-%m-%Y", "%b %d, %Y", "%B %d, %Y", "%b. %d, %Y"):
+            try:
+                bdate = datetime.strptime(s[:10] if fmt == "%Y-%m-%d" else s, fmt).date()
+                break
+            except Exception:
+                continue
+        if bdate is None:
+            try:
+                iso_s = _normalize_handwritten_date_to_iso(s)
+                if iso_s and len(iso_s) == 10:
+                    bdate = datetime.strptime(iso_s, "%Y-%m-%d").date()
+            except Exception:
+                pass
+        if bdate is None:
+            try:
+                parsed = pd.to_datetime(s, errors="coerce")
+                if pd.notna(parsed):
+                    bdate = parsed.date()
+            except Exception:
+                return ""
+    if bdate is None:
+        return ""
+    age = today.year - bdate.year - ((today.month, today.day) < (bdate.month, bdate.day))
+    return str(age) if 0 <= age <= 130 else ""
 
 def compute_category_from_age(age_val) -> str:
     if age_val is None or str(age_val).strip() == "" or str(age_val).strip().startswith("="):
@@ -2855,7 +2881,7 @@ def _build_seed_census_workbook_bytes() -> bytes:
     wb.save(out_b)
     return out_b.getvalue()
 
-@st.cache_data(ttl=18000, show_spinner=False)
+@st.cache_data(ttl=45, show_spinner=False)
 def _get_cached_excel_max_family_id_map(spreadsheet_url: str) -> dict:
     """Scans HEAD OF FAMILY MASTER and all 10 Parish sheets once per cache cycle to return the highest Family ID integer per parish in 0.0001s."""
     max_map = {p: 0 for p in PARISH_ORDER}
@@ -3133,11 +3159,110 @@ def _merge_persistent_journal_into_excel_bytes(excel_bytes: bytes) -> bytes:
         pass
     return excel_bytes
 
-@st.cache_data(ttl=18000, show_spinner=False)
+def _sync_family_to_journal_from_workbook(wb, parish_name: str, family_id: str):
+    """Refreshes ctg_saved_families_journal.json directly from the updated openpyxl workbook for family_id
+    so local journal entries always reflect the latest edits made in the App or Google Drive."""
+    fid_u = str(family_id or "").strip().upper()
+    if not fid_u or not parish_name or parish_name not in wb.sheetnames:
+        return
+    try:
+        ws_p = wb[parish_name]
+        headers = {}
+        for c_i in range(1, (ws_p.max_column or 0) + 1):
+            v = ws_p.cell(4, c_i).value
+            if v:
+                headers[str(v).strip()] = c_i
+        fid_col = headers.get("Family ID") or headers.get("Member / Record ID") or 1
+        hof_col = headers.get("Head of Family") or 2
+        no_col = headers.get("No.") or 3
+        fn_col = headers.get("Full Name") or 4
+        rel_col = headers.get("Relationship") or 5
+        sex_col = headers.get("Sex") or 6
+        bd_col = headers.get("Birthdate") or 7
+        age_col = headers.get("Age") or 8
+        cat_col = headers.get("Category") or 9
+        civ_col = headers.get("Civil Status") or 10
+        sw_col = headers.get("Student/Working") or headers.get("Employment / Work") or 11
+        con_col = headers.get("Contact No.") or 12
+        cm_col = headers.get("Church Member Status") or headers.get("Church Member") or 13
+        st_col = headers.get("Status") or 14
+        bap_col = headers.get("Baptized") or 15
+        bapd_col = headers.get("Baptism Date") or 16
+        addr_col = headers.get("Current Address (If living separately)") or headers.get("Address (HK or Philippines)") or 17
+        rem_col = headers.get("Remarks") or (20 if parish_name == "HONGKONG PARISH" else 18)
+
+        hof_meta = {}
+        if "HEAD OF FAMILY MASTER" in wb.sheetnames:
+            ws_m = wb["HEAD OF FAMILY MASTER"]
+            for r_m in range(4, (ws_m.max_row or 0) + 1):
+                if str(ws_m.cell(r_m, 1).value or "").strip().upper() == fid_u:
+                    hof_meta = {
+                        "Area/Zone": str(ws_m.cell(r_m, 3).value or "").strip(),
+                        "Cell Group": str(ws_m.cell(r_m, 4).value or "").strip(),
+                        "Head of Family": str(ws_m.cell(r_m, 5).value or "").strip(),
+                        "Contact No.": str(ws_m.cell(r_m, 6).value or "").strip(),
+                        "Barangay": str(ws_m.cell(r_m, 8).value or "").strip(),
+                        "City/Municipality": str(ws_m.cell(r_m, 9).value or "").strip(),
+                        "Province / Area": str(ws_m.cell(r_m, 10).value or "").strip(),
+                        "ZIP Code": str(ws_m.cell(r_m, 11).value or "").strip(),
+                        "Emergency Contact Name": str(ws_m.cell(r_m, 12).value or "").strip(),
+                        "Emergency Relationship": str(ws_m.cell(r_m, 13).value or "").strip(),
+                        "Emergency Contact Number": str(ws_m.cell(r_m, 14).value or "").strip(),
+                        "House / Street / Purok": str(ws_m.cell(r_m, 35).value or "").strip(),
+                    }
+                    break
+
+        members_list = []
+        for r_i in range(5, (ws_p.max_row or 0) + 1):
+            r_fid = str(ws_p.cell(r_i, fid_col).value or "").strip().upper()
+            r_fn = str(ws_p.cell(r_i, fn_col).value or "").strip()
+            if r_fid == fid_u and r_fn:
+                bd_clean = format_clean_date_str(ws_p.cell(r_i, bd_col).value)
+                age_v = compute_age_from_birthdate(bd_clean) if bd_clean else str(ws_p.cell(r_i, age_col).value or "").strip()
+                if age_v.startswith("="):
+                    age_v = compute_age_from_birthdate(bd_clean)
+                cat_v = compute_category_from_age(age_v) if age_v else str(ws_p.cell(r_i, cat_col).value or "").strip()
+                if cat_v.startswith("="):
+                    cat_v = compute_category_from_age(age_v) or "ADULT"
+                hof_v = str(ws_p.cell(r_i, hof_col).value or "").strip()
+                if hof_v.startswith("=") or not hof_v:
+                    hof_v = hof_meta.get("Head of Family", "") or r_fn
+                addr_v = str(ws_p.cell(r_i, addr_col).value or "").strip()
+                if addr_v.startswith("=") or not addr_v:
+                    addr_v = hof_meta.get("House / Street / Purok", "")
+                m_item = {
+                    "Parish": parish_name,
+                    "Family ID": fid_u,
+                    "Head of Family": hof_v,
+                    "No.": str(ws_p.cell(r_i, no_col).value or len(members_list) + 1).strip(),
+                    "Full Name": r_fn,
+                    "Relationship": str(ws_p.cell(r_i, rel_col).value or "").strip().upper(),
+                    "Sex": str(ws_p.cell(r_i, sex_col).value or "").strip().upper(),
+                    "Birthdate": bd_clean,
+                    "Age": age_v,
+                    "Category": cat_v,
+                    "Civil Status": str(ws_p.cell(r_i, civ_col).value or "").strip().upper(),
+                    "Student/Working": str(ws_p.cell(r_i, sw_col).value or "").strip(),
+                    "Contact No.": str(ws_p.cell(r_i, con_col).value or "").strip(),
+                    "Church Member": str(ws_p.cell(r_i, cm_col).value or "YES").strip().upper(),
+                    "Status": str(ws_p.cell(r_i, st_col).value or "ACTIVE").strip().upper(),
+                    "Baptized": str(ws_p.cell(r_i, bap_col).value or "YES").strip().upper(),
+                    "Baptism Date": format_clean_date_str(ws_p.cell(r_i, bapd_col).value),
+                    "Current Address (If living separately)": addr_v,
+                    "Remarks": str(ws_p.cell(r_i, rem_col).value or "").strip(),
+                }
+                m_item.update({k: v for k, v in hof_meta.items() if v and not m_item.get(k)})
+                members_list.append(m_item)
+        if members_list:
+            _save_family_to_persistent_journal(fid_u, parish_name, members_list[0], members_list)
+    except Exception:
+        pass
+
+@st.cache_data(ttl=45, show_spinner=False)
 def fetch_live_excel_bytes(spreadsheet_url: str, force_cloud: bool = False) -> tuple[bytes, str]:
     """Always prioritizes fetching the latest CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx from Google Drive first
-    so that any adjustments made directly in Google Drive automatically appear in the app,
-    falling back to local cached files only when Google Drive is unreachable."""
+    (with a fast 45-second live cache TTL) so that any adjustments made directly in Google Drive Excel
+    automatically appear in the app, while preserving any unsynced local journal additions."""
     primary_master_files = [
         "CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx",
         LOCAL_EXCEL_CACHE,
@@ -3149,21 +3274,8 @@ def fetch_live_excel_bytes(spreadsheet_url: str, force_cloud: bool = False) -> t
         "CTG_HEADS_TOTAL_UPDATED FIXED.xlsx",
         "CTG_HEADS_TOTAL_UPDATED_FIXED.xlsx",
     ]
-    # Only use local CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx before hitting Google Drive; NEVER let the old repo file
-    # CTG_HEADS_TOTAL_UPDATED FIXED.xlsx shadow the live Google Drive CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx on container boot!
-    if not force_cloud:
-        for cand_path in primary_master_files:
-            if cand_path and os.path.exists(cand_path):
-                try:
-                    with open(cand_path, "rb") as f:
-                        local_b = f.read()
-                    if _is_valid_census_excel_bytes(local_b):
-                        _extract_and_restore_rt_from_excel_bytes(local_b)
-                        local_b = _merge_persistent_journal_into_excel_bytes(local_b)
-                        return local_b, os.path.basename(cand_path)
-                except Exception:
-                    pass
 
+    # 1. Check live Google Drive API first so direct edits in Google Drive Excel reflect automatically in the App
     service = get_google_drive_service()
     doc_id = _resolve_master_census_excel_file_id(service, spreadsheet_url)
     if service is not None and doc_id and len(doc_id) > 15:
@@ -3178,7 +3290,7 @@ def fetch_live_excel_bytes(spreadsheet_url: str, force_cloud: bool = False) -> t
                             f.write(content)
                     except Exception:
                         pass
-                return content, "CTG Ministry Hub app_Storage / CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx (Live Google Drive API Sync)"
+                return content, "CTG Ministry Hub app_Storage / CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx (Live Google Drive Auto-Sync)"
         except Exception:
             try:
                 content_exp = service.files().export_media(
@@ -3194,19 +3306,20 @@ def fetch_live_excel_bytes(spreadsheet_url: str, force_cloud: bool = False) -> t
                                 f.write(content_exp)
                         except Exception:
                             pass
-                    return content_exp, "CTG Ministry Hub app_Storage / CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx (Live Google Sheets Export Sync)"
+                    return content_exp, "CTG Ministry Hub app_Storage / CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx (Live Google Sheets Auto-Sync)"
             except Exception:
                 pass
 
+    # 2. Direct Cloud Export/Download fallback (works even before Drive API OAuth token is initialized if link is shared)
     if doc_id and len(doc_id) > 15:
         download_urls = [
+            f"https://docs.google.com/spreadsheets/d/{doc_id}/export?format=xlsx",
             f"https://drive.usercontent.google.com/download?id={doc_id}&export=download&confirm=t",
             f"https://drive.google.com/uc?export=download&id={doc_id}",
-            f"https://docs.google.com/spreadsheets/d/{doc_id}/export?format=xlsx",
         ]
         for d_url in download_urls:
             try:
-                res = requests.get(d_url, timeout=10)
+                res = requests.get(d_url, timeout=8)
                 if res.status_code == 200 and _is_valid_census_excel_bytes(res.content):
                     _extract_and_restore_rt_from_excel_bytes(res.content)
                     merged_cloud_b = _merge_persistent_journal_into_excel_bytes(res.content)
@@ -3216,21 +3329,24 @@ def fetch_live_excel_bytes(spreadsheet_url: str, force_cloud: bool = False) -> t
                                 f.write(merged_cloud_b)
                         except Exception:
                             pass
-                    return merged_cloud_b, "CTG Ministry Hub app_Storage / CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx (Cloud Sync)"
+                    return merged_cloud_b, "CTG Ministry Hub app_Storage / CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx (Cloud Auto-Sync)"
             except Exception:
                 continue
 
-    for cand_path in candidate_local_files:
+    # 3. Local Master Cache fallback if offline
+    for cand_path in primary_master_files + candidate_local_files:
         if cand_path and os.path.exists(cand_path):
             try:
                 with open(cand_path, "rb") as f:
-                    b_cand = f.read()
-                if _is_valid_census_excel_bytes(b_cand):
-                    return b_cand, os.path.basename(cand_path)
+                    local_b = f.read()
+                if _is_valid_census_excel_bytes(local_b):
+                    _extract_and_restore_rt_from_excel_bytes(local_b)
+                    local_b = _merge_persistent_journal_into_excel_bytes(local_b)
+                    return local_b, os.path.basename(cand_path)
             except Exception:
                 pass
 
-    # Fallback: build valid CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx on disk from EMBEDDED_MASTER_CENSUS_SEED_B64
+    # 4. Final Fallback: build valid CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx on disk from EMBEDDED_MASTER_CENSUS_SEED_B64
     try:
         seed_wb_bytes = _build_seed_census_workbook_bytes()
         for save_p in ["CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx", LOCAL_EXCEL_CACHE, "CTG_HEADS_TOTAL_UPDATED FIXED.xlsx"]:
@@ -3314,7 +3430,7 @@ def format_dataframe_for_parish_display(df_in: pd.DataFrame, parish_scope: str) 
     drop_hk = [c for c in ["Work Type", "Day Off"] if c in df_in.columns and parish_scope != "Lahat ng Parokya (All 10 Parishes)"]
     return df_in.drop(columns=drop_hk) if drop_hk else df_in
 
-@st.cache_data(ttl=18000, show_spinner=False)
+@st.cache_data(ttl=45, show_spinner=False)
 def load_complete_parish_members(spreadsheet_url: str):
     standard_cols = [
         "Parish", "Family ID", "Head of Family", "No.", "Full Name", "Relationship",
@@ -3462,16 +3578,19 @@ def load_complete_parish_members(spreadsheet_url: str):
                     age_str = str(age_raw if pd.notna(age_raw) else "").strip()
                     if age_str.endswith(".0"):
                         age_str = age_str[:-2]
-                    if not age_str or age_str.startswith("=") or not age_str.replace("-", "").isdigit():
-                        c_age = compute_age_from_birthdate(bdate_raw)
-                        if c_age:
-                            age_str = c_age
-                        elif age_str == "CHECK BIRTHDATE":
-                            age_str = ""
+                    # Dynamic Birthday Auto-Update: whenever Birthdate is present, ALWAYS compute live Age from Birthdate vs Philippine date today
+                    live_age_from_bd = compute_age_from_birthdate(bdate_str or bdate_raw) if (bdate_str or pd.notna(bdate_raw)) else ""
+                    if live_age_from_bd:
+                        age_str = live_age_from_bd
+                    elif not age_str or age_str.startswith("=") or not age_str.replace("-", "").isdigit():
+                        age_str = ""
 
                     cat_raw = r.get("Category", "")
                     cat_str = str(cat_raw if pd.notna(cat_raw) else "").strip().upper()
-                    if not cat_str or cat_str.startswith("=") or cat_str.lower() == "nan":
+                    # Dynamic Category Auto-Update: whenever Age is known (or recalculated from Birthday), auto-update Category (KIDS/YOUTH/ADULT/SENIOR CITIZEN)
+                    if age_str and age_str.isdigit():
+                        cat_str = compute_category_from_age(age_str)
+                    elif not cat_str or cat_str.startswith("=") or cat_str.lower() == "nan":
                         cat_str = compute_category_from_age(age_str)
                     if p_name == "HONGKONG PARISH" and cat_str in ("YOUTH", "KIDS", ""):
                         cat_str = "ADULT"
@@ -3641,7 +3760,7 @@ table.ctg-print-table tr:nth-child(even) {{ background: #F8FAFC; }}
 </html>"""
     return html_doc.encode("utf-8")
 
-@st.cache_data(ttl=18000, show_spinner=False)
+@st.cache_data(ttl=45, show_spinner=False)
 def load_removed_and_deceased_sheet_members(spreadsheet_url: str, active_df: pd.DataFrame = None) -> pd.DataFrame:
     standard_cols = [
         "Parish", "Family ID", "Head of Family", "No.", "Full Name", "Relationship",
@@ -3709,56 +3828,290 @@ def load_removed_and_deceased_sheet_members(spreadsheet_url: str, active_df: pd.
             df_rem[col] = ""
     return df_rem[standard_cols]
 
+def _apply_single_member_edit_to_workbook(
+    wb,
+    parish_name: str,
+    family_id: str,
+    full_name: str,
+    new_status: str = None,
+    new_category: str = None,
+    new_remarks: str = None,
+    full_edit_payload: dict = None
+) -> tuple[bool, str]:
+    """Applies a full member + household edit directly to an in-memory openpyxl workbook `wb`,
+    automatically recalculating Age & Category whenever Birthdate is present/edited,
+    and synchronizing HEAD OF FAMILY MASTER when Head of Family or household fields are updated."""
+    if parish_name not in wb.sheetnames:
+        return False, f"Wala ang sheet na '{parish_name}' sa Excel."
+    ws = wb[parish_name]
+    headers = {}
+    for col_idx in range(1, ((ws.max_column or 0) + 1)):
+        val = ws.cell(row=4, column=col_idx).value
+        if val:
+            headers[str(val).strip()] = col_idx
+
+    fid_col = headers.get("Family ID") or headers.get("Member / Record ID") or 1
+    hof_col = headers.get("Head of Family") or 2
+    no_col = headers.get("No.") or 3
+    fn_col = headers.get("Full Name") or 4
+    rel_col = headers.get("Relationship") or 5
+    sex_col = headers.get("Sex") or 6
+    bd_col = headers.get("Birthdate") or 7
+    age_col = headers.get("Age") or 8
+    cat_col = headers.get("Category") or 9
+    civ_col = headers.get("Civil Status") or 10
+    sw_col = headers.get("Student/Working") or headers.get("Employment / Work") or 11
+    con_col = headers.get("Contact No.") or 12
+    cm_col = headers.get("Church Member Status") or headers.get("Church Member") or 13
+    st_col = headers.get("Status") or 14
+    bap_col = headers.get("Baptized") or 15
+    bapd_col = headers.get("Baptism Date") or 16
+    addr_col = headers.get("Current Address (If living separately)") or headers.get("Address (HK or Philippines)") or 17
+    rem_col = headers.get("Remarks") or (20 if parish_name == "HONGKONG PARISH" else 18)
+
+    target_row = None
+    req_no = str((full_edit_payload or {}).get("No.", "")).strip()
+    for r_idx in range(5, ((ws.max_row or 0) + 1)):
+        r_fid = str(ws.cell(row=r_idx, column=fid_col).value or "").strip()
+        r_fn = str(ws.cell(row=r_idx, column=fn_col).value or "").strip()
+        if r_fid.upper() == family_id.strip().upper() and r_fn.upper() == full_name.strip().upper():
+            target_row = r_idx
+            break
+    if target_row is None and req_no and family_id.strip():
+        for r_idx in range(5, ((ws.max_row or 0) + 1)):
+            r_fid = str(ws.cell(row=r_idx, column=fid_col).value or "").strip()
+            r_no = str(ws.cell(row=r_idx, column=no_col).value or "").strip()
+            if r_no.endswith(".0"):
+                r_no = r_no[:-2]
+            if r_fid.upper() == family_id.strip().upper() and r_no == req_no:
+                target_row = r_idx
+                break
+    if target_row is None:
+        for r_idx in range(5, ((ws.max_row or 0) + 1)):
+            r_fn = str(ws.cell(row=r_idx, column=fn_col).value or "").strip()
+            if r_fn.upper() == full_name.strip().upper():
+                target_row = r_idx
+                break
+
+    if target_row is None:
+        return False, f"Hindi nahanap si '{full_name}' ({family_id}) sa sheet ng {parish_name}."
+
+    payload = dict(full_edit_payload) if isinstance(full_edit_payload, dict) else {}
+
+    # 1. Update core fields
+    if payload.get("Full Name"):
+        ws.cell(row=target_row, column=fn_col).value = str(payload["Full Name"]).strip()
+    if payload.get("No."):
+        no_s = str(payload["No."]).strip()
+        ws.cell(row=target_row, column=no_col).value = int(no_s) if no_s.isdigit() else no_s
+    if "Relationship" in payload and payload["Relationship"] and parish_name != "HONGKONG PARISH":
+        ws.cell(row=target_row, column=rel_col).value = str(payload["Relationship"]).strip().upper()
+    if "Head of Family" in payload and payload["Head of Family"] and parish_name != "HONGKONG PARISH":
+        cur_hof_cell = ws.cell(row=target_row, column=hof_col).value
+        if not (isinstance(cur_hof_cell, str) and cur_hof_cell.startswith("=")):
+            ws.cell(row=target_row, column=hof_col).value = str(payload["Head of Family"]).strip()
+    if payload.get("Sex"):
+        ws.cell(row=target_row, column=sex_col).value = str(payload["Sex"]).strip().upper()
+    if payload.get("Civil Status"):
+        ws.cell(row=target_row, column=civ_col).value = str(payload["Civil Status"]).strip().upper()
+    if payload.get("Student/Working"):
+        ws.cell(row=target_row, column=sw_col).value = str(payload["Student/Working"]).strip().upper()
+    if "Contact No." in payload:
+        ws.cell(row=target_row, column=con_col).value = str(payload["Contact No."]).strip()
+    if payload.get("Baptized"):
+        ws.cell(row=target_row, column=bap_col).value = str(payload["Baptized"]).strip().upper()
+    if "Baptism Date" in payload:
+        bapd_clean = format_clean_date_str(payload["Baptism Date"])
+        ws.cell(row=target_row, column=bapd_col).value = bapd_clean
+
+    # 2. Birthdate -> Automatic Dynamic Age & Category Recalculation
+    bdate_in_payload = payload.get("Birthdate")
+    if bdate_in_payload is not None:
+        bdate_clean = format_clean_date_str(bdate_in_payload)
+        ws.cell(row=target_row, column=bd_col).value = bdate_clean
+    else:
+        bdate_clean = format_clean_date_str(ws.cell(row=target_row, column=bd_col).value)
+
+    computed_age = compute_age_from_birthdate(bdate_clean) if bdate_clean else ""
+    final_age_str = computed_age or str(payload.get("Age", "") or "").strip()
+    if final_age_str:
+        cur_age_cell = ws.cell(row=target_row, column=age_col).value
+        if not (isinstance(cur_age_cell, str) and cur_age_cell.startswith("=")):
+            ws.cell(row=target_row, column=age_col).value = int(final_age_str) if final_age_str.isdigit() else final_age_str
+
+    if computed_age:
+        auto_cat = compute_category_from_age(computed_age)
+        if parish_name == "HONGKONG PARISH" and auto_cat in ("YOUTH", "KIDS", ""):
+            auto_cat = "ADULT"
+        cur_cat_cell = ws.cell(row=target_row, column=cat_col).value
+        if not (isinstance(cur_cat_cell, str) and cur_cat_cell.startswith("=")):
+            ws.cell(row=target_row, column=cat_col).value = auto_cat
+    elif new_category is not None or payload.get("Category"):
+        cat_to_set = str(payload.get("Category") or new_category or "").strip().upper()
+        if final_age_str and final_age_str.isdigit() and not payload.get("Category"):
+            cat_to_set = compute_category_from_age(final_age_str)
+        if parish_name == "HONGKONG PARISH" and cat_to_set in ("YOUTH", "KIDS", ""):
+            cat_to_set = "ADULT"
+        cur_cat_cell = ws.cell(row=target_row, column=cat_col).value
+        if cat_to_set and not (isinstance(cur_cat_cell, str) and cur_cat_cell.startswith("=")):
+            ws.cell(row=target_row, column=cat_col).value = cat_to_set
+
+    # 3. Status, Church Member Status & Remarks
+    st_to_set = str(payload.get("Status") or new_status or "").strip().upper()
+    if st_to_set:
+        ws.cell(row=target_row, column=st_col).value = st_to_set
+        cm_explicit = str(payload.get("Church Member", "")).strip().upper()
+        if cm_explicit in ("YES", "NO"):
+            ws.cell(row=target_row, column=cm_col).value = cm_explicit
+        elif "NON" in st_to_set:
+            ws.cell(row=target_row, column=cm_col).value = "NO"
+        else:
+            ws.cell(row=target_row, column=cm_col).value = "YES"
+    elif payload.get("Church Member"):
+        ws.cell(row=target_row, column=cm_col).value = str(payload["Church Member"]).strip().upper()
+
+    if new_remarks is not None or "Remarks" in payload:
+        rem_to_set = str(payload.get("Remarks") if "Remarks" in payload else new_remarks or "").strip()
+        ws.cell(row=target_row, column=rem_col).value = rem_to_set
+
+    # 4. Address & Hongkong fields
+    if "Current Address (If living separately)" in payload:
+        cur_a = ws.cell(row=target_row, column=addr_col).value
+        if parish_name == "HONGKONG PARISH" or not (isinstance(cur_a, str) and cur_a.startswith("=")):
+            ws.cell(row=target_row, column=addr_col).value = str(payload["Current Address (If living separately)"]).strip()
+    if parish_name == "HONGKONG PARISH":
+        if "Work Type" in payload:
+            ws.cell(row=target_row, column=headers.get("Work Type") or 18).value = str(payload["Work Type"]).strip()
+        if "Day Off" in payload:
+            ws.cell(row=target_row, column=headers.get("Day Off") or 19).value = str(payload["Day Off"]).strip()
+
+    # 5. Synchronize HEAD OF FAMILY MASTER & sibling rows when Head of Family or Household info is edited
+    rel_now = str(ws.cell(row=target_row, column=rel_col).value or "").strip().upper()
+    no_now = str(ws.cell(row=target_row, column=no_col).value or "").strip()
+    is_hof_row = (rel_now == "HEAD OF FAMILY" or no_now == "1")
+    new_hof_name = str(payload.get("Head of Family") or (ws.cell(row=target_row, column=fn_col).value if is_hof_row else "") or "").strip()
+
+    if family_id.strip() and new_hof_name and parish_name != "HONGKONG PARISH":
+        for r_i in range(5, (ws.max_row or 0) + 1):
+            if str(ws.cell(r_i, fid_col).value or "").strip().upper() == family_id.strip().upper():
+                c_v = ws.cell(r_i, hof_col).value
+                if not (isinstance(c_v, str) and c_v.startswith("=")):
+                    ws.cell(r_i, hof_col).value = new_hof_name
+
+    if "HEAD OF FAMILY MASTER" in wb.sheetnames and family_id.strip():
+        ws_m = wb["HEAD OF FAMILY MASTER"]
+        for r_m in range(4, (ws_m.max_row or 0) + 1):
+            if str(ws_m.cell(r_m, 1).value or "").strip().upper() == family_id.strip().upper():
+                if new_hof_name:
+                    ws_m.cell(r_m, 5).value = new_hof_name
+                if is_hof_row and "Contact No." in payload and str(payload["Contact No."]).strip():
+                    ws_m.cell(r_m, 6).value = str(payload["Contact No."]).strip()
+                if "Area/Zone" in payload and str(payload["Area/Zone"]).strip():
+                    ws_m.cell(r_m, 3).value = str(payload["Area/Zone"]).strip()
+                if "Cell Group" in payload:
+                    ws_m.cell(r_m, 4).value = str(payload["Cell Group"]).strip()
+                if "Barangay" in payload and str(payload["Barangay"]).strip():
+                    ws_m.cell(r_m, 8).value = str(payload["Barangay"]).strip()
+                if "City/Municipality" in payload and str(payload["City/Municipality"]).strip():
+                    ws_m.cell(r_m, 9).value = str(payload["City/Municipality"]).strip()
+                if "Province / Area" in payload and str(payload["Province / Area"]).strip():
+                    ws_m.cell(r_m, 10).value = str(payload["Province / Area"]).strip()
+                if "ZIP Code" in payload and str(payload["ZIP Code"]).strip():
+                    ws_m.cell(r_m, 11).value = str(payload["ZIP Code"]).strip()
+                if "Emergency Contact Name" in payload:
+                    ws_m.cell(r_m, 12).value = str(payload["Emergency Contact Name"]).strip()
+                if "Emergency Relationship" in payload:
+                    ws_m.cell(r_m, 13).value = str(payload["Emergency Relationship"]).strip()
+                if "Emergency Contact Number" in payload:
+                    ws_m.cell(r_m, 14).value = str(payload["Emergency Contact Number"]).strip()
+                if is_hof_row and "Current Address (If living separately)" in payload and str(payload["Current Address (If living separately)"]).strip():
+                    addr_s = str(payload["Current Address (If living separately)"]).strip()
+                    ws_m.cell(r_m, 35).value = addr_s
+                    ws_m.cell(r_m, 36).value = addr_s
+                break
+
+    _sync_family_to_journal_from_workbook(wb, parish_name, family_id)
+    return True, f"Na-update si {ws.cell(row=target_row, column=fn_col).value} ({family_id})"
+
 def batch_update_members_in_excel_and_sync(
     spreadsheet_url: str,
     edited_rows: list[dict]
 ) -> tuple[bool, str]:
     """Updates multiple modified member records across Parish Census sheets (including Hongkong OFW columns)
-    and HEAD OF FAMILY MASTER in one atomic pass and syncs back to Google Drive."""
+    and HEAD OF FAMILY MASTER in one single atomic workbook pass and syncs immediately to Google Drive."""
     if not edited_rows:
         return False, "Walang binagong rekord."
-    applied_count = 0
-    last_msg = ""
-    for row_d in edited_rows:
-        p_val = str(row_d.get("Parish", "")).strip()
-        fid_val = str(row_d.get("Family ID", row_d.get("Member / Record ID", ""))).strip()
-        orig_name = str(row_d.get("_orig_full_name") or row_d.get("Full Name", "")).strip()
-        if not p_val or not orig_name:
-            continue
-        ok_one, last_msg = update_member_in_excel_and_sync(
-            spreadsheet_url=spreadsheet_url,
-            parish_name=p_val,
-            family_id=fid_val,
-            full_name=orig_name,
-            new_status=str(row_d.get("Status", "")).strip(),
-            new_category=str(row_d.get("Category", "")).strip(),
-            new_remarks=str(row_d.get("Remarks", "")).strip(),
-            full_edit_payload={
-                "Full Name": str(row_d.get("Full Name", orig_name)).strip(),
-                "Head of Family": str(row_d.get("Head of Family", "")).strip(),
-                "No.": str(row_d.get("No.", "1")).strip(),
-                "Relationship": str(row_d.get("Relationship", "")).strip(),
-                "Sex": str(row_d.get("Sex", "")).strip(),
-                "Birthdate": str(row_d.get("Birthdate", "")).strip(),
-                "Age": str(row_d.get("Age", "")).strip(),
-                "Category": str(row_d.get("Category", "")).strip(),
-                "Civil Status": str(row_d.get("Civil Status", "")).strip(),
-                "Student/Working": str(row_d.get("Student/Working", row_d.get("Employment / Work", ""))).strip(),
-                "Contact No.": str(row_d.get("Contact No.", "")).strip(),
-                "Church Member": str(row_d.get("Church Member", row_d.get("Church Member Status", ""))).strip(),
-                "Status": str(row_d.get("Status", "")).strip(),
-                "Baptized": str(row_d.get("Baptized", "")).strip(),
-                "Baptism Date": str(row_d.get("Baptism Date", "")).strip(),
-                "Current Address (If living separately)": str(row_d.get("Current Address (If living separately)", row_d.get("Address (HK or Philippines)", ""))).strip(),
-                "Work Type": str(row_d.get("Work Type", "")).strip(),
-                "Day Off": str(row_d.get("Day Off", "")).strip(),
-                "Remarks": str(row_d.get("Remarks", "")).strip(),
-            }
-        )
-        if ok_one:
-            applied_count += 1
-    st.cache_data.clear()
-    return (applied_count > 0), f"Matagumpay na na-update at na-sync sa Google Drive ang {applied_count} miyembro! ({last_msg})"
+    try:
+        excel_bytes, _ = fetch_live_excel_bytes(spreadsheet_url)
+    except Exception:
+        return False, "Updating database, please try again in a few minutes."
+    if not excel_bytes:
+        return False, "Hindi mabasa ang Master Excel file."
+
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(excel_bytes))
+        applied_count = 0
+        for row_d in edited_rows:
+            p_val = str(row_d.get("Parish", "")).strip()
+            fid_val = str(row_d.get("Family ID", row_d.get("Member / Record ID", ""))).strip()
+            orig_name = str(row_d.get("_orig_full_name") or row_d.get("Full Name", "")).strip()
+            if not p_val or not orig_name:
+                continue
+            ok_one, _ = _apply_single_member_edit_to_workbook(
+                wb=wb,
+                parish_name=p_val,
+                family_id=fid_val,
+                full_name=orig_name,
+                new_status=str(row_d.get("Status", "")).strip(),
+                new_category=str(row_d.get("Category", "")).strip(),
+                new_remarks=str(row_d.get("Remarks", "")).strip(),
+                full_edit_payload={
+                    "Full Name": str(row_d.get("Full Name", orig_name)).strip(),
+                    "Head of Family": str(row_d.get("Head of Family", "")).strip(),
+                    "No.": str(row_d.get("No.", "1")).strip(),
+                    "Relationship": str(row_d.get("Relationship", "")).strip(),
+                    "Sex": str(row_d.get("Sex", "")).strip(),
+                    "Birthdate": str(row_d.get("Birthdate", "")).strip(),
+                    "Age": str(row_d.get("Age", "")).strip(),
+                    "Category": str(row_d.get("Category", "")).strip(),
+                    "Civil Status": str(row_d.get("Civil Status", "")).strip(),
+                    "Student/Working": str(row_d.get("Student/Working", row_d.get("Employment / Work", ""))).strip(),
+                    "Contact No.": str(row_d.get("Contact No.", "")).strip(),
+                    "Church Member": str(row_d.get("Church Member", row_d.get("Church Member Status", ""))).strip(),
+                    "Status": str(row_d.get("Status", "")).strip(),
+                    "Baptized": str(row_d.get("Baptized", "")).strip(),
+                    "Baptism Date": str(row_d.get("Baptism Date", "")).strip(),
+                    "Current Address (If living separately)": str(row_d.get("Current Address (If living separately)", row_d.get("Address (HK or Philippines)", ""))).strip(),
+                    "Work Type": str(row_d.get("Work Type", "")).strip(),
+                    "Day Off": str(row_d.get("Day Off", "")).strip(),
+                    "Remarks": str(row_d.get("Remarks", "")).strip(),
+                    "Area/Zone": str(row_d.get("Area/Zone", "")).strip(),
+                    "Cell Group": str(row_d.get("Cell Group", "")).strip(),
+                    "Barangay": str(row_d.get("Barangay", "")).strip(),
+                    "City/Municipality": str(row_d.get("City/Municipality", "")).strip(),
+                    "Province / Area": str(row_d.get("Province / Area", "")).strip(),
+                    "ZIP Code": str(row_d.get("ZIP Code", "")).strip(),
+                    "Emergency Contact Name": str(row_d.get("Emergency Contact Name", "")).strip(),
+                    "Emergency Relationship": str(row_d.get("Emergency Relationship", "")).strip(),
+                    "Emergency Contact Number": str(row_d.get("Emergency Contact Number", "")).strip(),
+                }
+            )
+            if ok_one:
+                applied_count += 1
+
+        if applied_count == 0:
+            wb.close()
+            return False, "Walang nahanap na katugmang rekord sa Excel upang i-update."
+
+        out_buf = io.BytesIO()
+        wb.save(out_buf)
+        wb.close()
+        ok_sync, sync_msg = sync_excel_bytes_to_drive(out_buf.getvalue(), spreadsheet_url)
+        st.session_state.pop("_fast_census_df_memo", None)
+        st.cache_data.clear()
+        return ok_sync, f"Matagumpay na na-update sa App at na-sync sa Google Drive Excel ang {applied_count} miyembro! ({sync_msg})"
+    except Exception as e:
+        return False, f"Error sa pag-update ng Excel: {str(e)}"
 
 def update_member_in_excel_and_sync(
     spreadsheet_url: str, parish_name: str = "", family_id: str = "", full_name: str = "",
@@ -3775,83 +4128,26 @@ def update_member_in_excel_and_sync(
         return False, "Updating database, please try again in a few minutes (Hindi mabasa ang Excel file)."
     try:
         wb = openpyxl.load_workbook(io.BytesIO(excel_bytes))
-        if parish_name not in wb.sheetnames:
-            return False, f"Wala ang sheet na '{parish_name}' sa Excel."
-        ws = wb[parish_name]
-        headers = {}
-        for col_idx in range(1, ((ws.max_column or 0) + 1)):
-            val = ws.cell(row=4, column=col_idx).value
-            if val:
-                headers[str(val).strip()] = col_idx
-
-        fid_col = headers.get("Family ID") or headers.get("Member / Record ID") or 1
-        fn_col = headers.get("Full Name") or 4
-        st_col = headers.get("Status") or 14
-        cat_col = headers.get("Category") or 9
-        cm_col = headers.get("Church Member Status") or headers.get("Church Member") or 13
-        rem_col = headers.get("Remarks") or (20 if parish_name == "HONGKONG PARISH" else 18)
-
-        target_row = None
-        for r_idx in range(5, ((ws.max_row or 0) + 1)):
-            r_fid = str(ws.cell(row=r_idx, column=fid_col).value or "").strip()
-            r_fn = str(ws.cell(row=r_idx, column=fn_col).value or "").strip()
-            if r_fid.upper() == family_id.strip().upper() and r_fn.upper() == full_name.strip().upper():
-                target_row = r_idx
-                break
-        if target_row is None:
-            for r_idx in range(5, ((ws.max_row or 0) + 1)):
-                r_fn = str(ws.cell(row=r_idx, column=fn_col).value or "").strip()
-                if r_fn.upper() == full_name.strip().upper():
-                    target_row = r_idx
-                    break
-
-        if target_row is None:
-            return False, f"Hindi nahanap si '{full_name}' ({family_id}) sa sheet ng {parish_name}."
-
-        if new_status is not None:
-            ws.cell(row=target_row, column=st_col).value = new_status.strip().upper()
-            if "NON" in new_status.upper():
-                ws.cell(row=target_row, column=cm_col).value = "NO"
-            else:
-                ws.cell(row=target_row, column=cm_col).value = "YES"
-        if new_category is not None:
-            cur_cat_cell = str(ws.cell(row=target_row, column=cat_col).value or "").strip()
-            bdate_col = headers.get("Birthdate") or 7
-            bdate_val = ws.cell(row=target_row, column=bdate_col).value
-            if not (cur_cat_cell.startswith("=") and bdate_val is not None and str(bdate_val).strip() != ""):
-                ws.cell(row=target_row, column=cat_col).value = new_category.strip().upper()
-        if new_remarks is not None:
-            ws.cell(row=target_row, column=rem_col).value = new_remarks.strip()
-
-        if isinstance(full_edit_payload, dict):
-            if full_edit_payload.get("Full Name"):
-                ws.cell(row=target_row, column=fn_col).value = full_edit_payload["Full Name"]
-            if full_edit_payload.get("Sex"):
-                ws.cell(row=target_row, column=headers.get("Sex") or 6).value = full_edit_payload["Sex"].upper()
-            if full_edit_payload.get("Civil Status"):
-                ws.cell(row=target_row, column=headers.get("Civil Status") or 10).value = full_edit_payload["Civil Status"].upper()
-            if full_edit_payload.get("Student/Working"):
-                ws.cell(row=target_row, column=headers.get("Student/Working") or headers.get("Employment / Work") or 11).value = full_edit_payload["Student/Working"]
-            if "Contact No." in full_edit_payload:
-                ws.cell(row=target_row, column=headers.get("Contact No.") or 12).value = full_edit_payload["Contact No."]
-            if full_edit_payload.get("Baptized"):
-                ws.cell(row=target_row, column=headers.get("Baptized") or 15).value = full_edit_payload["Baptized"].upper()
-            if "Current Address (If living separately)" in full_edit_payload:
-                addr_c = headers.get("Current Address (If living separately)") or headers.get("Address (HK or Philippines)") or 17
-                cur_a = ws.cell(row=target_row, column=addr_c).value
-                if parish_name == "HONGKONG PARISH" or not (isinstance(cur_a, str) and cur_a.startswith("=")):
-                    ws.cell(row=target_row, column=addr_c).value = full_edit_payload["Current Address (If living separately)"]
-            if parish_name == "HONGKONG PARISH":
-                if "Work Type" in full_edit_payload:
-                    ws.cell(row=target_row, column=headers.get("Work Type") or 18).value = full_edit_payload["Work Type"]
-                if "Day Off" in full_edit_payload:
-                    ws.cell(row=target_row, column=headers.get("Day Off") or 19).value = full_edit_payload["Day Off"]
-
+        ok_apply, apply_msg = _apply_single_member_edit_to_workbook(
+            wb=wb,
+            parish_name=parish_name,
+            family_id=family_id,
+            full_name=full_name,
+            new_status=new_status,
+            new_category=new_category,
+            new_remarks=new_remarks,
+            full_edit_payload=full_edit_payload,
+        )
+        if not ok_apply:
+            wb.close()
+            return False, apply_msg
         out_buf = io.BytesIO()
         wb.save(out_buf)
+        wb.close()
         ok, sync_msg = sync_excel_bytes_to_drive(out_buf.getvalue(), spreadsheet_url)
+        st.session_state.pop("_fast_census_df_memo", None)
         st.cache_data.clear()
-        return ok, sync_msg
+        return ok, f"{apply_msg} — {sync_msg}"
     except Exception as e:
         return False, f"Updating database, please try again in a few minutes ({str(e)})"
 
@@ -14470,6 +14766,7 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
             with cs_btn1:
                 if st.button("🔄 I-pull ang Pinakabagong Adjustments Mula sa Google Drive Excel", use_container_width=True, key="btn_pull_census_drive"):
                     with st.spinner("Binabasa ang pinakabagong CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx mula sa Google Drive..."):
+                        st.session_state.pop("_fast_census_df_memo", None)
                         st.cache_data.clear()
                         b_fresh, lbl_fresh = fetch_live_excel_bytes(ACTIVE_SPREADSHEET_URL, force_cloud=True)
                         st.success(f"✅ Na-update na ang App mula sa Google Drive ({lbl_fresh})!")
@@ -14487,7 +14784,9 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
                     "Parish", "Family ID", "Head of Family", "No.", "Full Name", "Relationship",
                     "Sex", "Birthdate", "Age", "Category", "Civil Status", "Student/Working",
                     "Contact No.", "Church Member", "Status", "Baptized", "Baptism Date",
-                    "Current Address (If living separately)", "Remarks"
+                    "Current Address (If living separately)", "Area/Zone", "Cell Group",
+                    "Barangay", "City/Municipality", "Province / Area", "ZIP Code",
+                    "Emergency Contact Name", "Emergency Relationship", "Emergency Contact Number", "Remarks"
                 ]
             avail_edit_cols = [c for c in edit_cols_order if c in final_df.columns]
             df_for_live_edit = final_df[avail_edit_cols].copy().reset_index(drop=True)
@@ -15783,9 +16082,11 @@ def _normalize_ctg_form_codes(item: dict) -> dict:
         elif out.get(dk):
             out[dk] = format_clean_date_str(out[dk])
 
-    if not out.get("Age") and out.get("Birthdate"):
-        out["Age"] = compute_age_from_birthdate(out["Birthdate"])
-    if not out.get("Category") and out.get("Age"):
+    if out.get("Birthdate"):
+        live_bd_age = compute_age_from_birthdate(out["Birthdate"])
+        if live_bd_age:
+            out["Age"] = live_bd_age
+    if out.get("Age") and str(out["Age"]).isdigit():
         out["Category"] = compute_category_from_age(out["Age"])
 
     if out.get("Contact No.") in ("-", "--"):
