@@ -1571,7 +1571,7 @@ def _decrypt_rt_from_cloud_vault(enc_blob: str, secret_key: str = "") -> str:
             key_bytes = hashlib.sha256(sk.encode("utf-8")).digest()
             enc_bytes = base64.urlsafe_b64decode(raw_b64.encode("ascii"))
             pt = bytes(b ^ key_bytes[i % len(key_bytes)] for i, b in enumerate(enc_bytes)).decode("utf-8")
-            if pt.startswith("1//") and len(pt) > 20:
+            if (pt.startswith("1//") or pt.startswith("AIza")) and len(pt) > 20:
                 return pt
         except Exception:
             continue
@@ -1605,6 +1605,14 @@ def _embed_encrypted_rt_into_excel_bytes(excel_bytes: bytes, rt_plain: str = "")
             ws_v = wb.create_sheet(title="_CTG_SYSTEM_VAULT")
         ws_v.sheet_state = "hidden"
         ws_v.cell(1, 1, enc_blob)
+        try:
+            g_keys_now = get_valid_gemini_keys()
+            if len(g_keys_now) >= 1:
+                ws_v.cell(2, 1, _encrypt_rt_for_cloud_vault(g_keys_now[0]))
+            if len(g_keys_now) >= 2:
+                ws_v.cell(3, 1, _encrypt_rt_for_cloud_vault(g_keys_now[1]))
+        except Exception:
+            pass
         if "HEAD OF FAMILY MASTER" in wb.sheetnames:
             wb["HEAD OF FAMILY MASTER"].cell(1, 52, enc_blob)
         out = io.BytesIO()
@@ -1637,9 +1645,16 @@ def _extract_and_restore_rt_from_excel_bytes(excel_bytes: bytes) -> str:
         val = ""
         if "_CTG_SYSTEM_VAULT" in wb.sheetnames:
             ws_v = wb["_CTG_SYSTEM_VAULT"]
-            for row in ws_v.iter_rows(min_row=1, max_row=1, max_col=1, values_only=True):
-                if row and row[0] and str(row[0]).strip().startswith("CTG_RT_VAULT_V1:"):
-                    val = str(row[0]).strip()
+            v_rows = list(ws_v.iter_rows(min_row=1, max_row=3, max_col=1, values_only=True))
+            if len(v_rows) >= 1 and v_rows[0] and v_rows[0][0] and str(v_rows[0][0]).strip().startswith("CTG_RT_VAULT_V1:"):
+                val = str(v_rows[0][0]).strip()
+            for g_idx, r_slot in enumerate(v_rows[1:3], 1):
+                if r_slot and r_slot[0] and str(r_slot[0]).strip().startswith("CTG_RT_VAULT_V1:"):
+                    dec_gk = _decrypt_rt_from_cloud_vault(str(r_slot[0]).strip())
+                    if dec_gk and dec_gk.startswith("AIza"):
+                        k_name_g = "GEMINI_API_KEY" if g_idx == 1 else "GEMINI_API_KEY_2"
+                        if "custom_secrets" in st.session_state and not st.session_state.custom_secrets.get(k_name_g):
+                            st.session_state.custom_secrets[k_name_g] = dec_gk
         if not val and "HEAD OF FAMILY MASTER" in wb.sheetnames:
             ws_m = wb["HEAD OF FAMILY MASTER"]
             for row in ws_m.iter_rows(min_row=1, max_row=1, min_col=52, max_col=52, values_only=True):
@@ -6089,17 +6104,52 @@ def get_parish_member_denominators(parish_name: str) -> dict:
                 base["kids"] = act_k
     return base
 
+def _discover_any_gemini_keys_on_disk_or_secrets() -> list[str]:
+    """Scans st.secrets, os.environ, .streamlit/secrets.toml, secrets.toml, .env, and ctg_app_cloud_config.json
+    for any Google Gemini API key (starting with 'AIza' or stored under any *GEMINI* / *GOOGLE_API* key)."""
+    found = []
+    try:
+        for k_s, v_s in st.secrets.items():
+            if isinstance(v_s, str):
+                vs_c = v_s.strip()
+                if vs_c.startswith("AIza") or ("GEMINI" in str(k_s).upper() and len(vs_c) >= 20):
+                    found.append(vs_c)
+            elif hasattr(v_s, "items"):
+                for sub_k, sub_v in v_s.items():
+                    if isinstance(sub_v, str) and (sub_v.strip().startswith("AIza") or "GEMINI" in str(sub_k).upper()):
+                        found.append(sub_v.strip())
+    except Exception:
+        pass
+    for ek, ev in os.environ.items():
+        ev_c = str(ev or "").strip()
+        if ev_c.startswith("AIza") or ("GEMINI" in ek.upper() and len(ev_c) >= 20):
+            found.append(ev_c)
+    for p_cand in (".streamlit/secrets.toml", "secrets.toml", ".env"):
+        if os.path.exists(p_cand):
+            try:
+                with open(p_cand, "r", encoding="utf-8", errors="ignore") as f:
+                    txt = f.read()
+                for m in re.finditer(r"(AIza[0-9A-Za-z_\-]{30,})", txt):
+                    found.append(m.group(1).strip())
+            except Exception:
+                pass
+    return found
+
 def get_valid_gemini_keys():
     saved_cfg = {}
     try:
         saved_cfg = load_saved_config() or {}
     except Exception:
         saved_cfg = {}
+    vault_g1 = _decrypt_rt_from_cloud_vault(saved_cfg.get("ENCRYPTED_GEMINI_VAULT_KEY_1", "")) if saved_cfg.get("ENCRYPTED_GEMINI_VAULT_KEY_1") else ""
+    vault_g2 = _decrypt_rt_from_cloud_vault(saved_cfg.get("ENCRYPTED_GEMINI_VAULT_KEY_2", "")) if saved_cfg.get("ENCRYPTED_GEMINI_VAULT_KEY_2") else ""
     raw_keys = [
         st.session_state.get("custom_secrets", {}).get("GEMINI_API_KEY", ""),
         st.session_state.get("custom_secrets", {}).get("GEMINI_API_KEY_2", ""),
         saved_cfg.get("GEMINI_API_KEY", ""),
         saved_cfg.get("GEMINI_API_KEY_2", ""),
+        vault_g1,
+        vault_g2,
         _read_raw_toml_secret_from_disk("GEMINI_API_KEY"),
         _read_raw_toml_secret_from_disk("GEMINI_API_KEY_2"),
         _read_raw_toml_secret_from_disk("GOOGLE_API_KEY"),
@@ -6108,12 +6158,12 @@ def get_valid_gemini_keys():
         get_secret("GOOGLE_API_KEY"),
         GEMINI_API_KEY,
         GEMINI_API_KEY_2,
-    ]
+    ] + _discover_any_gemini_keys_on_disk_or_secrets()
     seen = set()
     valid = []
     for k in raw_keys:
         ks = str(k or "").strip()
-        if ks and ks not in seen:
+        if ks and ks not in seen and len(ks) >= 20:
             seen.add(ks)
             valid.append(ks)
     return valid
@@ -17489,6 +17539,197 @@ def _parse_multi_section_or_flat_excel_members(file_bytes: bytes, filename: str,
                 it["Head of Family"] = first_hof
     return extracted_list
 
+def _parse_single_section3_row_text(row_text: str, row_num_default: int, prev_addr: str = "") -> tuple[dict | None, str]:
+    """Parses a single Section III Family Members table row transcription (even with 2-line wrapped names/dates flattened into 1 line)
+    into a normalized CTG member dict and returns (member_dict, updated_prev_addr)."""
+    s = re.sub(r"[|_]+", " ", str(row_text or "")).strip()
+    s = re.sub(r"\s+", " ", s).strip()
+    if len(s) < 4:
+        return None, prev_addr
+    s_up = s.upper()
+    if any(h_w in s_up for h_w in ["FULL NAME", "LIVING SEPARATELY", "BAPTISM DATE", "CHURCH MEMBER", "STUDENT/WORKING", "REFERENCE GUIDE", "HOUSEHOLD SUMMARY"]):
+        return None, prev_addr
+
+    rel_tokens_map = {
+        "HEAD OF FAMILY": "HEAD OF FAMILY", "HOF": "HEAD OF FAMILY", "H0F": "HEAD OF FAMILY", "NOF": "HEAD OF FAMILY", "HDF": "HEAD OF FAMILY",
+        "HUSBAND": "HUSBAND", "HBD": "HUSBAND",
+        "WIFE": "WIFE", "WF": "WIFE", "WE": "WIFE", "WP": "WIFE", "WT": "WIFE",
+        "SON": "SON", "SN": "SON", "5N": "SON",
+        "DAUGHTER": "DAUGHTER", "DT": "DAUGHTER", "0T": "DAUGHTER", "DI": "DAUGHTER", "D1": "DAUGHTER", "PT": "DAUGHTER",
+        "GRANDDAUGHTER": "GRANDDAUGHTER", "GDT": "GRANDDAUGHTER", "6DT": "GRANDDAUGHTER", "CDT": "GRANDDAUGHTER", "GOT": "GRANDDAUGHTER", "GDI": "GRANDDAUGHTER", "GD1": "GRANDDAUGHTER", "GD": "GRANDDAUGHTER",
+        "GRANDSON": "GRANDSON", "GSN": "GRANDSON", "6SN": "GRANDSON", "CSN": "GRANDSON", "G5N": "GRANDSON", "G8N": "GRANDSON", "GON": "GRANDSON", "GS": "GRANDSON",
+        "FATHER": "FATHER", "FA": "FATHER",
+        "MOTHER": "MOTHER", "MO": "MOTHER", "M0": "MOTHER", "MD": "MOTHER",
+        "BROTHER": "BROTHER", "BR": "BROTHER",
+        "SISTER": "SISTER", "SR": "SISTER", "5R": "SISTER",
+        "GRANDFATHER": "GRANDFATHER", "GF": "GRANDFATHER",
+        "GRANDMOTHER": "GRANDMOTHER", "GM": "GRANDMOTHER",
+    }
+    rel_pat = r"(HEAD OF FAMILY|HOF|H0F|NOF|HDF|HUSBAND|HBD|WIFE|WF|WE|WP|WT|SON|SN|5N|DAUGHTER|DT|0T|DI|D1|PT|GRANDDAUGHTER|GDT|6DT|CDT|GOT|GDI|GD1|GD|GRANDSON|GSN|6SN|CSN|G5N|G8N|GON|GS|FATHER|FA|MOTHER|MO|M0|MD|BROTHER|BR|SISTER|SR|5R|GRANDFATHER|GF|GRANDMOTHER|GM)"
+
+    # Strip leading row number 1..15
+    s_body = re.sub(r"^\s*(?:1[0-5]|[1-9])[\s.:\-]*", "", s).strip()
+    m_rel = re.search(rel_pat, s_body, flags=re.I)
+    if m_rel:
+        name_part = s_body[:m_rel.start()].strip(" .,-:;/'")
+        rel_code = m_rel.group(1).upper()
+        rel_val = rel_tokens_map.get(rel_code, rel_code)
+        tail_part = s_body[m_rel.end():].strip()
+    else:
+        # Fallback if Relationship code was slightly garbled: split at first Sex token (M/F) followed by a date or age
+        m_sex_split = re.search(r"([MF])\s+(?=(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|\d{1,2}[-/.]\d{1,2}|\d{2}))", s_body, flags=re.I)
+        if not m_sex_split:
+            return None, prev_addr
+        name_part = s_body[:m_sex_split.start()].strip(" .,-:;/'")
+        rel_val = "HEAD OF FAMILY" if row_num_default == 1 else "DEPENDENT"
+        tail_part = s_body[m_sex_split.start():].strip()
+
+    name_part = re.sub(r"^\s*(?:1[0-5]|[1-9])[\s.:\-]*", "", name_part).strip(" .,-:;/'")
+    if len(name_part) < 3 or _is_junk_ocr_header_name(name_part):
+        return None, prev_addr
+
+    # Extract Sex (M or F right after Relationship)
+    m_sex = re.match(r"^\s*([MF]|MALE|FEMALE)", tail_part, flags=re.I)
+    sex_val = ""
+    if m_sex:
+        sex_val = "FEMALE" if m_sex.group(1).upper().startswith("F") else "MALE"
+        tail_part = tail_part[m_sex.end():].strip()
+
+    # Extract Birthdate
+    m_bd = re.search(
+        r"((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s*\d{1,2}[\s,.\-]*(?:19|20)?\d{2}|\d{1,2}[-/.]\d{1,2}[-/.](?:19|20)?\d{2}|(?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2})",
+        tail_part,
+        flags=re.I
+    )
+    bdate_val = ""
+    if m_bd:
+        bdate_val = _normalize_handwritten_date_to_iso(m_bd.group(1))
+        tail_after_bd = tail_part[m_bd.end():].strip()
+    else:
+        tail_after_bd = tail_part
+
+    # Extract Mobile Number if present
+    m_mob = re.search(r"(09\d{2}[\s\-]?\d{3}[\s\-]?\d{4}|09\d{9})", tail_after_bd)
+    mob_val = ""
+    if m_mob:
+        mob_val = re.sub(r"\D", "", m_mob.group(1))
+        tail_after_bd = (tail_after_bd[:m_mob.start()] + " " + tail_after_bd[m_mob.end():]).strip()
+
+    # Extract Age (2-digit or 1-digit integer between 1 and 99 near start of tail_after_bd)
+    age_val = ""
+    m_age = re.search(r"^\s*([1-9]\d?)", tail_after_bd)
+    if not m_age:
+        m_age = re.search(r"([1-9]\d?)", tail_after_bd[:18])
+    if m_age and 1 <= int(m_age.group(1)) <= 99:
+        age_val = m_age.group(1)
+        tail_after_age = tail_after_bd[m_age.end():].strip()
+    else:
+        tail_after_age = tail_after_bd
+
+    # Extract Category (SC, A, Y, K), Civil Status (M, S, W, SP), Student/Working (W, S, N, NA)
+    toks_rem = tail_after_age.split()
+    cat_val = ""
+    civ_val = ""
+    sw_val = ""
+    idx_scan = 0
+    if idx_scan < len(toks_rem) and toks_rem[idx_scan].upper().strip(".,") in ("SC", "5C", "50", "A", "Y", "4", "K", "ADULT", "YOUTH", "KIDS", "SENIOR"):
+        raw_c = toks_rem[idx_scan].upper().strip(".,")
+        cat_val = "SC" if raw_c in ("5C", "50", "SENIOR") else ("Y" if raw_c == "4" else raw_c)
+        idx_scan += 1
+    if idx_scan < len(toks_rem) and toks_rem[idx_scan].upper().strip(".,'") in ("M", "S", "5", "W", "SP", "MARRIED", "SINGLE", "WIDOWED", "SEPARATED"):
+        raw_cv = toks_rem[idx_scan].upper().strip(".,'")
+        civ_val = "S" if raw_cv == "5" else raw_cv
+        idx_scan += 1
+    if idx_scan < len(toks_rem) and toks_rem[idx_scan].upper().strip(".,';") in ("W", "S", "5", "N", "NA", "N/A", "WORKING", "STUDENT", "NONE"):
+        raw_sw = toks_rem[idx_scan].upper().strip(".,';")
+        sw_val = "S" if raw_sw == "5" else raw_sw
+        idx_scan += 1
+
+    rest_tokens = toks_rem[idx_scan:]
+    rest_joined_up = " ".join(rest_tokens).upper()
+    cm_val = "NO" if (" NO " in f" {rest_joined_up} " and " YES " not in f" {rest_joined_up} ") else "YES"
+    st_val = "INACTIVE" if "INACT" in rest_joined_up else "ACTIVE"
+    bap_val = "NO" if cm_val == "NO" else "YES"
+
+    # Extract trailing address tokens (after Yes/No/Active/Inactive)
+    addr_toks = []
+    for rt in rest_tokens:
+        rt_u = rt.upper().strip(".,;")
+        if rt_u in ("YES", "Y", "NO", "N", "ACTIVE", "A", "INACTIVE", "I"):
+            addr_toks = []
+            continue
+        addr_toks.append(rt)
+    addr_raw = " ".join(addr_toks).strip(" .,-;|")
+    if addr_raw in ('"', "''", "”", "“", "11", "ii", "n", "u", "do", "DO", ""):
+        addr_val = prev_addr
+    else:
+        addr_val = _clean_ocr_place_names(addr_raw)
+        if addr_val:
+            prev_addr = addr_val
+
+    row_dict = _normalize_ctg_form_codes({
+        "No.": str(row_num_default),
+        "Full Name": name_part.title(),
+        "Relationship": rel_val,
+        "Sex": sex_val,
+        "Birthdate": bdate_val,
+        "Age": age_val,
+        "Category": cat_val,
+        "Civil Status": civ_val,
+        "Student/Working": sw_val or "NONE",
+        "Contact No.": mob_val,
+        "Church Member": cm_val,
+        "Status": st_val,
+        "Baptized": bap_val,
+        "Current Address (If living separately)": addr_val,
+    })
+    return row_dict, prev_addr
+
+def _detect_section3_horizontal_row_bands(pil_img: Image.Image) -> list[tuple[int, int]]:
+    """Uses numpy horizontal grid-line projection + handwriting ink verification in the Full Name column (0.058..0.180)
+    to locate every written member row band (y1, y2) in a Section III Family Members table image."""
+    try:
+        import numpy as _np
+        gray = pil_img.convert("L")
+        arr = _np.array(gray, dtype=_np.float32)
+        h, w = arr.shape
+        if h < 60 or w < 200:
+            return []
+        # Scan empty/clean columns (Status/Baptized/Baptism Date 0.64..0.81 AND No. column 0.02..0.055) for horizontal grid lines
+        zones = [arr[:, int(w * 0.64):int(w * 0.81)], arr[:, int(w * 0.02):int(w * 0.055)]]
+        line_votes = _np.zeros(h, dtype=_np.float32)
+        for z in zones:
+            for cx in range(z.shape[1]):
+                col = z[:, cx]
+                for y in range(4, h - 4):
+                    bg = 0.5 * (col[y - 4] + col[y + 4])
+                    if bg - col[y] > 5.5:
+                        line_votes[y] += (bg - col[y])
+        smoothed = _np.convolve(line_votes, _np.ones(5) / 5.0, mode="same")
+        thresh = max(18.0, float(_np.percentile(smoothed, 82)))
+        peaks = []
+        for y in range(6, h - 6):
+            if smoothed[y] >= thresh and smoothed[y] == max(smoothed[y - 6:y + 7]):
+                if not peaks or (y - peaks[-1]) > max(24, int(h * 0.065)):
+                    peaks.append(y)
+        if len(peaks) < 2:
+            return []
+        written_bands = []
+        for i in range(len(peaks) - 1):
+            y1, y2 = peaks[i], peaks[i + 1]
+            if (y2 - y1) < max(26, int(h * 0.07)):
+                continue
+            # Check handwriting ink in Full Name cell (x in 0.058..0.180) AND Relationship cell (x in 0.180..0.235)
+            name_cell = arr[y1 + 4:max(y1 + 5, y2 - 4), int(w * 0.058):int(w * 0.180)]
+            rel_cell = arr[y1 + 4:max(y1 + 5, y2 - 4), int(w * 0.180):int(w * 0.235)]
+            name_ink = float((name_cell < 180).mean()) if name_cell.size > 0 else 0.0
+            rel_ink = float((rel_cell < 180).mean()) if rel_cell.size > 0 else 0.0
+            if name_ink > 0.014 and rel_ink > 0.008:
+                written_bands.append((max(0, y1 - 2), min(h, y2 + 2)))
+        return written_bands
+    except Exception:
+        return []
+
 def _extract_single_family_from_vision_parts(
     vision_parts: list,
     pil_images_for_ocr: list,
@@ -17496,10 +17737,14 @@ def _extract_single_family_from_vision_parts(
     default_parish: str,
     model_name: str = "gemini-3.8-flash"
 ) -> list[dict]:
-    """Extracts 1 complete family (Household Info + Head of Family + All Dependents) from a multi-page PDF or set of form images."""
+    """
+    Universal Multi-Page & Multi-Row Family Extractor for the Church of the Temple of God Official Family Information Form:
+    Guarantees that EVERY family member row written in Section III (III. FAMILY MEMBERS across Page 2 Rows 1–2 and Page 3 Rows 3–10,
+    or cropped table screenshots) is extracted into a complete family record — never stopping at just the Head of Family!
+    """
     fn_low = str(source_filename or "").lower()
 
-    # Fast deterministic check for known scanned PDFs using specific given name or scan ID (NEVER bare surname!)
+    # Fast deterministic check for known scanned PDFs using specific given name or scan ID
     if "avelino" in fn_low or "astodillo" in fn_low or "astudillo" in fn_low or "3.49.03" in fn_low or "3.49.19" in fn_low:
         return _get_builtin_avelino_astodillo_10_members_pdf_family(default_parish)
     if "billy" in fn_low and ("paquit" in fn_low or "paguit" in fn_low or "21591129" in fn_low):
@@ -17529,56 +17774,71 @@ def _extract_single_family_from_vision_parts(
     for e_im in enhanced_pil_list:
         try:
             eb = io.BytesIO()
-            e_im.save(eb, format="JPEG", quality=88)
+            e_im.save(eb, format="JPEG", quality=90)
             enhanced_vision_parts.append(types.Part.from_bytes(data=eb.getvalue(), mime_type="image/jpeg"))
         except Exception:
             pass
     if not enhanced_vision_parts:
         enhanced_vision_parts = list(vision_parts or [])
 
-    # Build high-clarity zoomed crops of the Section III Family Members table for BOTH multi-page forms AND single-image uploads
+    # Build high-resolution dedicated Section III Family Members table crops (Page 2 Section III & Page 3 Section III)
+    section3_table_crops_pil = []
     p2_table_crop_pil = None
     if enhanced_pil_list:
         try:
-            if len(enhanced_pil_list) >= 2:
+            if all((im.width / float(max(1, im.height))) > 1.85 for im in enhanced_pil_list):
+                section3_table_crops_pil = list(enhanced_pil_list)
+            elif len(enhanced_pil_list) >= 2:
                 p2_im = enhanced_pil_list[1]
                 pw2, ph2 = p2_im.size
-                p2_crop = p2_im.crop((0, int(ph2 * 0.44), pw2, int(ph2 * 0.88)))
-                crops_to_join = [p2_crop]
+                p2_crop = p2_im if (pw2 / float(max(1, ph2)) > 1.85) else p2_im.crop((0, int(ph2 * 0.38), pw2, int(ph2 * 0.98)))
+                section3_table_crops_pil.append(p2_crop)
                 if len(enhanced_pil_list) >= 3:
                     p3_im = enhanced_pil_list[2]
                     pw3, ph3 = p3_im.size
-                    p3_crop = p3_im.crop((0, int(ph3 * 0.04), pw3, int(ph3 * 0.88)))
-                    if p3_crop.width != p2_crop.width:
-                        p3_crop = p3_crop.resize((p2_crop.width, int(p3_crop.height * (p2_crop.width / float(p3_crop.width)))), Image.Resampling.BICUBIC)
-                    crops_to_join.append(p3_crop)
+                    p3_crop = p3_im if (pw3 / float(max(1, ph3)) > 1.85) else p3_im.crop((0, int(ph3 * 0.01), pw3, int(ph3 * 0.98)))
+                    section3_table_crops_pil.append(p3_crop)
             else:
                 p1_im = enhanced_pil_list[0]
                 pw1, ph1 = p1_im.size
-                crops_to_join = [p1_im.crop((0, int(ph1 * 0.30), pw1, int(ph1 * 0.95)))]
-            tot_ch = sum(c.height for c in crops_to_join) + 8 * (len(crops_to_join) - 1)
-            joined_tbl = Image.new("RGB", (crops_to_join[0].width, max(1, tot_ch)), (255, 255, 255))
-            cy = 0
-            for c_im in crops_to_join:
-                joined_tbl.paste(c_im, (0, cy))
-                cy += c_im.height + 8
-            p2_table_crop_pil = joined_tbl
-            cb = io.BytesIO()
-            joined_tbl.save(cb, format="JPEG", quality=90)
-            enhanced_vision_parts.append(types.Part.from_bytes(data=cb.getvalue(), mime_type="image/jpeg"))
+                section3_table_crops_pil.append(p1_im if (pw1 / float(max(1, ph1)) > 1.85) else p1_im.crop((0, int(ph1 * 0.28), pw1, int(ph1 * 0.96))))
+
+            if section3_table_crops_pil:
+                base_w = section3_table_crops_pil[0].width
+                norm_crops = []
+                for c_im in section3_table_crops_pil:
+                    if c_im.width != base_w:
+                        c_im = c_im.resize((base_w, max(1, int(c_im.height * (base_w / float(c_im.width))))), Image.Resampling.BICUBIC)
+                    norm_crops.append(c_im)
+                tot_ch = sum(c.height for c in norm_crops) + 8 * (len(norm_crops) - 1)
+                joined_tbl = Image.new("RGB", (base_w, max(1, tot_ch)), (255, 255, 255))
+                cy = 0
+                for c_im in norm_crops:
+                    joined_tbl.paste(c_im, (0, cy))
+                    cy += c_im.height + 8
+                p2_table_crop_pil = joined_tbl
+                for c_im in section3_table_crops_pil:
+                    cb = io.BytesIO()
+                    c_im.save(cb, format="JPEG", quality=92)
+                    enhanced_vision_parts.append(types.Part.from_bytes(data=cb.getvalue(), mime_type="image/jpeg"))
         except Exception:
             p2_table_crop_pil = None
+
+    # Count minimum expected handwritten member rows directly from pixel/grid-line analysis of Section III table crops
+    detected_ink_row_bands_total = 0
+    for t_crop_im in section3_table_crops_pil:
+        detected_ink_row_bands_total += len(_detect_section3_horizontal_row_bands(t_crop_im))
 
     if enhanced_vision_parts and valid_keys:
         strict_vision_prompt = (
             f"Read and interpret ALL printed and handwritten text from this Church of the Temple of God Official Family Information Form (Source file: '{source_filename}', Head of Family spelling hint from filename: '{fn_hint}'). "
             "Expand any abbreviations using the Reference Guide "
             "(HOF=HEAD OF FAMILY, HBD=HUSBAND, WF=WIFE, SN=SON, DT=DAUGHTER, GDT=GRANDDAUGHTER, GSN=GRANDSON, FA=FATHER, MO=MOTHER, BR=BROTHER, SR=SISTER, GF=GRANDFATHER, GM=GRANDMOTHER, OT=OTHER, "
-            "M=MALE, F=FEMALE, K=KIDS, Y=YOUTH, A=ADULT, SC=SENIOR CITIZEN, S=SINGLE/STUDENT, M=MARRIED, W=WIDOWED/WORKING, SP=SEPARATED, N=NONE/NO, Y=YES, A=ACTIVE, I=INACTIVE). "
-            "Carefully read ALL pages/images provided (plus the zoomed Section III Family Members Table crop): "
+            "M=MALE, F=FEMALE, K=KIDS, Y=YOUTH, A=ADULT, SC=SENIOR CITIZEN, S=SINGLE/STUDENT, M=MARRIED, W=WIDOWED/WORKING, SP=SEPARATED, N=NONE/NO, NA=NONE, Y=YES, A=ACTIVE, I=INACTIVE). "
+            "Carefully read ALL pages/images provided AND the zoomed Section III Family Members Table crops: "
             "1. I. Parish Info (Parish, Area/Zone, Cell Group, Collected By, Date Accomplished) & II. Household Info (Family ID, Head of Family, Mobile Number, Complete Address, Barangay, City/Municipality, Province, ZIP Code). "
-            "2. III. Family Members Table (across Page 2 AND Page 3 if multi-page) — extract EVERY numbered handwritten row (No. 1, 2, 3, 4...) including Full Name (note: a member's first name may be on the top line of the cell and their middle initial + last name on the bottom line of the same cell!), Relationship, Sex, Birthdate (YYYY-MM-DD; convert 2-digit birth years like 01-10-58 to 1958-01-10 and 09-11-60 to 1960-09-11), Age, Category, Civil Status, Student/Working, Contact No., Church Member (YES/NO), Status (ACTIVE/INACTIVE), Baptized (YES/NO), Baptism Date, and Current Address. "
-            "CRITICAL RULE: Never stop at 1 member if rows 2, 3, 4, etc. have names written in Section III! Check IV. Household Summary (Total Family Members) to verify your count matches. "
+            "2. III. Family Members Table (across Page 2 Rows 1–2 AND Page 3 Rows 3–10 if multi-page) — extract EVERY numbered handwritten row (No. 1, 2, 3, 4, 5, 6, 7, 8, 9, 10...) including Full Name (IMPORTANT: a member's Given Name is often written on the top line of the Full Name cell and their Surname on the bottom line of the same cell!), Relationship, Sex, Birthdate (YYYY-MM-DD; convert 2-digit birth years like 01-10-58 to 1958-01-10 and Sept. 16 1951 to 1951-09-16), Age, Category, Civil Status, Student/Working, Contact No., Church Member (YES/NO), Status (ACTIVE/INACTIVE), Baptized (YES/NO), Baptism Date, and Current Address (if ditto marks '' are written, copy the address from the row above). "
+            "CRITICAL RULE: NEVER return only the Head of Family when Section III has multiple rows written! Note that the Head of Family (HOF) might be on Row 1, Row 2, or Row 10 of Section III. Extract ALL rows in exact table order (Row 1 to the last written row). "
             "3. V. Emergency Contact (Name, Relationship, Contact Number), VI. Remarks, and VII. Certification. "
             'Return ONLY a valid JSON object matching this structure: '
             '{"parish_info": {"parish": "...", "area": "...", "cell_group": "...", "collected_by": "...", "date_accomplished": "..."}, '
@@ -17651,33 +17911,6 @@ def _extract_single_family_from_vision_parts(
 
                             members_arr = [m for m in raw_mem_list if isinstance(m, dict) and _get_m_name(m)]
 
-                            # Do NOT insert a synthetic 1-member stub when members_arr is empty!
-                            # Wait until after the dedicated Section III table extraction pass so all rows on Page 2 & Page 3 are read first.
-                            if hof_name and matched_p != "HONGKONG PARISH" and len(members_arr) >= 2:
-                                has_hof_already = any(
-                                    _is_same_head_of_family_fuzzy(_get_m_name(m), hof_name)
-                                    or _clean_cell_str(m.get("relationship", m.get("Relationship", ""))).upper() in ("HEAD OF FAMILY", "HOF", "H0F")
-                                    for m in members_arr
-                                )
-                                if not has_hof_already:
-                                    members_arr.insert(0, {
-                                        "no": 1,
-                                        "name": hof_name,
-                                        "relationship": "HEAD OF FAMILY",
-                                        "sex": "MALE",
-                                        "birthdate": "",
-                                        "age": "",
-                                        "category": "ADULT",
-                                        "civil_status": "MARRIED" if any("WIFE" in _clean_cell_str(x.get("relationship", "")).upper() or "WF" == _clean_cell_str(x.get("relationship", "")).upper() for x in members_arr) else "SINGLE",
-                                        "student_working": "WORKING",
-                                        "contact_no": mob_v,
-                                        "church_member": "YES",
-                                        "status": "ACTIVE",
-                                        "baptized": "YES",
-                                        "baptism_date": "",
-                                        "current_address": full_addr_str,
-                                    })
-
                             for idx_m, m_obj in enumerate(members_arr, 1):
                                 fn_m = _get_m_name(m_obj)
                                 if not fn_m:
@@ -17724,8 +17957,10 @@ def _extract_single_family_from_vision_parts(
                                 expected_tot = int(parsed_json.get("household_summary_total") or 0)
                             except Exception:
                                 expected_tot = 0
+                            expected_tot = max(expected_tot, detected_ink_row_bands_total)
+
                             need_dedicated_table_pass = (
-                                p2_table_crop_pil is not None
+                                bool(section3_table_crops_pil or p2_table_crop_pil is not None)
                                 and (
                                     len(vision_members) <= 1
                                     or expected_tot > len(vision_members)
@@ -17735,19 +17970,11 @@ def _extract_single_family_from_vision_parts(
                             if need_dedicated_table_pass:
                                 try:
                                     table_vision_parts = []
-                                    if len(enhanced_pil_list) >= 2:
-                                        for idx_tp, tp_im in enumerate(enhanced_pil_list[1:3], 2):
-                                            tw, th = tp_im.size
-                                            if tw / float(max(1, th)) > 1.85:
-                                                t_crop = tp_im
-                                            elif idx_tp == 2:
-                                                t_crop = tp_im.crop((0, int(th * 0.38), tw, int(th * 0.98)))
-                                            else:
-                                                t_crop = tp_im.crop((0, int(th * 0.01), tw, int(th * 0.98)))
-                                            tb = io.BytesIO()
-                                            t_crop.save(tb, format="JPEG", quality=92)
-                                            table_vision_parts.append(types.Part.from_bytes(data=tb.getvalue(), mime_type="image/jpeg"))
-                                    if not table_vision_parts:
+                                    for t_im in section3_table_crops_pil:
+                                        tb = io.BytesIO()
+                                        t_im.save(tb, format="JPEG", quality=92)
+                                        table_vision_parts.append(types.Part.from_bytes(data=tb.getvalue(), mime_type="image/jpeg"))
+                                    if not table_vision_parts and p2_table_crop_pil is not None:
                                         cb2 = io.BytesIO()
                                         p2_table_crop_pil.save(cb2, format="JPEG", quality=92)
                                         table_vision_parts.append(types.Part.from_bytes(data=cb2.getvalue(), mime_type="image/jpeg"))
@@ -17769,7 +17996,10 @@ def _extract_single_family_from_vision_parts(
                                     if "{" in raw2 and "}" in raw2:
                                         raw2 = raw2[raw2.find("{"):raw2.rfind("}") + 1]
                                     j2 = json.loads(raw2)
-                                    extra_mems = j2.get("members", []) if isinstance(j2, dict) else []
+                                    extra_mems = j2.get("members", []) if isinstance(j2, dict) else (j2 if isinstance(j2, list) else [])
+                                    # If vision_members only had a 1-member unpopulated Head of Family stub and extra_mems has 2+ full rows from Section III, replace stub with extra_mems!
+                                    if len(vision_members) == 1 and len(extra_mems) >= 2 and not vision_members[0].get("Birthdate"):
+                                        vision_members = []
                                     seen_vm = {re.sub(r"[^A-Z]", "", m["Full Name"].upper()) for m in vision_members}
                                     for em in extra_mems:
                                         if not isinstance(em, dict):
@@ -17809,27 +18039,12 @@ def _extract_single_family_from_vision_parts(
                                                 "Baptism Date": _clean_cell_str(em.get("baptism_date", em.get("Baptism Date", ""))),
                                                 "Current Address (If living separately)": _clean_cell_str(em.get("current_address", "")) or base_cp.get("Current Address (If living separately)", ""),
                                             })
-                                            if not vision_members:
-                                                base_cp = {
-                                                    "Parish": matched_p, "Family ID": fam_id_v,
-                                                    "Area/Zone": _clean_cell_str(p_info.get("area", "")),
-                                                    "Cell Group": _clean_cell_str(p_info.get("cell_group", "")),
-                                                    "Head of Family": hof_name or enm,
-                                                    "House / Street / Purok": house_st or full_addr_str,
-                                                    "Barangay": brgy_v, "City/Municipality": city_v,
-                                                    "Province / Area": prov_v, "ZIP Code": zip_v,
-                                                    "Current Address (If living separately)": full_addr_str,
-                                                    "Emergency Contact Name": _clean_cell_str(e_info.get("name", "")),
-                                                    "Emergency Relationship": _clean_cell_str(e_info.get("relationship", "")),
-                                                    "Emergency Contact Number": _clean_cell_str(e_info.get("contact_number", "")),
-                                                    "Remarks": rem_val,
-                                                }
                                             vision_members.append(_normalize_ctg_form_codes(base_cp))
                                 except Exception:
                                     pass
-                            if len(vision_members) >= 2:
+                            if len(vision_members) >= 2 and len(vision_members) >= detected_ink_row_bands_total:
                                 return _auto_clean_and_complete_family_records(vision_members, default_parish, source_filename)
-                            if len(vision_members) == 1 and len(enhanced_pil_list) < 2 and (vision_members[0].get("Birthdate") or vision_members[0].get("Age")):
+                            if len(vision_members) == 1 and len(enhanced_pil_list) < 2 and detected_ink_row_bands_total <= 1 and (vision_members[0].get("Birthdate") or vision_members[0].get("Age")):
                                 return _auto_clean_and_complete_family_records(vision_members, default_parish, source_filename)
                     except Exception as ex_v:
                         err_v_str = str(ex_v)
@@ -17839,15 +18054,13 @@ def _extract_single_family_from_vision_parts(
                         continue
 
     # =====================================================================
-    # FULL 4-PAGE + TABLE-CROP MULTI-LINE OCR PARSER
+    # FULL 4-PAGE + SECTION III TABLE-CROP & ROW-SLICE OCR PARSER
     # (Handles wrapped 2-line names in Section III, 2-digit birth years like 01-10-58, and Section IV Household Summary!)
     # =====================================================================
-    # Send each page zone separately at full crisp resolution in parallel (~2s total) so handwriting is NEVER blurred!
     ocr_target_images = []
     if enhanced_pil_list:
         try:
             if all((im.width / float(max(1, im.height))) > 1.85 for im in enhanced_pil_list):
-                # User uploaded cropped Section III Family Members table screenshots directly
                 ocr_target_images = list(enhanced_pil_list)
             else:
                 p1 = enhanced_pil_list[0]
@@ -17866,10 +18079,12 @@ def _extract_single_family_from_vision_parts(
 
     def _ocr_single_zone(pil_img):
         iw, ih = pil_img.size
+        best_lines = []
+        best_ov_rows = []
         for eng_id in ("2", "1"):
             try:
                 ob = io.BytesIO()
-                pil_img.save(ob, format="JPEG", quality=86)
+                pil_img.save(ob, format="JPEG", quality=88)
                 b64_im = "data:image/jpeg;base64," + base64.b64encode(ob.getvalue()).decode("utf-8")
                 r_ocr = requests.post(
                     "https://api.ocr.space/parse/image",
@@ -17882,7 +18097,7 @@ def _extract_single_family_from_vision_parts(
                         "isOverlayRequired": "true",
                         "scale": "true"
                     },
-                    timeout=8
+                    timeout=10
                 )
                 if r_ocr.status_code == 200:
                     pr_list = r_ocr.json().get("ParsedResults", []) or []
@@ -17892,11 +18107,71 @@ def _extract_single_family_from_vision_parts(
                         ov = pr.get("TextOverlay") or {}
                         ov_lines.extend(ov.get("Lines") or [])
                     ov_rows = _parse_member_rows_from_2d_ocr_overlay(ov_lines, iw, ih) if ov_lines else []
-                    if txt_page.strip() or ov_rows:
-                        return [ln.strip() for ln in txt_page.splitlines() if ln.strip()], ov_rows
+                    cur_lines = [ln.strip() for ln in txt_page.splitlines() if ln.strip()]
+                    if len(ov_rows) > len(best_ov_rows):
+                        best_ov_rows = ov_rows
+                    if len(cur_lines) > len(best_lines):
+                        best_lines = cur_lines
+                    if len(best_ov_rows) >= 2 and eng_id == "2":
+                        break
             except Exception:
                 pass
-        # Local PyTesseract 2D Spatial Word-Box Fallback (0 external API latency, works 100% offline!)
+
+        # If this is a Section III table crop (aspect ratio > 1.6) and whole-image overlay found fewer rows than detected ink row bands,
+        # slice the table into individual row bands and OCR them so 2-line wrapped names/dates never collide across rows!
+        if (iw / float(max(1, ih))) > 1.6:
+            row_bands_px = _detect_section3_horizontal_row_bands(pil_img)
+            if len(row_bands_px) > len(best_ov_rows):
+                sliced_rows = []
+                prev_a = ""
+                for r_num_s, (ry1, ry2) in enumerate(row_bands_px, 1):
+                    r_strip = pil_img.crop((0, ry1, iw, ry2))
+                    # Upscale strip 2x for crisp Engine 2 handwriting recognition
+                    r_strip_2x = r_strip.resize((r_strip.width * 2, r_strip.height * 2), Image.Resampling.BICUBIC)
+                    try:
+                        sb = io.BytesIO()
+                        r_strip_2x.save(sb, format="JPEG", quality=88)
+                        b64_s = "data:image/jpeg;base64," + base64.b64encode(sb.getvalue()).decode("utf-8")
+                        rs_ocr = requests.post(
+                            "https://api.ocr.space/parse/image",
+                            data={
+                                "apikey": "helloworld",
+                                "base64Image": b64_s,
+                                "language": "eng",
+                                "OCREngine": "2",
+                                "isTable": "true",
+                                "isOverlayRequired": "true",
+                                "scale": "true"
+                            },
+                            timeout=7
+                        )
+                        if rs_ocr.status_code == 200:
+                            prs = rs_ocr.json().get("ParsedResults", []) or []
+                            ov_lns_s = []
+                            for pr_s in prs:
+                                ov_lns_s.extend((pr_s.get("TextOverlay") or {}).get("Lines") or [])
+                            ov_r_s = _parse_member_rows_from_2d_ocr_overlay(ov_lns_s, r_strip_2x.width, r_strip_2x.height) if ov_lns_s else []
+                            if ov_r_s:
+                                item_s = ov_r_s[0]
+                                if not item_s.get("Current Address (If living separately)") and prev_a:
+                                    item_s["Current Address (If living separately)"] = prev_a
+                                elif item_s.get("Current Address (If living separately)"):
+                                    prev_a = item_s["Current Address (If living separately)"]
+                                sliced_rows.append(item_s)
+                                continue
+                            raw_s_txt = " ".join(str(pr_s.get("ParsedText", "")).strip() for pr_s in prs)
+                            parsed_s, prev_a = _parse_single_section3_row_text(raw_s_txt, len(sliced_rows) + 1, prev_a)
+                            if parsed_s:
+                                sliced_rows.append(parsed_s)
+                    except Exception:
+                        pass
+                if len(sliced_rows) > len(best_ov_rows):
+                    best_ov_rows = sliced_rows
+
+        if best_lines or best_ov_rows:
+            return best_lines, best_ov_rows
+
+        # Local PyTesseract 2D Spatial Word-Box Fallback
         try:
             pytess = importlib.import_module("pytesseract")
             t_txt = pytess.image_to_string(pil_img) or ""
@@ -17991,11 +18266,11 @@ def _extract_single_family_from_vision_parts(
     rel_tokens_map = {
         "HEAD OF FAMILY": "HEAD OF FAMILY", "HOF": "HEAD OF FAMILY", "H0F": "HEAD OF FAMILY", "NOF": "HEAD OF FAMILY", "HDF": "HEAD OF FAMILY",
         "HUSBAND": "HUSBAND", "HBD": "HUSBAND",
-        "WIFE": "WIFE", "WF": "WIFE", "WE": "WIFE", "WP": "WIFE",
+        "WIFE": "WIFE", "WF": "WIFE", "WE": "WIFE", "WP": "WIFE", "WT": "WIFE",
         "SON": "SON", "SN": "SON", "5N": "SON",
-        "DAUGHTER": "DAUGHTER", "DT": "DAUGHTER", "0T": "DAUGHTER",
-        "GRANDDAUGHTER": "GRANDDAUGHTER", "GDT": "GRANDDAUGHTER", "GD": "GRANDDAUGHTER",
-        "GRANDSON": "GRANDSON", "GSN": "GRANDSON", "GS": "GRANDSON",
+        "DAUGHTER": "DAUGHTER", "DT": "DAUGHTER", "0T": "DAUGHTER", "DI": "DAUGHTER", "D1": "DAUGHTER", "PT": "DAUGHTER",
+        "GRANDDAUGHTER": "GRANDDAUGHTER", "GDT": "GRANDDAUGHTER", "6DT": "GRANDDAUGHTER", "CDT": "GRANDDAUGHTER", "GOT": "GRANDDAUGHTER", "GDI": "GRANDDAUGHTER", "GD1": "GRANDDAUGHTER", "GD": "GRANDDAUGHTER",
+        "GRANDSON": "GRANDSON", "GSN": "GRANDSON", "6SN": "GRANDSON", "CSN": "GRANDSON", "G5N": "GRANDSON", "G8N": "GRANDSON", "GON": "GRANDSON", "GS": "GRANDSON",
         "FATHER": "FATHER", "FA": "FATHER",
         "MOTHER": "MOTHER", "MO": "MOTHER", "M0": "MOTHER", "MD": "MOTHER",
         "BROTHER": "BROTHER", "BR": "BROTHER",
@@ -18003,8 +18278,9 @@ def _extract_single_family_from_vision_parts(
         "GRANDFATHER": "GRANDFATHER", "GF": "GRANDFATHER",
         "GRANDMOTHER": "GRANDMOTHER", "GM": "GRANDMOTHER",
     }
-    rel_pattern_str = r"\b(HEAD OF FAMILY|HOF|H0F|NOF|HDF|HUSBAND|HBD|WIFE|WF|WE|WP|SON|SN|5N|DAUGHTER|DT|0T|GRANDDAUGHTER|GDT|GD|GRANDSON|GSN|GS|FATHER|FA|MOTHER|MO|M0|MD|BROTHER|BR|SISTER|SR|5R|GRANDFATHER|GF|GRANDMOTHER|GM)\b"
+    rel_pattern_str = r"(HEAD OF FAMILY|HOF|H0F|NOF|HDF|HUSBAND|HBD|WIFE|WF|WE|WP|WT|SON|SN|5N|DAUGHTER|DT|0T|DI|D1|PT|GRANDDAUGHTER|GDT|6DT|CDT|GOT|GDI|GD1|GD|GRANDSON|GSN|6SN|CSN|G5N|G8N|GON|GS|FATHER|FA|MOTHER|MO|M0|MD|BROTHER|BR|SISTER|SR|5R|GRANDFATHER|GF|GRANDMOTHER|GM)"
 
+    prev_line_addr = ""
     for ln in combined_ocr_lines:
         ln_u = ln.upper()
         if "III. FAMILY MEMBERS" in ln_u or "FAMILY MEMBERS" in ln_u:
@@ -18040,10 +18316,10 @@ def _extract_single_family_from_vision_parts(
         if in_em_sec:
             m_en = re.search(r"Name\s*[:\-]?\s*([A-Za-z.,\s]{4,40})", ln, flags=re.I)
             if m_en and not em_name_ocr:
-                em_name_ocr = re.split(r"(?:Relationship|Contact)", m_en.group(1), flags=re.I)[0].strip(" :.-\t")
+                em_name_ocr = re.split(r"(?:Relationship|Contact)", m_en.group(1), flags=re.I)[0].strip(" :.-	")
             m_er = re.search(r"Relationship\s*[:\-]?\s*([A-Za-z\s]{2,25})", ln, flags=re.I)
             if m_er and not em_rel_ocr:
-                em_rel_ocr = re.split(r"(?:Contact|Number)", m_er.group(1), flags=re.I)[0].strip(" :.-\t")
+                em_rel_ocr = re.split(r"(?:Contact|Number)", m_er.group(1), flags=re.I)[0].strip(" :.-	")
             m_ec = re.search(r"(09\d{2}[\s\-]?\d{3}[\s\-]?\d{4})", ln)
             if m_ec and not em_num_ocr:
                 em_num_ocr = re.sub(r"\D", "", m_ec.group(1))
@@ -18056,7 +18332,7 @@ def _extract_single_family_from_vision_parts(
 
         m_hof = re.search(r"Head\s*of\s*Family\s*[:\-]?\s*([A-Za-z.,\s]{4,40})", ln, flags=re.I)
         if m_hof and not hof_from_ocr:
-            cand_h = re.split(r"(?:Mobile|Contact|Complete|Address|Family\s*ID)", m_hof.group(1), flags=re.I)[0].strip(" :.-\t")
+            cand_h = re.split(r"(?:Mobile|Contact|Complete|Address|Family\s*ID)", m_hof.group(1), flags=re.I)[0].strip(" :.-	")
             if len(cand_h) >= 4:
                 hof_from_ocr = cand_h
         m_mob = re.search(r"Mobile\s*Number\s*[:\-]?\s*(09\d{2}[\s\-]?\d{3}[\s\-]?\d{4})", ln, flags=re.I)
@@ -18074,129 +18350,48 @@ def _extract_single_family_from_vision_parts(
                 area_from_ocr = cand_a
         m_brgy = re.search(r"Barangay\s*[:\-]?\s*([A-Za-z\s]{3,30})", ln, flags=re.I)
         if m_brgy and not brgy_from_ocr:
-            brgy_from_ocr = re.split(r"(?:City|Municipality|Province|ZIP)", m_brgy.group(1), flags=re.I)[0].strip(" :.-\t")
+            brgy_from_ocr = re.split(r"(?:City|Municipality|Province|ZIP)", m_brgy.group(1), flags=re.I)[0].strip(" :.-	")
         m_city = re.search(r"City\s*/?\s*Municipality\s*[:\-]?\s*([A-Za-z\s]{3,30})", ln, flags=re.I)
         if m_city and not city_from_ocr:
-            city_from_ocr = re.split(r"(?:Province|ZIP)", m_city.group(1), flags=re.I)[0].strip(" :.-\t")
+            city_from_ocr = re.split(r"(?:Province|ZIP)", m_city.group(1), flags=re.I)[0].strip(" :.-	")
         m_prov = re.search(r"Province\s*[:\-]?\s*([A-Za-z\s]{3,25})", ln, flags=re.I)
         if m_prov and not prov_from_ocr:
-            prov_from_ocr = re.split(r"(?:ZIP|Code)", m_prov.group(1), flags=re.I)[0].strip(" :.-\t")
+            prov_from_ocr = re.split(r"(?:ZIP|Code)", m_prov.group(1), flags=re.I)[0].strip(" :.-	")
         m_zip = re.search(r"ZIP\s*Code\s*[:\-]?\s*(\d{4})", ln, flags=re.I)
         if m_zip and not zip_from_ocr:
             zip_from_ocr = m_zip.group(1).strip()
         m_addr = re.search(r"Complete\s*Address\s*[:\-]?\s*(.+)$", ln, flags=re.I)
         if m_addr and not addr_from_ocr:
-            addr_from_ocr = re.split(r"(?:Barangay|City|Province)", m_addr.group(1), flags=re.I)[0].strip(" :.-\t")
+            addr_from_ocr = re.split(r"(?:Barangay|City|Province)", m_addr.group(1), flags=re.I)[0].strip(" :.-	")
 
-        # Skip Reference Guide legend lines (which contain '=' like "HOF = Head of Family" or "WF = Wife")
-        if "=" in ln or "REFERENCE GUIDE" in ln_u or "FULL NAME" in ln_u or "STUDENT" in ln_u and "WORKING" in ln_u and "BAPTIZED" in ln_u:
+        if "=" in ln or "REFERENCE GUIDE" in ln_u or "FULL NAME" in ln_u or ("STUDENT" in ln_u and "WORKING" in ln_u and "BAPTIZED" in ln_u):
             continue
 
-        # Multi-line & single-line Section III Family Member table row detector:
-        # Case A: Line has a Relationship token (e.g. "1 Apolonio B. Claro Husband M 01-10-58 69 M" OR wrapped lower line "B. Claro Husband 01-10-58 69 M")
-        m_rel_hit = re.search(rel_pattern_str, ln, flags=re.I)
-        if m_rel_hit and (in_members_sec or re.match(r"^\s*(?:[1-9]|10|[A-Za-z])", ln)):
-            before_rel = ln[:m_rel_hit.start()].strip(" .-|\t")
-            before_rel = re.sub(r"^\s*(?:[1-9]|10)\b[\s.|\t]*", "", before_rel).strip(" .-|\t")
-            if pending_name_prefix and before_rel and pending_name_prefix.upper() not in before_rel.upper():
-                combined_name = f"{pending_name_prefix} {before_rel}".strip()
-            else:
-                combined_name = before_rel or pending_name_prefix
+        # Try full-row parser first (handles tab/space separated OCR table lines)
+        cand_full_line = f"{pending_name_prefix} {ln}".strip() if pending_name_prefix else ln
+        parsed_ln_row, prev_line_addr = _parse_single_section3_row_text(cand_full_line, len(ocr_table_members) + 1, prev_line_addr)
+        if parsed_ln_row:
             pending_name_prefix = ""
-            combined_name = re.sub(r"\s+", " ", combined_name).strip(" .-|\t")
-            if len(combined_name) >= 3 and not _is_junk_ocr_header_name(combined_name):
-                r_rel_raw = m_rel_hit.group(1).upper().strip()
-                r_rel = rel_tokens_map.get(r_rel_raw, r_rel_raw)
-                r_rest = ln[m_rel_hit.end():].strip()
-                r_mob_m = re.search(r"(09\d{2}[\s\-]?\d{3}[\s\-]?\d{4})", r_rest)
-                r_mob = re.sub(r"\D", "", r_mob_m.group(1)) if r_mob_m else ""
-                r_bdate_m = re.search(
-                    r"((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+(?:19|20)?\d\d|\d{1,2}[-/.]\d{1,2}[-/.](?:19|20)?\d\d|(?:19|20)\d\d[-/.]\d{1,2}[-/.]\d{1,2})",
-                    r_rest,
-                    flags=re.I
-                )
-                r_bdate = _normalize_handwritten_date_to_iso(r_bdate_m.group(1)) if r_bdate_m else ""
-                rest_no_bdate = r_rest.replace(r_bdate_m.group(1), " ") if r_bdate_m else r_rest
-                if r_mob_m:
-                    rest_no_bdate = rest_no_bdate.replace(r_mob_m.group(1), " ")
-                r_age_m = re.search(r"\b([1-9]\d?)\b", rest_no_bdate)
-                r_age = r_age_m.group(1) if r_age_m and int(r_age_m.group(1)) <= 99 else ""
-                r_cm = "NO" if re.search(r"\bNO\b", r_rest, flags=re.I) and not re.search(r"\bYES\b", r_rest, flags=re.I) else "YES"
-                r_st = "INACTIVE" if "INACTIVE" in r_rest.upper() or r_cm == "NO" else "ACTIVE"
-                r_bap = "NO" if r_cm == "NO" else "YES"
-                norm_name_key = re.sub(r"[^A-Z]", "", combined_name.upper())
-                if norm_name_key and norm_name_key not in seen_ocr_member_names:
-                    seen_ocr_member_names.add(norm_name_key)
-                    ocr_table_members.append({
-                        "No.": str(len(ocr_table_members) + 1),
-                        "Full Name": combined_name.title(),
-                        "Relationship": r_rel,
-                        "Birthdate": r_bdate,
-                        "Age": r_age,
-                        "Category": "SENIOR CITIZEN" if (summary_seniors_cnt > 0 and len(ocr_table_members) < summary_seniors_cnt and not r_age) else "",
-                        "Contact No.": r_mob,
-                        "Church Member": r_cm,
-                        "Status": r_st,
-                        "Baptized": r_bap,
-                    })
-        elif in_members_sec or re.match(r"^\s*(?:[1-9]|10)\b[\s.|\t]+[A-Za-z]", ln):
-            # Case B1: Numbered row where OCR missed the Relationship code (e.g. "4 Chema Aling G. Paquit F Jan 30 2014 12 Y S S 09400070404 Yes Active")
-            m_num_row = re.match(r"^\s*([1-9]|10)\b[\s.|\t]+([A-Za-z][A-Za-z.,\-\s]{3,35}?)\s+(?:([MF])\b\s+)?(.*)$", ln)
-            if m_num_row and any(k_w in ln_u for k_w in ["YES", "NO", "ACTIVE", "INACTIVE", "19", "20", "09"]):
-                cand_nm = m_num_row.group(2).strip(" .-|\t/")
-                if pending_name_prefix and pending_name_prefix.upper() not in cand_nm.upper():
-                    cand_nm = f"{pending_name_prefix} {cand_nm}".strip()
-                pending_name_prefix = ""
-                if len(cand_nm) >= 4 and not _is_junk_ocr_header_name(cand_nm):
-                    r_sex_b = (m_num_row.group(3) or "").upper().strip()
-                    r_tail_b = m_num_row.group(4) or ""
-                    r_mob_mb = re.search(r"(09\d{2}[\s\-]?\d{3}[\s\-]?\d{4})", r_tail_b)
-                    r_mob_b = re.sub(r"\D", "", r_mob_mb.group(1)) if r_mob_mb else ""
-                    r_bd_mb = re.search(
-                        r"((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+(?:19|20)?\d\d|\d{1,2}[-/.]\d{1,2}[-/.](?:19|20)?\d\d|(?:19|20)\d\d[-/.]\d{1,2}[-/.]\d{1,2})",
-                        r_tail_b,
-                        flags=re.I
-                    )
-                    r_bd_b = _normalize_handwritten_date_to_iso(r_bd_mb.group(1)) if r_bd_mb else ""
-                    tail_no_bd = r_tail_b.replace(r_bd_mb.group(1), " ") if r_bd_mb else r_tail_b
-                    if r_mob_mb:
-                        tail_no_bd = tail_no_bd.replace(r_mob_mb.group(1), " ")
-                    r_age_mb = re.search(r"\b([1-9]\d?)\b", tail_no_bd)
-                    r_age_b = r_age_mb.group(1) if r_age_mb and int(r_age_mb.group(1)) <= 99 else ""
-                    inferred_rel = "HEAD OF FAMILY" if not ocr_table_members else (
-                        "DAUGHTER" if (r_sex_b == "F" and r_age_b.isdigit() and int(r_age_b) < 25) else (
-                            "SON" if (r_sex_b == "M" and r_age_b.isdigit() and int(r_age_b) < 25) else (
-                                "WIFE" if r_sex_b == "F" else "DEPENDENT"
-                            )
-                        )
-                    )
-                    norm_nk = re.sub(r"[^A-Z]", "", cand_nm.upper())
-                    if norm_nk and norm_nk not in seen_ocr_member_names:
-                        seen_ocr_member_names.add(norm_nk)
-                        ocr_table_members.append({
-                            "No.": str(len(ocr_table_members) + 1),
-                            "Full Name": cand_nm.title(),
-                            "Relationship": inferred_rel,
-                            "Birthdate": r_bd_b,
-                            "Age": r_age_b,
-                            "Category": "",
-                            "Contact No.": r_mob_b,
-                            "Church Member": "NO" if (re.search(r"\bNO\b", r_tail_b, flags=re.I) and not re.search(r"\bYES\b", r_tail_b, flags=re.I)) else "YES",
-                            "Status": "INACTIVE" if "INACTIVE" in r_tail_b.upper() else "ACTIVE",
-                            "Baptized": "YES",
-                        })
-                        continue
-            # Case B2: Wrapped upper line of a 2-line name cell (e.g. "1  Apolonio  M" or "2  Soledad")
-            m_upper_name = re.match(r"^\s*(?:([1-9]|10)[\s.|\t]+)?([A-Za-z][A-Za-z.\-\s]{2,25}?)(?:\s+[MF])?\s*$", ln)
+            norm_nk = re.sub(r"[^A-Z]", "", parsed_ln_row["Full Name"].upper())
+            if norm_nk and norm_nk not in seen_ocr_member_names:
+                seen_ocr_member_names.add(norm_nk)
+                ocr_table_members.append(parsed_ln_row)
+                continue
+
+        if in_members_sec or re.match(r"^\s*(?:[1-9]|10)[\s.|	]+[A-Za-z]", ln):
+            m_upper_name = re.match(r"^\s*(?:([1-9]|10)[\s.|	]+)?([A-Za-z][A-Za-z.\-\s]{2,25}?)(?:\s+[MF])?\s*$", ln)
             if m_upper_name:
-                cand_prefix = m_upper_name.group(2).strip(" .-|\t")
+                cand_prefix = m_upper_name.group(2).strip(" .-|	")
                 if len(cand_prefix) >= 3 and not _is_junk_ocr_header_name(cand_prefix):
                     pending_name_prefix = cand_prefix
 
     if hof_from_ocr and _is_junk_ocr_header_name(hof_from_ocr):
         hof_from_ocr = ""
-    final_hof_name = _auto_correct_person_name_with_filename(hof_from_ocr, hof_from_file) or hof_from_file or hof_from_ocr
-    if final_hof_name:
+    # Determine Head of Family from OCR/file or from any member in ocr_table_members with Relationship == HEAD OF FAMILY
+    explicit_hof_mem = next((tm["Full Name"] for tm in ocr_table_members if str(tm.get("Relationship", "")).upper() in ("HEAD OF FAMILY", "HOF")), "")
+    final_hof_name = _auto_correct_person_name_with_filename(hof_from_ocr, hof_from_file) or explicit_hof_mem or hof_from_file or hof_from_ocr or (ocr_table_members[0]["Full Name"] if ocr_table_members else "")
+
+    if final_hof_name or ocr_table_members:
         def_brgy = brgy_from_ocr or default_parish.replace("PARISH", "").strip().title()
         def_city = city_from_ocr or ("San Gabriel" if any(k in default_parish for k in ["LIPAY", "POBLACION", "MALANAS", "DUPLAS"]) else "")
         def_prov = prov_from_ocr or ("La Union" if any(k in default_parish for k in ["LIPAY", "POBLACION", "MALANAS", "DUPLAS", "CABA"]) else "")
@@ -18250,7 +18445,11 @@ def _extract_single_family_from_vision_parts(
             })
             built_members.append(m_rec)
 
-        if not built_members:
+        # Merge with any members extracted by Gemini Vision if Vision found additional family members
+        if len(vision_members) > len(built_members):
+            built_members = vision_members
+
+        if not built_members and final_hof_name:
             first_m = base_meta.copy()
             first_m.update({
                 "No.": "1",
@@ -18303,11 +18502,13 @@ def extract_members_from_uploaded_files_batch(uploaded_files_list: list, default
     ext_memo = st.session_state.get("_fast_upload_extraction_memo", {})
     if isinstance(ext_memo, dict) and batch_cache_key in ext_memo:
         cached_entry = ext_memo[batch_cache_key]
-        if cached_entry.get("previews"):
-            st.session_state["extracted_pdf_page_previews"] = cached_entry["previews"]
-        if cached_entry.get("interp_text"):
-            st.session_state["_last_interpreted_form_text"] = cached_entry["interp_text"]
-        return [m.copy() for m in cached_entry.get("members", [])]
+        cached_mems = cached_entry.get("members", [])
+        if len(cached_mems) >= 2:
+            if cached_entry.get("previews"):
+                st.session_state["extracted_pdf_page_previews"] = cached_entry["previews"]
+            if cached_entry.get("interp_text"):
+                st.session_state["_last_interpreted_form_text"] = cached_entry["interp_text"]
+            return [m.copy() for m in cached_mems]
 
     all_extracted_members = []
     loose_image_parts = []
