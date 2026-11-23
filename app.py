@@ -33,7 +33,7 @@ import openpyxl
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
-from PIL import Image
+from PIL import Image, ImageOps, ImageEnhance
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
@@ -1643,7 +1643,7 @@ def _read_raw_toml_secret_from_disk(key_name: str) -> str:
                 with open(p_cand, "r", encoding="utf-8", errors="ignore") as f:
                     txt = f.read()
                 if ctrl_char in txt:
-                    repaired = re.sub(ctrl_char + r"\s*['\"](1//[^'\"]+)['\"]", r'GMAIL_REFRESH_TOKEN = "\1"', txt)
+                    repaired = re.sub(ctrl_char + r"\s*['\"](1//[^'\"]+)['\"]", r'GMAIL_REFRESH_TOKEN = "\\1"', txt)
                     if repaired != txt:
                         txt = repaired
                         try:
@@ -1719,7 +1719,7 @@ def persist_drive_refresh_token_everywhere(new_rt: str, client_id: str = "", cli
             with open(".env", "r", encoding="utf-8", errors="ignore") as f:
                 e_txt = f.read()
             if ctrl_char in e_txt:
-                e_txt = re.sub(ctrl_char + r"\s*['\"]?(1//[^'\"\n]+)['\"]?", r'GMAIL_REFRESH_TOKEN="\1"', e_txt)
+                e_txt = re.sub(ctrl_char + r"\s*['\"]?(1//[^'\"\n]+)['\"]?", r'GMAIL_REFRESH_TOKEN="\\1"', e_txt)
             if re.search(r"^\s*GMAIL_REFRESH_TOKEN\s*=", e_txt, flags=re.M):
                 e_txt = re.sub(
                     r"^(\s*GMAIL_REFRESH_TOKEN\s*=\s*).*$",
@@ -16198,6 +16198,53 @@ def _extract_clean_person_name_from_filename(filename: str) -> str:
     cand_name = " ".join(formatted_parts).strip()
     return cand_name if len(cand_name) >= 4 else ""
 
+def _enhance_form_image_for_reading(pil_im: Image.Image) -> Image.Image:
+    """Enhances contrast, lighting balance, and sharpness on scanned or photographed forms
+    so faint handwritten text, dates, and table codes are read accurately by Gemini Vision and OCR."""
+    try:
+        rgb = pil_im.convert("RGB")
+        rgb = ImageOps.autocontrast(rgb, cutoff=0.4)
+        rgb = ImageEnhance.Contrast(rgb).enhance(1.28)
+        rgb = ImageEnhance.Sharpness(rgb).enhance(1.55)
+        return rgb
+    except Exception:
+        return pil_im.convert("RGB")
+
+def _preprocess_form_pil_images(imgs: list[Image.Image]) -> list[Image.Image]:
+    """Unified orientation, EXIF transpose, and resolution normalization applied consistently
+    to EVERY uploaded image (.jpg, .png, .webp) AND every rendered PDF page (.pdf)."""
+    optimized_imgs = []
+    is_multi_page_form = (len(imgs) >= 2)
+    for im in imgs:
+        try:
+            im = ImageOps.exif_transpose(im).convert("RGB")
+        except Exception:
+            im = im.convert("RGB")
+        w, h = im.size
+        # Rotate sideways landscape CTG scans (w < h) to upright landscape
+        if (is_multi_page_form and w < h) or (not is_multi_page_form and w < h * 0.85 and h > 900):
+            im = im.rotate(90, expand=True)
+            w, h = im.size
+        if max(w, h) > 1400:
+            scale = 1400.0 / float(max(w, h))
+            im = im.resize((int(w * scale), int(h * scale)), Image.Resampling.BICUBIC)
+        optimized_imgs.append(im)
+
+    # Auto-detect if Page 1 (and the form batch) is upside-down (180 degrees)
+    if optimized_imgs:
+        try:
+            p1_gray = optimized_imgs[0].convert("L")
+            pw, ph = p1_gray.size
+            top_strip = p1_gray.crop((int(pw * 0.08), int(ph * 0.06), int(pw * 0.92), int(ph * 0.36)))
+            bot_strip = p1_gray.crop((int(pw * 0.08), int(ph * 0.64), int(pw * 0.92), int(ph * 0.94)))
+            top_dark = sum(1 for px in top_strip.getdata() if px < 210)
+            bot_dark = sum(1 for px in bot_strip.getdata() if px < 210)
+            if bot_dark > top_dark * 1.25:
+                optimized_imgs = [im_p.rotate(180, expand=True) for im_p in optimized_imgs]
+        except Exception:
+            pass
+    return optimized_imgs
+
 def extract_page_images_from_pdf_bytes(raw_pdf: bytes) -> list[Image.Image]:
     """
     Universal 4-Tier PDF-to-PIL-Images extractor (1 PDF = 1 Family multi-page form):
@@ -16282,34 +16329,7 @@ def extract_page_images_from_pdf_bytes(raw_pdf: bytes) -> list[Image.Image]:
                 pass
             pos = eoi + 2
 
-    # Auto-orient sideways scanned pages (w < h on 4-page landscape forms) and auto-detect upside-down (180 deg) scans!
-    optimized_imgs = []
-    is_multi_page_form = (len(imgs) >= 2)
-    for idx_p, im in enumerate(imgs):
-        w, h = im.size
-        if is_multi_page_form and w < h:
-            im = im.rotate(90, expand=True)
-            w, h = im.size
-        if max(w, h) > 1280:
-            scale = 1280.0 / float(max(w, h))
-            im = im.resize((int(w * scale), int(h * scale)), Image.Resampling.BICUBIC)
-        optimized_imgs.append(im)
-
-    # Auto-detect if Page 1 (and the 4-page scanner batch) is upside-down (180 degrees):
-    # On an upright CTG Page 1, the header, logo, and Sections I & II occupy the top 65%, while the bottom 30% is blank white paper.
-    if optimized_imgs:
-        try:
-            p1_gray = optimized_imgs[0].convert("L")
-            pw, ph = p1_gray.size
-            top_strip = p1_gray.crop((int(pw * 0.08), int(ph * 0.06), int(pw * 0.92), int(ph * 0.36)))
-            bot_strip = p1_gray.crop((int(pw * 0.08), int(ph * 0.64), int(pw * 0.92), int(ph * 0.94)))
-            top_dark = sum(1 for px in top_strip.getdata() if px < 210)
-            bot_dark = sum(1 for px in bot_strip.getdata() if px < 210)
-            if bot_dark > top_dark * 1.25:
-                optimized_imgs = [im_p.rotate(180, expand=True) for im_p in optimized_imgs]
-        except Exception:
-            pass
-    return optimized_imgs
+    return _preprocess_form_pil_images(imgs)
 
 def _parse_multi_section_or_flat_excel_members(file_bytes: bytes, filename: str, default_parish: str) -> list[dict]:
     """Parses both:
@@ -16604,53 +16624,71 @@ def _extract_single_family_from_vision_parts(
     valid_keys = get_valid_gemini_keys()
     fn_hint = _extract_clean_person_name_from_filename(source_filename)
 
-    # Build a unified high-clarity crop of the Section III Family Members table across BOTH Page 2 (rows 1-2) AND Page 3 (rows 3-10 + IV. Summary)
-    # so both Gemini Vision and the fast single-call OCR engine read all family members across Page 2 and Page 3 without missing any rows!
-    enhanced_vision_parts = list(vision_parts or [])
-    p2_table_crop_pil = None
-    if pil_images_for_ocr and len(pil_images_for_ocr) >= 2:
+    # Enhance all pages/images consistently for crisp handwriting legibility
+    enhanced_pil_list = [_enhance_form_image_for_reading(im) for im in (pil_images_for_ocr or [])]
+    enhanced_vision_parts = []
+    for e_im in enhanced_pil_list:
         try:
-            p2_im = pil_images_for_ocr[1]
-            pw2, ph2 = p2_im.size
-            p2_crop = p2_im.crop((0, int(ph2 * 0.46), pw2, int(ph2 * 0.85)))
-            crops_to_join = [p2_crop]
-            if len(pil_images_for_ocr) >= 3:
-                p3_im = pil_images_for_ocr[2]
-                pw3, ph3 = p3_im.size
-                p3_crop = p3_im.crop((0, int(ph3 * 0.04), pw3, int(ph3 * 0.88)))
-                if p3_crop.width != p2_crop.width:
-                    p3_crop = p3_crop.resize((p2_crop.width, int(p3_crop.height * (p2_crop.width / float(p3_crop.width)))), Image.Resampling.BICUBIC)
-                crops_to_join.append(p3_crop)
+            eb = io.BytesIO()
+            e_im.save(eb, format="JPEG", quality=88)
+            enhanced_vision_parts.append(types.Part.from_bytes(data=eb.getvalue(), mime_type="image/jpeg"))
+        except Exception:
+            pass
+    if not enhanced_vision_parts:
+        enhanced_vision_parts = list(vision_parts or [])
+
+    # Build high-clarity zoomed crops of the Section III Family Members table for BOTH multi-page forms AND single-image uploads
+    p2_table_crop_pil = None
+    if enhanced_pil_list:
+        try:
+            if len(enhanced_pil_list) >= 2:
+                p2_im = enhanced_pil_list[1]
+                pw2, ph2 = p2_im.size
+                p2_crop = p2_im.crop((0, int(ph2 * 0.44), pw2, int(ph2 * 0.88)))
+                crops_to_join = [p2_crop]
+                if len(enhanced_pil_list) >= 3:
+                    p3_im = enhanced_pil_list[2]
+                    pw3, ph3 = p3_im.size
+                    p3_crop = p3_im.crop((0, int(ph3 * 0.04), pw3, int(ph3 * 0.88)))
+                    if p3_crop.width != p2_crop.width:
+                        p3_crop = p3_crop.resize((p2_crop.width, int(p3_crop.height * (p2_crop.width / float(p3_crop.width)))), Image.Resampling.BICUBIC)
+                    crops_to_join.append(p3_crop)
+            else:
+                p1_im = enhanced_pil_list[0]
+                pw1, ph1 = p1_im.size
+                crops_to_join = [p1_im.crop((0, int(ph1 * 0.30), pw1, int(ph1 * 0.95)))]
             tot_ch = sum(c.height for c in crops_to_join) + 8 * (len(crops_to_join) - 1)
-            joined_tbl = Image.new("RGB", (p2_crop.width, tot_ch), (255, 255, 255))
+            joined_tbl = Image.new("RGB", (crops_to_join[0].width, max(1, tot_ch)), (255, 255, 255))
             cy = 0
             for c_im in crops_to_join:
                 joined_tbl.paste(c_im, (0, cy))
                 cy += c_im.height + 8
             p2_table_crop_pil = joined_tbl
             cb = io.BytesIO()
-            joined_tbl.save(cb, format="JPEG", quality=88)
+            joined_tbl.save(cb, format="JPEG", quality=90)
             enhanced_vision_parts.append(types.Part.from_bytes(data=cb.getvalue(), mime_type="image/jpeg"))
         except Exception:
             p2_table_crop_pil = None
 
     if enhanced_vision_parts and valid_keys:
         strict_vision_prompt = (
-            f"Extract ALL data from this Church of the Temple of God Official Family Information Form (Source file: '{source_filename}', Head of Family spelling hint from filename: '{fn_hint}'). "
+            f"Read and interpret ALL printed and handwritten text from this Church of the Temple of God Official Family Information Form (Source file: '{source_filename}', Head of Family spelling hint from filename: '{fn_hint}'). "
             "Expand any abbreviations using the Reference Guide "
-            "(HOF=HEAD OF FAMILY, HBD=HUSBAND, WF=WIFE, SN=SON, DT=DAUGHTER, FA=FATHER, MO=MOTHER, BR=BROTHER, SR=SISTER, GF=GRANDFATHER, GM=GRANDMOTHER, "
+            "(HOF=HEAD OF FAMILY, HBD=HUSBAND, WF=WIFE, SN=SON, DT=DAUGHTER, FA=FATHER, MO=MOTHER, BR=BROTHER, SR=SISTER, GF=GRANDFATHER, GM=GRANDMOTHER, OT=OTHER, "
             "M=MALE, F=FEMALE, K=KIDS, Y=YOUTH, A=ADULT, SC=SENIOR CITIZEN, S=SINGLE/STUDENT, M=MARRIED, W=WIDOWED/WORKING, SP=SEPARATED, N=NONE/NO, Y=YES, A=ACTIVE, I=INACTIVE). "
-            "Carefully read ALL pages (Page 1, Page 2, Page 3, Page 4, plus the zoomed Section III Family Members Table crop): "
-            "1. Page 1: I. Parish Info (Parish, Area/Zone, Cell Group, Collected By, Date Accomplished), II. Household Info (Family ID, Head of Family, Mobile Number, Complete Address, Barangay, City/Municipality, Province, ZIP Code). "
-            "2. Page 2 & Page 3: III. Family Members Table — extract EVERY numbered handwritten row (No. 1, 2, 3...) including Full Name (note: a member's first name may be written on the top line of the cell and their middle initial + last name on the bottom line of the same cell!), Relationship, Sex, Birthdate (YYYY-MM-DD; convert 2-digit birth years like 01-10-58 to 1958-01-10 and 09-11-60 to 1960-09-11), Age, Category, Civil Status, Student/Working, Contact No., Church Member (YES/NO), Status (ACTIVE/INACTIVE), Baptized (YES/NO), Baptism Date, and Current Address. "
-            "CRITICAL RULE: Never stop at just 1 member if rows 2, 3, etc. have names written in Section III! Also cross-check IV. Household Summary (Total Family Members) on Page 3 to confirm you extracted all family members. "
-            "3. Page 4: V. Emergency Contact (Name, Relationship, Contact Number), VI. Remarks, and VII. Certification. "
+            "Carefully read ALL pages/images provided (plus the zoomed Section III Family Members Table crop): "
+            "1. I. Parish Info (Parish, Area/Zone, Cell Group, Collected By, Date Accomplished) & II. Household Info (Family ID, Head of Family, Mobile Number, Complete Address, Barangay, City/Municipality, Province, ZIP Code). "
+            "2. III. Family Members Table (across Page 2 AND Page 3 if multi-page) — extract EVERY numbered handwritten row (No. 1, 2, 3, 4...) including Full Name (note: a member's first name may be on the top line of the cell and their middle initial + last name on the bottom line of the same cell!), Relationship, Sex, Birthdate (YYYY-MM-DD; convert 2-digit birth years like 01-10-58 to 1958-01-10 and 09-11-60 to 1960-09-11), Age, Category, Civil Status, Student/Working, Contact No., Church Member (YES/NO), Status (ACTIVE/INACTIVE), Baptized (YES/NO), Baptism Date, and Current Address. "
+            "CRITICAL RULE: Never stop at 1 member if rows 2, 3, 4, etc. have names written in Section III! Check IV. Household Summary (Total Family Members) to verify your count matches. "
+            "3. V. Emergency Contact (Name, Relationship, Contact Number), VI. Remarks, and VII. Certification. "
             'Return ONLY a valid JSON object matching this structure: '
-            '{"parish_info": {"parish": "...", "area": "...", "cell_group": "..."}, '
+            '{"parish_info": {"parish": "...", "area": "...", "cell_group": "...", "collected_by": "...", "date_accomplished": "..."}, '
             '"household": {"family_id": "...", "head_of_family": "...", "mobile_number": "...", "address": "...", "barangay": "...", "city": "...", "province": "...", "zip_code": "..."}, '
+            '"household_summary_total": 0, '
             '"members": [{"no": 1, "name": "...", "relationship": "...", "sex": "...", "birthdate": "...", "age": "...", "category": "...", "civil_status": "...", "student_working": "...", "contact_no": "...", "church_member": "...", "status": "...", "baptized": "...", "baptism_date": "...", "current_address": "..."}], '
             '"emergency_contact": {"name": "...", "relationship": "...", "contact_number": "..."}, '
-            '"remarks": "..."}'
+            '"remarks": "...", '
+            '"interpreted_summary_text": "Concise line-by-line transcription of all handwritten text read from the image(s)"}'
         )
         models_to_try = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash"]
 
@@ -16775,6 +16813,63 @@ def _extract_single_family_from_vision_parts(
                                     "Remarks": rem_val,
                                 }
                                 vision_members.append(_normalize_ctg_form_codes(raw_item))
+                            interp_txt = _clean_cell_str(parsed_json.get("interpreted_summary_text", ""))
+                            if interp_txt:
+                                st.session_state["_last_interpreted_form_text"] = interp_txt
+                            try:
+                                expected_tot = int(parsed_json.get("household_summary_total") or 0)
+                            except Exception:
+                                expected_tot = 0
+                            if expected_tot > len(vision_members) and p2_table_crop_pil is not None:
+                                try:
+                                    cb2 = io.BytesIO()
+                                    p2_table_crop_pil.save(cb2, format="JPEG", quality=92)
+                                    p2_part = types.Part.from_bytes(data=cb2.getvalue(), mime_type="image/jpeg")
+                                    follow_prompt = (
+                                        f"The Household Summary says there are {expected_tot} total family members, but only {len(vision_members)} were extracted so far "
+                                        f"({', '.join(m['Full Name'] for m in vision_members)}). "
+                                        f"Inspect this zoomed Section III Family Members table (including rows 3, 4, 5... on Page 3) and return JSON with ALL {expected_tot} members: "
+                                        '{"members": [{"no": 1, "name": "...", "relationship": "...", "sex": "...", "birthdate": "...", "age": "...", "category": "...", "civil_status": "...", "student_working": "...", "contact_no": "...", "church_member": "...", "status": "...", "baptized": "...", "baptism_date": "...", "current_address": "..."}]}'
+                                    )
+                                    res2 = client.models.generate_content(
+                                        model=m_try,
+                                        contents=[p2_part, follow_prompt],
+                                        config=types.GenerateContentConfig(temperature=0.1, response_mime_type="application/json")
+                                    )
+                                    raw2 = re.sub(r"^```(?:json)?\s*|\s*```$", "", (res2.text or "").strip(), flags=re.I).strip()
+                                    if "{" in raw2 and "}" in raw2:
+                                        raw2 = raw2[raw2.find("{"):raw2.rfind("}") + 1]
+                                    j2 = json.loads(raw2)
+                                    extra_mems = j2.get("members", []) if isinstance(j2, dict) else []
+                                    seen_vm = {re.sub(r"[^A-Z]", "", m["Full Name"].upper()) for m in vision_members}
+                                    for em in extra_mems:
+                                        if not isinstance(em, dict):
+                                            continue
+                                        enm = _get_m_name(em)
+                                        ek = re.sub(r"[^A-Z]", "", enm.upper())
+                                        if enm and ek not in seen_vm:
+                                            seen_vm.add(ek)
+                                            base_cp = vision_members[0].copy()
+                                            base_cp.update({
+                                                "No.": str(len(vision_members) + 1),
+                                                "Full Name": enm,
+                                                "Relationship": _clean_cell_str(em.get("relationship", em.get("Relationship", "DEPENDENT"))),
+                                                "Sex": _clean_cell_str(em.get("sex", em.get("Sex", "MALE"))),
+                                                "Birthdate": _clean_cell_str(em.get("birthdate", em.get("Birthdate", ""))),
+                                                "Age": _clean_cell_str(em.get("age", em.get("Age", ""))),
+                                                "Category": _clean_cell_str(em.get("category", em.get("Category", ""))),
+                                                "Civil Status": _clean_cell_str(em.get("civil_status", em.get("Civil Status", "SINGLE"))),
+                                                "Student/Working": _clean_cell_str(em.get("student_working", em.get("Student/Working", "NONE"))),
+                                                "Contact No.": _clean_cell_str(em.get("contact_no", em.get("Contact No.", ""))),
+                                                "Church Member": _clean_cell_str(em.get("church_member", em.get("Church Member", "YES"))),
+                                                "Status": _clean_cell_str(em.get("status", em.get("Status", "ACTIVE"))),
+                                                "Baptized": _clean_cell_str(em.get("baptized", em.get("Baptized", "YES"))),
+                                                "Baptism Date": _clean_cell_str(em.get("baptism_date", em.get("Baptism Date", ""))),
+                                                "Current Address (If living separately)": _clean_cell_str(em.get("current_address", "")) or base_cp.get("Current Address (If living separately)", ""),
+                                            })
+                                            vision_members.append(_normalize_ctg_form_codes(base_cp))
+                                except Exception:
+                                    pass
                             if vision_members:
                                 return _auto_clean_and_complete_family_records(vision_members, default_parish, source_filename)
                     except Exception as ex_v:
@@ -16823,28 +16918,32 @@ def _extract_single_family_from_vision_parts(
 
     combined_ocr_lines = []
     for pil_img in ocr_target_images:
-        try:
-            ob = io.BytesIO()
-            pil_img.save(ob, format="JPEG", quality=82)
-            b64_im = "data:image/jpeg;base64," + base64.b64encode(ob.getvalue()).decode("utf-8")
-            r_ocr = requests.post(
-                "https://api.ocr.space/parse/image",
-                data={
-                    "apikey": "helloworld",
-                    "base64Image": b64_im,
-                    "language": "eng",
-                    "OCREngine": "2",
-                    "isTable": "true",
-                    "scale": "true"
-                },
-                timeout=7
-            )
-            if r_ocr.status_code == 200:
-                txt_page = "\n".join(str(pr.get("ParsedText", "")).strip() for pr in r_ocr.json().get("ParsedResults", []))
-                if txt_page.strip():
-                    combined_ocr_lines.extend([ln.strip() for ln in txt_page.splitlines() if ln.strip()])
-        except Exception:
-            pass
+        for eng_id in ("2", "1"):
+            try:
+                ob = io.BytesIO()
+                _enhance_form_image_for_reading(pil_img).save(ob, format="JPEG", quality=85)
+                b64_im = "data:image/jpeg;base64," + base64.b64encode(ob.getvalue()).decode("utf-8")
+                r_ocr = requests.post(
+                    "https://api.ocr.space/parse/image",
+                    data={
+                        "apikey": "helloworld",
+                        "base64Image": b64_im,
+                        "language": "eng",
+                        "OCREngine": eng_id,
+                        "isTable": "true",
+                        "scale": "true"
+                    },
+                    timeout=8
+                )
+                if r_ocr.status_code == 200:
+                    txt_page = "\n".join(str(pr.get("ParsedText", "")).strip() for pr in r_ocr.json().get("ParsedResults", []))
+                    if txt_page.strip():
+                        combined_ocr_lines.extend([ln.strip() for ln in txt_page.splitlines() if ln.strip()])
+                        break
+            except Exception:
+                pass
+    if combined_ocr_lines:
+        st.session_state["_last_interpreted_form_text"] = "\n".join(combined_ocr_lines)
 
     up_ocr = "\n".join(combined_ocr_lines).upper()
     fn_first_up = fn_hint.split()[0].upper() if fn_hint and fn_hint.split() else ""
@@ -17178,18 +17277,22 @@ def extract_members_from_uploaded_files_batch(uploaded_files_list: list, default
         else:
             loose_image_names.append(f_name)
             try:
-                pil_rgb = Image.open(io.BytesIO(f_bytes)).convert("RGB")
-                w, h = pil_rgb.size
-                if max(w, h) > 1280:
-                    scale = 1280.0 / float(max(w, h))
-                    pil_rgb = pil_rgb.resize((int(w * scale), int(h * scale)), Image.Resampling.BICUBIC)
+                pil_rgb = Image.open(io.BytesIO(f_bytes))
+                loose_pil_images.append(pil_rgb)
+            except Exception:
+                pass
+
+    if loose_pil_images:
+        loose_pil_images = _preprocess_form_pil_images(loose_pil_images)
+        for idx_li, pil_rgb in enumerate(loose_pil_images, 1):
+            try:
                 jb = io.BytesIO()
-                pil_rgb.save(jb, format="JPEG", quality=85)
+                pil_rgb.save(jb, format="JPEG", quality=88)
                 jpg_b = jb.getvalue()
                 loose_image_parts.append(types.Part.from_bytes(data=jpg_b, mime_type="image/jpeg"))
-                loose_pil_images.append(pil_rgb)
+                nm_li = loose_image_names[idx_li - 1] if (idx_li - 1) < len(loose_image_names) else f"Image_{idx_li}"
                 pdf_page_preview_jpegs.append({
-                    "caption": f"{f_name} — Form Image {len(loose_image_names)}",
+                    "caption": f"{nm_li} — Form Image {idx_li}/{len(loose_pil_images)}",
                     "bytes": jpg_b
                 })
             except Exception:
@@ -17210,6 +17313,7 @@ def extract_members_from_uploaded_files_batch(uploaded_files_list: list, default
         st.session_state["extracted_pdf_page_previews"] = pdf_page_preview_jpegs
     else:
         st.session_state.pop("extracted_pdf_page_previews", None)
+        st.session_state.pop("_last_interpreted_form_text", None)
 
     return all_extracted_members
 
@@ -17326,7 +17430,7 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                 up_w_key = st.session_state.get("uploader_widget_reset_key", 0)
                 auto_mem_files = st.file_uploader(
                     "Piliin o I-drag ang Family Registration Form PDF (.pdf), Images (.jpg, .png), o Excel (.xlsx, .csv):",
-                    type=["pdf", "jpg", "jpeg", "png", "xlsx", "csv"],
+                    type=["pdf", "jpg", "jpeg", "png", "webp", "bmp", "tiff", "xlsx", "csv"],
                     accept_multiple_files=True,
                     key=f"auto_add_mem_uploader_multi_{up_w_key}"
                 )
@@ -17340,6 +17444,7 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                 if st.button("🧹 I-clear / Mag-upload ng Ibang File", use_container_width=True, key="btn_clear_current_upload_top"):
                     st.session_state.pop("extracted_members_batch", None)
                     st.session_state.pop("extracted_pdf_page_previews", None)
+                    st.session_state.pop("_last_interpreted_form_text", None)
                     st.session_state.pop("_last_processed_upload_sig", None)
                     st.session_state.pop("_last_auto_save_banner", None)
                     st.session_state.pop("_last_uploaded_drive_links", None)
@@ -17543,6 +17648,7 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                         })
                     st.session_state["extracted_members_batch"] = blank_batch
                     st.session_state.pop("extracted_pdf_page_previews", None)
+                    st.session_state.pop("_last_interpreted_form_text", None)
                     st.session_state.pop("_last_auto_save_banner", None)
                     st.session_state["add_form_refresh_counter"] = st.session_state.get("add_form_refresh_counter", 0) + 1
                     st.rerun()
@@ -17574,6 +17680,7 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                         if loaded_rows:
                             st.session_state["extracted_members_batch"] = loaded_rows
                             st.session_state.pop("extracted_pdf_page_previews", None)
+                            st.session_state.pop("_last_interpreted_form_text", None)
                             st.session_state.pop("_last_auto_save_banner", None)
                             st.session_state["add_form_refresh_counter"] = st.session_state.get("add_form_refresh_counter", 0) + 1
                             st.rerun()
@@ -17644,6 +17751,9 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                 z_idx = zoom_opts.index(sel_zoom_page) - 1
                 if 0 <= z_idx < len(pdf_prevs):
                     st.image(pdf_prevs[z_idx]["bytes"], caption=f"Full-Size View: {pdf_prevs[z_idx]['caption']}", use_container_width=True)
+            if st.session_state.get("_last_interpreted_form_text"):
+                with st.expander("📝 Tingnan ang Nabasang Teksto Mula sa Image / Form (Text Interpretation)", expanded=False):
+                    st.text(st.session_state["_last_interpreted_form_text"])
 
     # =================================================================
     # STEP 3: UNIFIED SINGLE HOUSEHOLD & FAMILY MEMBERS EDITOR (WITH DROPDOWN VALIDATION & AUTO-FIX)
@@ -17814,6 +17924,7 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                 if st.button("🆕 Susunod na Pamilya (Reset)", use_container_width=True, key="btn_reset_for_next_family"):
                     st.session_state.pop("extracted_members_batch", None)
                     st.session_state.pop("extracted_pdf_page_previews", None)
+                    st.session_state.pop("_last_interpreted_form_text", None)
                     st.session_state.pop("_last_processed_upload_sig", None)
                     st.session_state.pop("_last_auto_save_banner", None)
                     st.session_state.pop("_last_uploaded_drive_links", None)
