@@ -916,6 +916,58 @@ DIOCESE_PARISH_MAP = {
     DIOCESE_2_KEY: DIOCESE_2_PARISHES,
 }
 
+ALL_PARISH_ACTIVE_STATUS_OPTIONS = [
+    "ACTIVE",
+    "ACTIVE IN LIPAY NORTE",
+    "ACTIVE IN MALANAS",
+    "ACTIVE IN POBLACION",
+    "ACTIVE IN DUPLAS",
+    "ACTIVE IN SANTIAGO",
+    "ACTIVE IN CABA",
+    "ACTIVE IN MANILA",
+    "ACTIVE IN ANDABUEN",
+    "ACTIVE IN APAYAO",
+    "ACTIVE IN HONG KONG",
+    "INACTIVE",
+    "NON-MEMBER",
+    "ON GOING INDOC",
+]
+
+ACTIVE_IN_PARISH_TARGET_MAP = {
+    "LIPAY NORTE": "LIPAY NORTE PARISH",
+    "MALANAS": "MALANAS PARISH",
+    "POBLACION": "POBLACION PARISH",
+    "DUPLAS": "DUPLAS PARISH",
+    "SANTIAGO": "SANTIAGO PARISH",
+    "CABA": "CABA PARISH",
+    "MANILA": "MANILA PARISH",
+    "ANDABUEN": "ANDABUEN PARISH",
+    "ADABUEN": "ANDABUEN PARISH",
+    "APAYAO": "APAYAO PARISH",
+    "HONG KONG": "HONGKONG PARISH",
+    "HONGKONG": "HONGKONG PARISH",
+}
+
+def resolve_active_in_other_parish_target(status_or_rem_text: str) -> str:
+    """If status_or_rem_text contains 'ACTIVE IN <PARISH>' (or 'ACTIVE SA <PARISH>'), returns the canonical target parish name
+    (e.g. 'MANILA PARISH', 'HONGKONG PARISH', 'LIPAY NORTE PARISH', etc.), else returns ''."""
+    up = re.sub(r"\s+", " ", str(status_or_rem_text or "").upper()).strip()
+    m = re.search(
+        r"ACTIVE\s*(?:IN|SA|@|-)\s*(LIPAY\s*NORTE|MALANAS|POBLACION|DUPLAS|SANTIAGO|CABA|MANILA|ANDABUEN|ADABUEN|APAYAO|HONG\s*KONG|HONGKONG)",
+        up
+    )
+    if m:
+        key = re.sub(r"\s+", " ", m.group(1).strip())
+        return ACTIVE_IN_PARISH_TARGET_MAP.get(key, "")
+    return ""
+
+def format_canonical_active_in_parish_status(target_parish_canonical: str) -> str:
+    """Formats a canonical parish name like 'HONGKONG PARISH' -> 'ACTIVE IN HONG KONG' or 'LIPAY NORTE PARISH' -> 'ACTIVE IN LIPAY NORTE'."""
+    if target_parish_canonical == "HONGKONG PARISH":
+        return "ACTIVE IN HONG KONG"
+    short_p = str(target_parish_canonical or "").upper().replace("PARISH", "").strip()
+    return f"ACTIVE IN {short_p}" if short_p else "ACTIVE"
+
 PARISH_ACCOUNTS = {
     "ctg.ministry.master.admin": {"pw_hash": "10d3135d22d6d882860211e3e9345efbb20975149ab24dfdc8c44f8779060713", "parish": "Lahat ng Parokya", "role": "Master Admin"},
     APP_USER.lower(): {"pw_hash": _sha256_hex(APP_PASSWORD) if APP_PASSWORD else "10d3135d22d6d882860211e3e9345efbb20975149ab24dfdc8c44f8779060713", "parish": "Lahat ng Parokya", "role": "Master Admin"},
@@ -1460,43 +1512,56 @@ def render_church_leadership_and_priests_directory(context_key: str = "home"):
             unsafe_allow_html=True
         )
 
-    # TIER 2: TWO DIOCESE HEADS (Region 1 + Manila/HK & Region 2 — Position shown ONLY ONCE per card)
+    # TIER 2: DIOCESE HEADS (Master Admin sees BOTH Diocese Heads; Diocese 1 / Region 1 users see ONLY Diocese Head 1; Diocese 2 / Region 2 users see ONLY Diocese Head 2)
     dio1 = profiles["diocese_head_1"]
     dio2 = profiles["diocese_head_2"]
     dio1_pos_clean = str(dio1.get("position", "") or "DIOCESE HEAD I - REGION 1").strip()
     dio2_pos_clean = str(dio2.get("position", "") or "DIOCESE HEAD 2 - REGION 2").strip()
     cur_d_scope = get_current_diocese_scope_key()
+    cur_assigned_p = str(st.session_state.get("assigned_parish", "") or "").strip()
+    show_d1 = is_master or (cur_d_scope == DIOCESE_1_KEY) or (not cur_d_scope and cur_assigned_p in DIOCESE_1_PARISHES)
+    show_d2 = is_master or (cur_d_scope == DIOCESE_2_KEY) or (not cur_d_scope and cur_assigned_p in DIOCESE_2_PARISHES)
+
     d1_online = (cur_d_scope == DIOCESE_1_KEY) or (bool(dio1.get("is_active_online")) and (time.time() - float(dio1.get("last_active_epoch", 0) or 0)) <= 1800.0)
     d2_online = (cur_d_scope == DIOCESE_2_KEY) or (bool(dio2.get("is_active_online")) and (time.time() - float(dio2.get("last_active_epoch", 0) or 0)) <= 1800.0)
     d1_badge = _build_top_right_status_badge_html(is_online=d1_online) if (is_master or cur_d_scope == DIOCESE_1_KEY) else ""
     d2_badge = _build_top_right_status_badge_html(is_online=d2_online) if (is_master or cur_d_scope == DIOCESE_2_KEY) else ""
-    dsp_L, col_dio1, col_dio2, dsp_R = st.columns([0.45, 1.55, 1.55, 0.45])
-    with col_dio1:
-        av_d1 = _build_profile_avatar_html(dio1.get("photo_b64", ""), "#10B981", 86, "🏛️")
-        st.markdown(
-            f"<div style='position:relative;background:rgba(15,23,42,0.94);border:1.5px solid #10B981;border-radius:12px;"
-            f"padding:16px 12px;text-align:center;margin-bottom:12px;min-height:198px;'>"
-            f"{d1_badge}"
-            f"{av_d1}<br>"
-            f"<div style='font-size:1.04rem;font-weight:800;color:#ECFDF5;margin-top:6px;'>{dio1.get('name')}</div>"
-            f"<div style='font-size:0.84rem;color:#6EE7B7;font-weight:700;margin-top:5px;'>{dio1_pos_clean}</div>"
-            f"<div style='font-size:0.71rem;color:#94A3B8;margin-top:4px;'>Sakop: Region 1 Parishes, Manila & Hong Kong</div>"
-            f"</div>",
-            unsafe_allow_html=True
-        )
-    with col_dio2:
-        av_d2 = _build_profile_avatar_html(dio2.get("photo_b64", ""), "#10B981", 86, "🏛️")
-        st.markdown(
-            f"<div style='position:relative;background:rgba(15,23,42,0.94);border:1.5px solid #10B981;border-radius:12px;"
-            f"padding:16px 12px;text-align:center;margin-bottom:12px;min-height:198px;'>"
-            f"{d2_badge}"
-            f"{av_d2}<br>"
-            f"<div style='font-size:1.04rem;font-weight:800;color:#ECFDF5;margin-top:6px;'>{dio2.get('name')}</div>"
-            f"<div style='font-size:0.84rem;color:#6EE7B7;font-weight:700;margin-top:5px;'>{dio2_pos_clean}</div>"
-            f"<div style='font-size:0.71rem;color:#94A3B8;margin-top:4px;'>Sakop: Region 2 Parishes (Andabuen & Apayao)</div>"
-            f"</div>",
-            unsafe_allow_html=True
-        )
+
+    d1_card_html = (
+        f"<div style='position:relative;background:rgba(15,23,42,0.94);border:1.5px solid #10B981;border-radius:12px;"
+        f"padding:16px 12px;text-align:center;margin-bottom:12px;min-height:198px;'>"
+        f"{d1_badge}"
+        f"{_build_profile_avatar_html(dio1.get('photo_b64', ''), '#10B981', 86, '🏛️')}<br>"
+        f"<div style='font-size:1.04rem;font-weight:800;color:#ECFDF5;margin-top:6px;'>{dio1.get('name')}</div>"
+        f"<div style='font-size:0.84rem;color:#6EE7B7;font-weight:700;margin-top:5px;'>{dio1_pos_clean}</div>"
+        f"<div style='font-size:0.71rem;color:#94A3B8;margin-top:4px;'>Sakop: Region 1 Parishes, Manila & Hong Kong</div>"
+        f"</div>"
+    )
+    d2_card_html = (
+        f"<div style='position:relative;background:rgba(15,23,42,0.94);border:1.5px solid #10B981;border-radius:12px;"
+        f"padding:16px 12px;text-align:center;margin-bottom:12px;min-height:198px;'>"
+        f"{d2_badge}"
+        f"{_build_profile_avatar_html(dio2.get('photo_b64', ''), '#10B981', 86, '🏛️')}<br>"
+        f"<div style='font-size:1.04rem;font-weight:800;color:#ECFDF5;margin-top:6px;'>{dio2.get('name')}</div>"
+        f"<div style='font-size:0.84rem;color:#6EE7B7;font-weight:700;margin-top:5px;'>{dio2_pos_clean}</div>"
+        f"<div style='font-size:0.71rem;color:#94A3B8;margin-top:4px;'>Sakop: Region 2 Parishes (Andabuen & Apayao)</div>"
+        f"</div>"
+    )
+
+    if show_d1 and show_d2:
+        dsp_L, col_dio1, col_dio2, dsp_R = st.columns([0.45, 1.55, 1.55, 0.45])
+        with col_dio1:
+            st.markdown(d1_card_html, unsafe_allow_html=True)
+        with col_dio2:
+            st.markdown(d2_card_html, unsafe_allow_html=True)
+    elif show_d1:
+        dsp_L, col_dio_single, dsp_R = st.columns([1.1, 1.8, 1.1])
+        with col_dio_single:
+            st.markdown(d1_card_html, unsafe_allow_html=True)
+    elif show_d2:
+        dsp_L, col_dio_single, dsp_R = st.columns([1.1, 1.8, 1.1])
+        with col_dio_single:
+            st.markdown(d2_card_html, unsafe_allow_html=True)
 
     # TIER 3: PARISHES — VISIBLE TO MASTER ADMIN (ALL 10) OR DIOCESE ADMIN (THEIR SCOPED PARISHES ONLY)
     if is_master or is_current_user_diocese_admin():
@@ -3991,10 +4056,9 @@ def load_complete_parish_members(spreadsheet_url: str):
                     rem_raw_for_st = r.get("Remarks", "")
                     rem_up_for_st = str(rem_raw_for_st if pd.notna(rem_raw_for_st) else "").strip().upper()
                     combined_st_rem = f"{st_str} {rem_up_for_st}".strip()
-                    if p_name != "MANILA PARISH" and re.search(r"ACTIVE\s*(?:IN|SA|@|-)\s*MANILA|MANILA\s+ACTIVE", combined_st_rem):
-                        st_str = "ACTIVE IN MANILA"
-                    elif p_name != "HONGKONG PARISH" and re.search(r"ACTIVE\s*(?:IN|SA|@|-)\s*HONG\s*KONG|HONG\s*KONG\s+ACTIVE|ACTIVE\s+OFW\s+HK", combined_st_rem):
-                        st_str = "ACTIVE IN HONGKONG"
+                    target_act_parish = resolve_active_in_other_parish_target(combined_st_rem)
+                    if target_act_parish:
+                        st_str = format_canonical_active_in_parish_status(target_act_parish)
                     if not cm_str:
                         cm_str = "NO" if "NON" in st_str else ("YES" if st_str else "")
 
@@ -4718,9 +4782,17 @@ def _normalize_ctg_form_codes(item: dict) -> dict:
     yn_map = {"Y": "YES", "YES": "YES", "N": "NO", "NO": "NO"}
     st_map = {
         "A": "ACTIVE", "ACTIVE": "ACTIVE",
+        "ACTIVE IN LIPAY NORTE": "ACTIVE IN LIPAY NORTE", "ACTIVE SA LIPAY NORTE": "ACTIVE IN LIPAY NORTE",
+        "ACTIVE IN MALANAS": "ACTIVE IN MALANAS", "ACTIVE SA MALANAS": "ACTIVE IN MALANAS",
+        "ACTIVE IN POBLACION": "ACTIVE IN POBLACION", "ACTIVE SA POBLACION": "ACTIVE IN POBLACION",
+        "ACTIVE IN DUPLAS": "ACTIVE IN DUPLAS", "ACTIVE SA DUPLAS": "ACTIVE IN DUPLAS",
+        "ACTIVE IN SANTIAGO": "ACTIVE IN SANTIAGO", "ACTIVE SA SANTIAGO": "ACTIVE IN SANTIAGO",
+        "ACTIVE IN CABA": "ACTIVE IN CABA", "ACTIVE SA CABA": "ACTIVE IN CABA",
         "ACTIVE IN MANILA": "ACTIVE IN MANILA", "ACTIVE SA MANILA": "ACTIVE IN MANILA",
-        "ACTIVE IN HONGKONG": "ACTIVE IN HONGKONG", "ACTIVE IN HONG KONG": "ACTIVE IN HONGKONG",
-        "ACTIVE SA HONGKONG": "ACTIVE IN HONGKONG", "ACTIVE SA HONG KONG": "ACTIVE IN HONGKONG",
+        "ACTIVE IN ANDABUEN": "ACTIVE IN ANDABUEN", "ACTIVE IN ADABUEN": "ACTIVE IN ANDABUEN", "ACTIVE SA ANDABUEN": "ACTIVE IN ANDABUEN",
+        "ACTIVE IN APAYAO": "ACTIVE IN APAYAO", "ACTIVE SA APAYAO": "ACTIVE IN APAYAO",
+        "ACTIVE IN HONG KONG": "ACTIVE IN HONG KONG", "ACTIVE IN HONGKONG": "ACTIVE IN HONG KONG",
+        "ACTIVE SA HONG KONG": "ACTIVE IN HONG KONG", "ACTIVE SA HONGKONG": "ACTIVE IN HONG KONG",
         "I": "INACTIVE", "INACTIVE": "INACTIVE",
         "NM": "NON-MEMBER", "NON-MEMBER": "NON-MEMBER",
         "ON GOING INDOC": "ON GOING INDOC"
@@ -5822,25 +5894,28 @@ def _auto_purge_andabuen_test_santos_records_once(spreadsheet_url: str):
 
 def _is_same_head_of_family_fuzzy(name_a: str, name_b: str, mob_a: str = "", mob_b: str = "") -> bool:
     """Detects if two Head of Family records in the same Parish refer to the exact same person
-    (e.g. OCR handwriting typo 'ALPREAD JR. TADINA' vs 'ALFREDO JR. TADINA') while NEVER merging
-    two different family heads who merely share a surname (such as 'Abel A. Claro' vs 'Apolonio S. Claro')."""
-    na = re.sub(r"[^A-Z0-9\s]", " ", str(name_a or "").upper()).split()
-    nb = re.sub(r"[^A-Z0-9\s]", " ", str(name_b or "").upper()).split()
-    if not na or not nb:
+    while NEVER merging two different family heads who share a surname (e.g., 'Cesar C. Claro' vs 'Dario B. Claro' vs 'Abel A. Claro' vs 'Claro Dario B.')."""
+    ignore_titles = {"MSGR", "REV", "FR", "PASTOR", "BRO", "SIS", "MR", "MRS", "DR"}
+    na_raw = [t for t in re.sub(r"[^A-Z0-9\s]", " ", str(name_a or "").upper()).split() if t not in ignore_titles and len(t) > 1]
+    nb_raw = [t for t in re.sub(r"[^A-Z0-9\s]", " ", str(name_b or "").upper()).split() if t not in ignore_titles and len(t) > 1]
+    if not na_raw or not nb_raw:
         return False
-    sa = " ".join(na)
-    sb = " ".join(nb)
-    if sa == sb:
+    if sorted(na_raw) == sorted(nb_raw):
         return True
-    ma = re.sub(r"\D", "", str(mob_a or ""))
-    mb = re.sub(r"\D", "", str(mob_b or ""))
-    first_ratio = difflib.SequenceMatcher(None, na[0], nb[0]).ratio()
-    if len(ma) >= 10 and ma == mb and na[-1] == nb[-1] and first_ratio >= 0.65:
-        return True
-    if na[-1] == nb[-1] and len(na[-1]) >= 4 and first_ratio >= 0.70:
-        full_ratio = difflib.SequenceMatcher(None, sa, sb).ratio()
-        if full_ratio >= 0.78:
-            return True
+    # Identify shared surname token if any (e.g. "CLARO", "PAQUIT", "ASTODILLO", "TADINA")
+    set_a, set_b = set(na_raw), set(nb_raw)
+    shared = set_a & set_b
+    given_a = [t for t in na_raw if t not in shared]
+    given_b = [t for t in nb_raw if t not in shared]
+    if shared and given_a and given_b:
+        ga_str = " ".join(given_a)
+        gb_str = " ".join(given_b)
+        given_ratio = difflib.SequenceMatcher(None, ga_str, gb_str).ratio()
+        # Only match if the given names themselves are a very close OCR typo match (e.g. ALPREAD vs ALFREDO = 0.86)
+        return given_ratio >= 0.70
+    if len(na_raw) >= 2 and len(nb_raw) >= 2 and na_raw[-1] == nb_raw[-1]:
+        first_ratio = difflib.SequenceMatcher(None, na_raw[0], nb_raw[0]).ratio()
+        return first_ratio >= 0.70
     return False
 
 def append_new_member_to_excel_and_sync(spreadsheet_url: str, member_data: dict, dependents_list: list[dict] = None) -> tuple[bool, str]:
@@ -6399,20 +6474,24 @@ def normalize_parish_match(row_parish: str, target_parish: str) -> bool:
     return bool(rp and tp and (rp in tp or tp in rp))
 
 def classify_member_status(status_val, church_member_val, remarks_val: str = "", parish_val: str = ""):
-    """Classifies a member's status while strictly separating members who are 'ACTIVE IN MANILA' ('Active sa Manila')
-    or 'ACTIVE IN HONGKONG' ('Active sa Hong Kong') from the home parish's local 'ACTIVE' count across ALL parishes."""
+    """Classifies a member's status for a given parish:
+    If Status/Remarks specifies 'ACTIVE IN <PARISH>' (for any of the 10 parishes: Lipay Norte, Malanas, Poblacion, Duplas,
+    Santiago, Caba, Manila, Andabuen, Apayao, Hong Kong):
+    - If <PARISH> matches the member's own parish_val, they are counted as 'ACTIVE' in that parish.
+    - If <PARISH> is a different parish from parish_val, they are NOT counted in parish_val's local 'ACTIVE' members or active attendance!"""
     st_up = str(status_val or "").upper().strip()
     cm_up = str(church_member_val or "").upper().strip()
     rem_up = str(remarks_val or "").upper().strip()
     par_up = str(parish_val or "").upper().strip()
     combined_txt = f"{st_up} {rem_up}".strip()
 
-    if re.search(r"ACTIVE\s*(?:IN|SA|@|-)\s*MANILA|MANILA\s+ACTIVE", combined_txt):
-        return "ACTIVE" if par_up == "MANILA PARISH" else "ACTIVE IN MANILA"
-    if re.search(r"ACTIVE\s*(?:IN|SA|@|-)\s*HONG\s*KONG|HONG\s*KONG\s+ACTIVE|ACTIVE\s+OFW\s+HK", combined_txt):
-        return "ACTIVE" if par_up == "HONGKONG PARISH" else "ACTIVE IN HONGKONG"
+    target_active_parish = resolve_active_in_other_parish_target(combined_txt)
+    if target_active_parish:
+        if par_up and normalize_parish_match(par_up, target_active_parish):
+            return "ACTIVE"
+        return "ACTIVE IN OTHER PARISH"
     if re.search(r"ACTIVE\s+IN\s+(?:OTHER|ABROAD)", combined_txt):
-        return "INACTIVE"
+        return "ACTIVE IN OTHER PARISH"
     if "NON-MEMBER" in st_up or "NON MEMBER" in st_up or cm_up == "NO":
         if "INACTIVE" in st_up:
             return "INACTIVE"
@@ -6444,8 +6523,7 @@ def build_status_summary_and_lists(df):
     categories = ["Seniors", "Adults", "Youth", "Kids", "No category"]
     counts = {
         "ACTIVE": {c: 0 for c in categories},
-        "ACTIVE IN MANILA": {c: 0 for c in categories},
-        "ACTIVE IN HONGKONG": {c: 0 for c in categories},
+        "ACTIVE IN OTHER PARISH": {c: 0 for c in categories},
         "INACTIVE": {c: 0 for c in categories},
         "NON-MEMBER": {c: 0 for c in categories},
         "OTHER": {c: 0 for c in categories},
@@ -6476,13 +6554,12 @@ def build_status_summary_and_lists(df):
         tot = say + k + nc
         return [label, s, a, y, say, k, nc, tot]
 
-    r_act = make_summary_row("Active sa Parokya (Local Active)", "ACTIVE")
-    r_mnl = make_summary_row("Active sa Manila (ACTIVE IN MANILA)", "ACTIVE IN MANILA")
-    r_hk = make_summary_row("Active sa Hong Kong (ACTIVE IN HONGKONG)", "ACTIVE IN HONGKONG")
+    r_act = make_summary_row("Active members (Local Parish)", "ACTIVE")
+    r_oth_p = make_summary_row("Active in Other Parish (Excluded from Local Attendance)", "ACTIVE IN OTHER PARISH")
     r_inact = make_summary_row("Inactive members", "INACTIVE")
     r_non = make_summary_row("Non-members", "NON-MEMBER")
     r_oth = make_summary_row("Other / On Going Indoc", "OTHER")
-    all_r = [r_act, r_mnl, r_hk, r_inact, r_non, r_oth]
+    all_r = [r_act, r_oth_p, r_inact, r_non, r_oth]
     tot_row = [
         "TOTAL PERSONS",
         sum(x[1] for x in all_r),
@@ -6494,7 +6571,7 @@ def build_status_summary_and_lists(df):
         sum(x[7] for x in all_r),
     ]
     summary_cols = ["Status", "Seniors", "Adults", "Youth", "Seniors + Adults + Youth", "Kids", "No category", "Total persons"]
-    summary_df = pd.DataFrame([r_act, r_mnl, r_hk, r_inact, r_non, r_oth, tot_row], columns=summary_cols)
+    summary_df = pd.DataFrame([r_act, r_oth_p, r_inact, r_non, r_oth, tot_row], columns=summary_cols)
     mini_cols = ["Full name", "Family ID", "Category", "Status", "Church member"]
     df_act_list = pd.DataFrame(active_rows, columns=mini_cols) if active_rows else pd.DataFrame(columns=mini_cols)
     df_inact_list = pd.DataFrame(inactive_rows, columns=mini_cols) if inactive_rows else pd.DataFrame(columns=mini_cols)
@@ -11594,7 +11671,7 @@ def _is_member_row_active_for_weekly_report(m_row, parish_name: str) -> bool:
     if not normalize_parish_match(parish_name, "HONGKONG PARISH"):
         if "ACTIVE IN HONGKONG" in st_up or "ACTIVE IN HONG KONG" in st_up:
             return False
-    return classify_member_status(st_raw, cm_raw, row_obj.get("Remarks", ""), parish_name) == "ACTIVE"
+    return classify_member_status(st_raw, cm_raw, rem_raw, parish_name) == "ACTIVE"
 
 def build_parish_member_attendance_sheet_df(parish_name: str, selected_month: str, selected_week: str, selected_year: str = "2027") -> tuple[pd.DataFrame, dict]:
     """Bumubuo ng eksaktong Per-Member Attendance Table para sa Parish Weekly Report Data (Adults/Youths/Kids Attendance):
@@ -16380,7 +16457,7 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
                 column_config={
                     "Status": st.column_config.SelectboxColumn(
                         "Status",
-                        options=["ACTIVE", "ACTIVE IN MANILA", "ACTIVE IN HONGKONG", "INACTIVE", "NON-MEMBER", "ON GOING INDOC"],
+                        options=ALL_PARISH_ACTIVE_STATUS_OPTIONS,
                         width="medium"
                     )
                 },
@@ -16421,19 +16498,20 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
 
             u_col1, u_col2, u_col3 = st.columns([1.2, 1.2, 2])
             with u_col1:
-                status_choices = ["ACTIVE", "ACTIVE IN MANILA", "ACTIVE IN HONGKONG", "INACTIVE", "NON-MEMBER", "ON GOING INDOC"]
+                status_choices = list(ALL_PARISH_ACTIVE_STATUS_OPTIONS)
                 cur_st = str(sel_row["Status"]).upper().strip()
-                def_st_idx = 0
-                if "MANILA" in cur_st and "ACTIVE" in cur_st:
-                    def_st_idx = 1
-                elif ("HONGKONG" in cur_st or "HONG KONG" in cur_st) and "ACTIVE" in cur_st:
-                    def_st_idx = 2
+                target_p_st = resolve_active_in_other_parish_target(cur_st)
+                if target_p_st:
+                    canon_st = format_canonical_active_in_parish_status(target_p_st)
                 elif "INACTIVE" in cur_st:
-                    def_st_idx = 3
+                    canon_st = "INACTIVE"
                 elif "NON" in cur_st:
-                    def_st_idx = 4
+                    canon_st = "NON-MEMBER"
                 elif "INDOC" in cur_st:
-                    def_st_idx = 5
+                    canon_st = "ON GOING INDOC"
+                else:
+                    canon_st = "ACTIVE"
+                def_st_idx = status_choices.index(canon_st) if canon_st in status_choices else 0
                 upd_status = st.selectbox("Bagong Status:", status_choices, index=def_st_idx, key="quick_upd_st")
             with u_col2:
                 cat_choices = ["SENIOR CITIZEN", "ADULT", "YOUTH", "KIDS"]
@@ -18210,6 +18288,37 @@ def _parse_single_section3_row_text(row_text: str, row_num_default: int, prev_ad
 
     # Strip leading row number 1..15
     s_body = re.sub(r"^\s*(?:1[0-5]|[1-9])\b[\s.:\-]*", "", s).strip()
+
+    # Extract & strip any Birthdate tokens anywhere in s_body first (handles 2-line cells where 'Oct. 16' or 'NOV. 4 1981' appears before Relationship!)
+    month_rx = r"\b(?:Jan|January|Feb|February|Mar|March|Apr|April|May|Jun|June|Jul|July|Aug|August|Sep|Sept|September|Oct|October|Nov|November|Dec|December|Teb)\b\.?"
+    bdate_raw_parts = []
+    m_num_dt = re.search(r"\b(\d{1,2}[-/.]\d{1,2}[-/.](?:19|20)?\d{2}|(?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2})\b", s_body)
+    if m_num_dt:
+        bdate_raw_parts.append(m_num_dt.group(1))
+        s_body = (s_body[:m_num_dt.start()] + " " + s_body[m_num_dt.end():]).strip()
+    else:
+        m_md_dt = re.search(rf"({month_rx})\s*(\d{{1,2}})\b(?:[\s,.\-]+((?:19|20)\d{{2}}))?", s_body, flags=re.I)
+        m_dm_dt = re.search(rf"\b(\d{{1,2}})\s+({month_rx})(?:[\s,.\-]+((?:19|20)\d{{2}}))?", s_body, flags=re.I)
+        yr_found = ""
+        if m_md_dt:
+            bdate_raw_parts.extend([m_md_dt.group(1), m_md_dt.group(2)])
+            yr_found = m_md_dt.group(3) or ""
+            s_body = (s_body[:m_md_dt.start()] + " " + s_body[m_md_dt.end():]).strip()
+        elif m_dm_dt:
+            bdate_raw_parts.extend([m_dm_dt.group(2), m_dm_dt.group(1)])
+            yr_found = m_dm_dt.group(3) or ""
+            s_body = (s_body[:m_dm_dt.start()] + " " + s_body[m_dm_dt.end():]).strip()
+        if yr_found:
+            bdate_raw_parts.append(yr_found)
+        else:
+            m_yr_dt = re.search(r"\b((?:19|20)\d{2})\b", s_body)
+            if m_yr_dt:
+                bdate_raw_parts.append(m_yr_dt.group(1))
+                s_body = (s_body[:m_yr_dt.start()] + " " + s_body[m_yr_dt.end():]).strip()
+
+    s_body = re.sub(r"\s+", " ", s_body).strip()
+    bdate_val = _normalize_handwritten_date_to_iso(" ".join(bdate_raw_parts)) if bdate_raw_parts else ""
+
     m_rel = re.search(rel_pat, s_body, flags=re.I)
     if m_rel:
         name_part = s_body[:m_rel.start()].strip(" .,-:;/'")
@@ -18217,8 +18326,8 @@ def _parse_single_section3_row_text(row_text: str, row_num_default: int, prev_ad
         rel_val = rel_tokens_map.get(rel_code, rel_code)
         tail_part = s_body[m_rel.end():].strip()
     else:
-        # Fallback if Relationship code was slightly garbled: split at first Sex token (M/F) followed by a date or age
-        m_sex_split = re.search(r"\b([MF])\b\s+(?=(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|\d{1,2}[-/.]\d{1,2}|\d{2}\b))", s_body, flags=re.I)
+        # Fallback if Relationship code was slightly garbled: split at first Sex token (M/F) followed by an age or category
+        m_sex_split = re.search(r"\b([MF])\b\s+(?=(?:\d{1,2}\b|SC\b|A\b|Y\b|K\b))", s_body, flags=re.I)
         if not m_sex_split:
             return None, prev_addr
         name_part = s_body[:m_sex_split.start()].strip(" .,-:;/'")
@@ -18226,6 +18335,8 @@ def _parse_single_section3_row_text(row_text: str, row_num_default: int, prev_ad
         tail_part = s_body[m_sex_split.start():].strip()
 
     name_part = re.sub(r"^\s*(?:1[0-5]|[1-9])\b[\s.:\-]*", "", name_part).strip(" .,-:;/'")
+    name_part = re.sub(r"\b(?:1[0-5]|[1-9])\b", " ", name_part)
+    name_part = re.sub(r"\s+", " ", name_part).strip(" .,-:;/'")
     if len(name_part) < 3 or _is_junk_ocr_header_name(name_part):
         return None, prev_addr
 
@@ -18236,18 +18347,7 @@ def _parse_single_section3_row_text(row_text: str, row_num_default: int, prev_ad
         sex_val = "FEMALE" if m_sex.group(1).upper().startswith("F") else "MALE"
         tail_part = tail_part[m_sex.end():].strip()
 
-    # Extract Birthdate
-    m_bd = re.search(
-        r"((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s*\d{1,2}[\s,.\-]*(?:19|20)?\d{2}|\d{1,2}[-/.]\d{1,2}[-/.](?:19|20)?\d{2}|(?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2})",
-        tail_part,
-        flags=re.I
-    )
-    bdate_val = ""
-    if m_bd:
-        bdate_val = _normalize_handwritten_date_to_iso(m_bd.group(1))
-        tail_after_bd = tail_part[m_bd.end():].strip()
-    else:
-        tail_after_bd = tail_part
+    tail_after_bd = tail_part
 
     # Extract Mobile Number if present
     m_mob = re.search(r"(09\d{2}[\s\-]?\d{3}[\s\-]?\d{4}|\b09\d{9}\b)", tail_after_bd)
@@ -18424,29 +18524,7 @@ def _extract_single_family_from_vision_parts(
     """
     fn_low = str(source_filename or "").lower()
 
-    # Fast deterministic check for known scanned PDFs using specific given name or scan ID
-    if "dario" in fn_low or "23110003" in fn_low:
-        return _get_builtin_dario_claro_4_members_pdf_family(default_parish)
-    if "cesar" in fn_low or "22561090" in fn_low:
-        return _get_builtin_cesar_claro_10_members_pdf_family(default_parish)
-    if "avelino" in fn_low or "astodillo" in fn_low or "astudillo" in fn_low or "3.49.03" in fn_low or "3.49.19" in fn_low:
-        return _get_builtin_avelino_astodillo_10_members_pdf_family(default_parish)
-    if "billy" in fn_low and ("paquit" in fn_low or "paguit" in fn_low or "21591129" in fn_low):
-        return _get_builtin_billy_paquit_6_members_pdf_family(default_parish)
-    if "21591129" in fn_low:
-        return _get_builtin_billy_paquit_6_members_pdf_family(default_parish)
-    if "arnulfo" in fn_low or "20581840" in fn_low:
-        return _get_builtin_arnulfo_alao_4_members_pdf_family(default_parish)
-    if "apolonio" in fn_low or "21540134" in fn_low:
-        return _get_builtin_apolonio_claro_2_members_pdf_family(default_parish)
-    if "alfredo" in fn_low or "22455133" in fn_low:
-        return _get_builtin_alfredo_tadina_2_members_pdf_family(default_parish)
-    if "ana liza" in fn_low or "22410249" in fn_low:
-        return _get_builtin_ana_liza_abutin_5_members_pdf_family(default_parish)
-    if "abel" in fn_low or "20533138" in fn_low:
-        return _get_builtin_abel_claro_3_members_pdf_family(default_parish)
-    if "xszxp0" in fn_low or ("juan" in fn_low and "cruz" in fn_low):
-        return _get_builtin_juan_dela_cruz_8_members_example(default_parish)
+    # Always read directly from the newly uploaded PDF/Image bytes (no old-data shortcuts!)
 
     vision_members = []
     valid_keys = get_valid_gemini_keys()
@@ -18513,8 +18591,31 @@ def _extract_single_family_from_vision_parts(
     for t_crop_im in section3_table_crops_pil:
         detected_ink_row_bands_total += len(_detect_section3_horizontal_row_bands(t_crop_im))
 
+    # Run Google Drive Native Cloud Vision Document AI OCR first on the newly uploaded file bytes (if available)
+    drive_native_ocr_text = ""
+    try:
+        raw_pending_files = st.session_state.get("_pending_raw_upload_files", [])
+        if raw_pending_files and isinstance(raw_pending_files, list):
+            ocr_chunks = []
+            for pf_it in raw_pending_files:
+                g_txt = _extract_text_via_google_drive_native_ocr(pf_it.get("bytes", b""), pf_it.get("type", "application/pdf"))
+                if g_txt:
+                    ocr_chunks.append(g_txt)
+            drive_native_ocr_text = "\n".join(ocr_chunks).strip()
+        elif p2_table_crop_pil is not None:
+            tb_g = io.BytesIO()
+            p2_table_crop_pil.save(tb_g, format="JPEG", quality=92)
+            drive_native_ocr_text = _extract_text_via_google_drive_native_ocr(tb_g.getvalue(), "image/jpeg").strip()
+    except Exception:
+        drive_native_ocr_text = ""
+
     if enhanced_vision_parts and valid_keys:
+        ocr_context_hint = (
+            f"\nHere is the raw Google Cloud Vision OCR transcription of this exact uploaded file to help you read every handwritten member row in III. FAMILY MEMBERS:\n{drive_native_ocr_text[:4500]}\n"
+            if drive_native_ocr_text else ""
+        )
         strict_vision_prompt = (
+            ocr_context_hint +
             f"Read and interpret ALL printed and handwritten text from this Church of the Temple of God Official Family Information Form (Source file: '{source_filename}', Head of Family spelling hint from filename: '{fn_hint}'). "
             "Expand any abbreviations using the Reference Guide "
             "(HOF=HEAD OF FAMILY, HBD=HUSBAND, WF=WIFE, SN=SON, DT=DAUGHTER, GDT=GRANDDAUGHTER, GSN=GRANDSON, FA=FATHER, MO=MOTHER, BR=BROTHER, SR=SISTER, GF=GRANDFATHER, GM=GRANDMOTHER, OT=OTHER, "
@@ -18594,6 +18695,27 @@ def _extract_single_family_from_vision_parts(
                                 )
 
                             members_arr = [m for m in raw_mem_list if isinstance(m, dict) and _get_m_name(m)]
+
+                            has_hof_in_vision_arr = any(
+                                str(m_x.get("relationship", m_x.get("Relationship", ""))).upper() in ("HEAD OF FAMILY", "HOF", "HEAD", "HUSBAND", "HBD")
+                                or (hof_name and _is_same_head_of_family_fuzzy(_get_m_name(m_x), hof_name))
+                                for m_x in members_arr
+                            )
+                            if hof_name and members_arr and not has_hof_in_vision_arr and matched_p != "HONGKONG PARISH":
+                                members_arr = [{
+                                    "no": 1,
+                                    "name": hof_name,
+                                    "relationship": "HEAD OF FAMILY",
+                                    "sex": "FEMALE" if any(w in hof_name.upper().split() for w in ["ANA", "LIZA", "MARIA", "MARY", "MERCY", "ELENA"]) else "MALE",
+                                    "category": "ADULT",
+                                    "civil_status": "MARRIED" if any(str(m_x.get("relationship", m_x.get("Relationship", ""))).upper() in ("WIFE", "WF", "HUSBAND", "HBD") for m_x in members_arr) else "SINGLE",
+                                    "student_working": "WORKING",
+                                    "contact_no": mob_v,
+                                    "church_member": "YES",
+                                    "status": "ACTIVE",
+                                    "baptized": "YES",
+                                    "current_address": full_addr_str,
+                                }] + members_arr
 
                             for idx_m, m_obj in enumerate(members_arr, 1):
                                 fn_m = _get_m_name(m_obj)
@@ -18880,22 +19002,8 @@ def _extract_single_family_from_vision_parts(
     combined_ocr_lines = []
     overlay_extracted_rows = []
 
-    # 1. Try Google Drive Native Cloud Vision OCR on the stitched form pages (or raw PDF/Image bytes) for enterprise handwriting recognition!
-    try:
-        raw_pending_files = st.session_state.get("_pending_raw_upload_files", [])
-        if raw_pending_files and isinstance(raw_pending_files, list):
-            for pf_it in raw_pending_files:
-                g_ocr_txt = _extract_text_via_google_drive_native_ocr(pf_it.get("bytes", b""), pf_it.get("type", "application/pdf"))
-                if g_ocr_txt:
-                    combined_ocr_lines.extend([ln.strip() for ln in g_ocr_txt.splitlines() if ln.strip()])
-        elif p2_table_crop_pil is not None:
-            tb_g = io.BytesIO()
-            p2_table_crop_pil.save(tb_g, format="JPEG", quality=92)
-            g_ocr_txt = _extract_text_via_google_drive_native_ocr(tb_g.getvalue(), "image/jpeg")
-            if g_ocr_txt:
-                combined_ocr_lines.extend([ln.strip() for ln in g_ocr_txt.splitlines() if ln.strip()])
-    except Exception:
-        pass
+    if drive_native_ocr_text:
+        combined_ocr_lines.extend([ln.strip() for ln in drive_native_ocr_text.splitlines() if ln.strip()])
 
     # 2. Also run 2D Spatial Coordinate & Row-Band OCR across ocr_target_images
     if ocr_target_images:
@@ -18910,28 +19018,7 @@ def _extract_single_family_from_vision_parts(
                 combined_ocr_lines.extend(r_lns)
                 overlay_extracted_rows.extend(r_ovs)
 
-    up_ocr = "\n".join(combined_ocr_lines).upper()
-    fn_first_up = fn_hint.split()[0].upper() if fn_hint and fn_hint.split() else ""
-    if any(k in up_ocr for k in ["DARIO", "09631571253", "DAISY A", "DEMGEL"]) and (not fn_first_up or fn_first_up in ("DARIO", "CLARO", "SCREENSHOT")):
-        return _get_builtin_dario_claro_4_members_pdf_family(default_parish)
-    if any(k in up_ocr for k in ["CESAR", "EVANGELINE", "JOAN", "VANESSA", "MARICEL", "POLOMINA", "PASKIANG", "09100699622", "6062209100699", "09062209100"]) and (not fn_first_up or fn_first_up in ("CESAR", "EVANGELINE", "SCREENSHOT")):
-        return _get_builtin_cesar_claro_10_members_pdf_family(default_parish)
-    if any(k in up_ocr for k in ["AVELINO", "ERLINDA", "ASTODILLO", "ASTUDILLO", "LIZA BITENG", "RIZZA MAE", "BIHASA", "09482105796"]) and (not fn_first_up or fn_first_up in ("AVELINO", "ERLINDA", "SCREENSHOT")):
-        return _get_builtin_avelino_astodillo_10_members_pdf_family(default_parish)
-    if any(k in up_ocr for k in ["BILLY C. PAQUIT", "BILLY PAQUIT", "LORNA C. PAQUIT", "JORICA", "09290422946", "09977587229", "09080312005"]) and (not fn_first_up or fn_first_up == "BILLY"):
-        return _get_builtin_billy_paquit_6_members_pdf_family(default_parish)
-    if any(k in up_ocr for k in ["ARNULFO", "MARINA ALAO", "CYRILLE", "09482248927", "09175580523"]) and (not fn_first_up or fn_first_up == "ARNULFO"):
-        return _get_builtin_arnulfo_alao_4_members_pdf_family(default_parish)
-    if any(k in up_ocr for k in ["APOLONIO", "SOLEDAD", "09755486681", "LABIAO"]) and (not fn_first_up or fn_first_up == "APOLONIO"):
-        return _get_builtin_apolonio_claro_2_members_pdf_family(default_parish)
-    if any(k in up_ocr for k in ["ALFREDO", "ALPREAD", "MERCY TADINA", "09122958014", "09513544225"]) and (not fn_first_up or fn_first_up in ("ALFREDO", "ALPREAD")):
-        return _get_builtin_alfredo_tadina_2_members_pdf_family(default_parish)
-    if any(k in up_ocr for k in ["ANA LIZA", "MARIELOU", "ELLA MAE", "CASIMIRO", "09075496422", "09398675159"]) and (not fn_first_up or fn_first_up == "ANA"):
-        return _get_builtin_ana_liza_abutin_5_members_pdf_family(default_parish)
-    if any(k in up_ocr for k in ["ABEL", "MAY-ANN", "ZACK GABRIEL", "09772107484", "09053403237"]) and (not fn_first_up or fn_first_up == "ABEL"):
-        return _get_builtin_abel_claro_3_members_pdf_family(default_parish)
-    if any(k in up_ocr for k in ["JUAN DELA CRUZ", "123 MANGO STREET", "CTG-LN-FAM-0008", "LOLO TOMAS", "JOSE DELA CRUZ"]):
-        return _get_builtin_juan_dela_cruz_8_members_example(default_parish)
+    # Process strictly the OCR & Vision lines extracted from this newly uploaded file
 
     # Systematic 4-Page + Multi-Line Cell OCR Extraction for ANY new scanned multi-page registration form
     hof_from_file = _extract_clean_person_name_from_filename(source_filename)
@@ -19401,13 +19488,17 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
     with top_p_col3:
         sb_c1, sb_c2 = st.columns(2)
         with sb_c1:
-            if st.button("🔄 Sync Mula Drive", use_container_width=True, key="btn_add_page_sync_drive", help="Basahin ang pinakabagong Excel mula sa Google Drive"):
-                with st.spinner("Binabasa ang CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx mula sa Google Drive..."):
+            if st.button("🔄 Sync Mula Drive", use_container_width=True, key="btn_add_page_sync_drive", help="Basahin ang pinakabagong Excel mula sa Google Drive para sa iyong Parokya"):
+                with st.spinner(f"Binabasa ang pinakabagong datos para sa {def_p_auto} mula sa Google Drive Master Excel..."):
+                    _GLOBAL_PARISH_MEMBERS_MEMO.clear()
+                    st.session_state.pop("_fast_census_df_memo", None)
                     st.cache_data.clear()
                     b_fresh_add, lbl_fresh_add = fetch_live_excel_bytes(ACTIVE_SPREADSHEET_URL, force_cloud=True)
                     master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
+                    p_synced_df = master_members_df[master_members_df["Parish"] == def_p_auto] if not master_members_df.empty else pd.DataFrame()
+                    p_synced_fams = p_synced_df["Family ID"].replace("", pd.NA).dropna().nunique() if not p_synced_df.empty else 0
                     st.session_state["add_form_refresh_counter"] = st.session_state.get("add_form_refresh_counter", 0) + 1
-                    st.success(f"✅ Na-sync mula sa Google Drive!")
+                    st.success(f"✅ Na-sync mula sa Google Drive para sa **{def_p_auto}** ({p_synced_fams} Pamilya • {len(p_synced_df)} Miyembro)!")
                     time.sleep(0.1)
                     st.rerun()
         with sb_c2:
@@ -19519,8 +19610,11 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                 )
 
                 if st.session_state.get("_last_processed_upload_sig") != cur_file_sig or manual_reprocess_clicked:
-                    if manual_reprocess_clicked:
-                        st.session_state.pop("_fast_upload_extraction_memo", None)
+                    st.session_state.pop("_fast_upload_extraction_memo", None)
+                    st.session_state.pop("extracted_members_batch", None)
+                    st.session_state.pop("extracted_pdf_page_previews", None)
+                    st.session_state.pop("_last_auto_save_banner", None)
+                    st.session_state.pop("_last_uploaded_drive_links", None)
                     with st.spinner(f"Binabasa ang lahat ng pahina at miyembro mula sa in-upload na form para sa {def_p_auto}..."):
                         batch_payload = []
                         uploaded_drive_links = []
@@ -19653,6 +19747,15 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                         st.success(txt_b)
                     else:
                         st.error(txt_b)
+            else:
+                # No file currently selected in Paraan 1: clear any leftover data from a previous upload so only the next newly uploaded file is processed!
+                if st.session_state.get("_last_processed_upload_sig"):
+                    st.session_state.pop("_last_processed_upload_sig", None)
+                    st.session_state.pop("extracted_members_batch", None)
+                    st.session_state.pop("extracted_pdf_page_previews", None)
+                    st.session_state.pop("_last_auto_save_banner", None)
+                    st.session_state.pop("_last_uploaded_drive_links", None)
+                    st.session_state.pop("_last_upload_folder_error", None)
 
     elif entry_mode_choice.startswith("✍️ Paraan 2"):
         with st.container(border=True):
@@ -19857,33 +19960,7 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
 
     if st.session_state.get("extracted_members_batch"):
         ext_batch_cur = st.session_state["extracted_members_batch"]
-        # Auto-heal partial 1-member batch in Step 3 if it matches a known multi-member household (e.g. Avelino Astodillo 10 members / CTG-LN-FAM-0007)
-        if len(ext_batch_cur) == 1:
-            _fn0_up = str(ext_batch_cur[0].get("Full Name", "") or ext_batch_cur[0].get("Head of Family", "")).upper()
-            _fid0_up = str(ext_batch_cur[0].get("Family ID", "")).upper()
-            _p0 = str(ext_batch_cur[0].get("Parish", def_p_auto))
-            _healed_batch = None
-            if "MO = MOTHER" in _fn0_up or "BR = BROTHER" in _fn0_up or "CESAR" in _fn0_up or "EVANGELINE" in _fn0_up or _fid0_up == "CTG-LN-FAM-0008":
-                _healed_batch = _get_builtin_cesar_claro_10_members_pdf_family(_p0)
-            elif "AVELINO" in _fn0_up or "ASTODILLO" in _fn0_up or "ASTUDILLO" in _fn0_up or _fid0_up == "CTG-LN-FAM-0007":
-                _healed_batch = _get_builtin_avelino_astodillo_10_members_pdf_family(_p0)
-            elif "BILLY" in _fn0_up or "PAQUIT" in _fn0_up or "PAGUH" in _fn0_up or _fid0_up == "CTG-LN-FAM-0006":
-                _healed_batch = _get_builtin_billy_paquit_6_members_pdf_family(_p0)
-            elif "ARNULFO" in _fn0_up or "ALAO" in _fn0_up or _fid0_up == "CTG-LN-FAM-0005":
-                _healed_batch = _get_builtin_arnulfo_alao_4_members_pdf_family(_p0)
-            elif "APOLONIO" in _fn0_up or _fid0_up == "CTG-LN-FAM-0004":
-                _healed_batch = _get_builtin_apolonio_claro_2_members_pdf_family(_p0)
-            if _healed_batch:
-                for _hr in _healed_batch:
-                    if _fid0_up:
-                        _hr["Family ID"] = _fid0_up
-                st.session_state["extracted_members_batch"] = _healed_batch
-                ext_batch_cur = _healed_batch
-                try:
-                    append_new_member_to_excel_and_sync(ACTIVE_SPREADSHEET_URL, _healed_batch[0], _healed_batch[1:])
-                    master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
-                except Exception:
-                    pass
+        # Strictly display only the members extracted from the current active upload or selected family (never overwrite with old cached families)
         first_rec_meta = ext_batch_cur[0]
         pv_rev_k = st.session_state.get("add_form_refresh_counter", 0)
 
@@ -19996,7 +20073,7 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                 "Student/Working": st.column_config.SelectboxColumn("Student/Working", options=sw_valid_opts, width="medium"),
                 "Contact No.": st.column_config.TextColumn("Contact No.", width="medium"),
                 "Church Member": st.column_config.SelectboxColumn("Church Member", options=["YES", "NO"], width="small"),
-                "Status": st.column_config.SelectboxColumn("Status", options=["ACTIVE", "ACTIVE IN MANILA", "ACTIVE IN HONGKONG", "INACTIVE", "NON-MEMBER", "ON GOING INDOC"], width="medium"),
+                "Status": st.column_config.SelectboxColumn("Status", options=ALL_PARISH_ACTIVE_STATUS_OPTIONS, width="medium"),
                 "Baptized": st.column_config.SelectboxColumn("Baptized", options=["YES", "NO"], width="small"),
                 "Baptism Date": st.column_config.TextColumn("Baptism Date", width="small"),
                 "Current Address (If living separately)": st.column_config.TextColumn("Current Address", width="large"),
