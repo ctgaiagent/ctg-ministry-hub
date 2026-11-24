@@ -14,6 +14,7 @@ Official Streamlit Web Application for Master Admin & 10 Parish Leaders:
 
 import os
 import io
+import gc
 import re
 import ast
 import csv
@@ -2797,7 +2798,7 @@ def sync_excel_bytes_to_drive(excel_bytes: bytes, spreadsheet_url: str, local_ca
                 media = MediaIoBaseUpload(
                     io.BytesIO(excel_bytes),
                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    resumable=True
+                    resumable=(len(excel_bytes) > 5 * 1024 * 1024)
                 )
                 service.files().update(fileId=fid_try, media_body=media, supportsAllDrives=True).execute()
                 _mark_token_as_verified_drive_working(getattr(service, "_ctg_rt_token", ""))
@@ -2818,7 +2819,7 @@ def sync_excel_bytes_to_drive(excel_bytes: bytes, spreadsheet_url: str, local_ca
             media = MediaIoBaseUpload(
                 io.BytesIO(excel_bytes),
                 mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                resumable=True
+                resumable=(len(excel_bytes) > 5 * 1024 * 1024)
             )
             res = service.files().list(
                 q=f"('{APP_STORAGE_FOLDER_ID}' in parents or name='CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx') and name='CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx' and trashed=false",
@@ -3110,7 +3111,7 @@ def _build_seed_census_workbook_bytes() -> bytes:
     wb.save(out_b)
     return out_b.getvalue()
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=1800, max_entries=2, show_spinner=False)
 def _get_cached_excel_max_family_id_map(spreadsheet_url: str) -> dict:
     """Scans HEAD OF FAMILY MASTER and all 10 Parish sheets once per cache cycle to return the highest Family ID integer per parish in 0.0001s."""
     max_map = {p: 0 for p in PARISH_ORDER}
@@ -3143,6 +3144,12 @@ def _get_cached_excel_max_family_id_map(spreadsheet_url: str) -> dict:
                         m = generic_tail_pat.match(fid_v.strip())
                         if m:
                             max_map[p_name] = max(max_map.get(p_name, 0), int(m.group(1)))
+        try:
+            xls.close()
+        except Exception:
+            pass
+        del ex_b
+        gc.collect()
     except Exception:
         pass
     return max_map
@@ -3308,6 +3315,7 @@ def _merge_persistent_journal_into_excel_bytes(excel_bytes: bytes) -> bytes:
         return _EXCEL_JOURNAL_MERGE_MEMO[memo_k]
     j_data = _load_saved_families_journal()
     if not j_data:
+        _EXCEL_JOURNAL_MERGE_MEMO.clear()
         _EXCEL_JOURNAL_MERGE_MEMO[memo_k] = excel_bytes
         return excel_bytes
     try:
@@ -3401,11 +3409,13 @@ def _merge_persistent_journal_into_excel_bytes(excel_bytes: bytes) -> bytes:
             wb.save(ob)
             wb.close()
             merged_res = ob.getvalue()
+            _EXCEL_JOURNAL_MERGE_MEMO.clear()
             _EXCEL_JOURNAL_MERGE_MEMO[memo_k] = merged_res
             return merged_res
         wb.close()
     except Exception:
         pass
+    _EXCEL_JOURNAL_MERGE_MEMO.clear()
     _EXCEL_JOURNAL_MERGE_MEMO[memo_k] = excel_bytes
     return excel_bytes
 
@@ -3597,7 +3607,7 @@ def _check_and_pull_drive_excel_if_modified(spreadsheet_url: str, force_pull: bo
                 continue
     return b"", ""
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=1800, max_entries=2, show_spinner=False)
 def fetch_live_excel_bytes(spreadsheet_url: str, force_cloud: bool = False) -> tuple[bytes, str]:
     """Ultra-fast (0.0005s) Excel loader with non-blocking Google Drive change detection.
     Reads local CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx immediately when valid, and checks Google Drive
@@ -3861,7 +3871,7 @@ def format_dataframe_for_parish_display(df_in: pd.DataFrame, parish_scope: str) 
     drop_hk = [c for c in ["Work Type", "Day Off"] if c in df_in.columns and parish_scope != "Lahat ng Parokya (All 10 Parishes)"]
     return df_in.drop(columns=drop_hk) if drop_hk else df_in
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=1800, max_entries=2, show_spinner=False)
 def load_complete_parish_members(spreadsheet_url: str):
     standard_cols = [
         "Parish", "Family ID", "Head of Family", "No.", "Full Name", "Relationship",
@@ -4123,6 +4133,13 @@ def load_complete_parish_members(spreadsheet_url: str):
                     })
         except Exception:
             pass
+        finally:
+            try:
+                xls.close()
+            except Exception:
+                pass
+            del excel_bytes
+            gc.collect()
 
     if not all_rows:
         return pd.DataFrame(columns=standard_cols), src_label
@@ -4136,10 +4153,11 @@ def load_complete_parish_members(spreadsheet_url: str):
 
     final_res_df = df_out[standard_cols]
     if bytes_digest and not final_res_df.empty:
+        _GLOBAL_PARISH_MEMBERS_MEMO.clear()
         _GLOBAL_PARISH_MEMBERS_MEMO["digest"] = bytes_digest
-        _GLOBAL_PARISH_MEMBERS_MEMO["df"] = final_res_df.copy()
+        _GLOBAL_PARISH_MEMBERS_MEMO["df"] = final_res_df
         _GLOBAL_PARISH_MEMBERS_MEMO["label"] = src_label
-        st.session_state["_fast_census_df_memo"] = {"digest": bytes_digest, "df": final_res_df.copy(), "label": src_label}
+    st.session_state.pop("_fast_census_df_memo", None)
     return final_res_df, src_label
 
 def is_removed_or_deceased_record(rec) -> bool:
@@ -4215,7 +4233,7 @@ table.ctg-print-table tr:nth-child(even) {{ background: #F8FAFC; }}
 </html>"""
     return html_doc.encode("utf-8")
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=1800, max_entries=2, show_spinner=False)
 def load_removed_and_deceased_sheet_members(spreadsheet_url: str, active_df: pd.DataFrame = None) -> pd.DataFrame:
     standard_cols = [
         "Parish", "Family ID", "Head of Family", "No.", "Full Name", "Relationship",
@@ -5277,6 +5295,9 @@ def _auto_repair_evangeline_palma_and_junk_header_rows_once(spreadsheet_url: str
     """Automatically purges any OCR table-header fragment rows ('Rela- S Tion- E X', 'Birth- Date', 'Cate', 'Bap', 'Age', 'Rela', 'Age Stat Bap')
     and split 'CTG-LN-FAM-0012' ('Zearne B.') from HEAD OF FAMILY MASTER and LIPAY NORTE PARISH, and replaces CTG-LN-FAM-0011 with the
     complete, accurate 5-member Evangeline Palma & Michael Palma family record."""
+    cfg_ep = load_saved_config()
+    if cfg_ep.get("EVANGELINE_PALMA_REPAIRED_V1"):
+        return
     try:
         excel_bytes, _ = fetch_live_excel_bytes(spreadsheet_url, force_cloud=True)
         if not excel_bytes:
@@ -5328,6 +5349,14 @@ def _auto_repair_evangeline_palma_and_junk_header_rows_once(spreadsheet_url: str
             for pm in palma_mems:
                 pm["Family ID"] = "CTG-LN-FAM-0011"
             append_new_member_to_excel_and_sync(spreadsheet_url, palma_mems[0], palma_mems[1:])
+        try:
+            wb.close()
+        except Exception:
+            pass
+        cfg_ep["EVANGELINE_PALMA_REPAIRED_V1"] = True
+        with open(LOCAL_CONFIG_FILE, "w", encoding="utf-8") as f_ep:
+            json.dump(cfg_ep, f_ep, indent=2)
+        gc.collect()
     except Exception:
         pass
 
@@ -6626,7 +6655,7 @@ def extract_notion_property(prop_data: dict) -> str:
         return str(prop_data.get("last_edited_time") or "")
     return ""
 
-@st.cache_data(ttl=18000, show_spinner=False)
+@st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
 def load_notion_crm_data(token: str, db_id: str) -> pd.DataFrame:
     if not token or not db_id:
         return pd.DataFrame()
@@ -7436,7 +7465,7 @@ if not st.session_state.get("_andabuen_purged_session") and _cur_df_len_key not 
             _auto_upgrade_partial_ermito_claro_record_once(ACTIVE_SPREADSHEET_URL)
             master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
         if (
-            any(nm in ("RELA- S TION- E X", "BIRTH- DATE", "CATE", "BAP", "AGE", "RELA", "AGE STAT BAP", "ZEARNE B.") or _is_junk_ocr_header_name(nm) for nm in up_all_nms)
+            any(nm in ("RELA- S TION- E X", "BIRTH- DATE", "CATE", "BAP", "AGE", "RELA", "AGE STAT BAP", "ZEARNE B.") for nm in up_all_nms)
             or (any("EVANGELINE PALMA" in nm for nm in up_all_nms) and not any("MONINA JOY PALMA" in nm for nm in up_all_nms))
         ):
             _auto_repair_evangeline_palma_and_junk_header_rows_once(ACTIVE_SPREADSHEET_URL)
@@ -7550,7 +7579,7 @@ def build_combined_records_df(df_p: pd.DataFrame, df_q: pd.DataFrame, df_co: pd.
         df_out = df_out.sort_values(by="Huling Na-update", ascending=False, ignore_index=True)
     return df_out
 
-@st.cache_data(ttl=18000, show_spinner=False)
+@st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
 def load_all_ministry_DataFrames():
     n_tok = st.session_state.custom_secrets.get("NOTION_TOKEN", NOTION_TOKEN)
     crm_db = st.session_state.custom_secrets.get("NOTION_CRM_DB_ID", NOTION_CRM_DB_ID)
@@ -7887,7 +7916,7 @@ VERIFIED_POBLACION_JAN_W1_RECORD = {
     "has_data": True
 }
 
-@st.cache_data(ttl=18000, show_spinner=False)
+@st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
 def load_weekly_monitoring_records() -> dict:
     db = {}
     if os.path.exists(LOCAL_WEEKLY_REPORTS_DB):
@@ -8780,7 +8809,7 @@ def _build_clean_pwr_2027_consolidation_workbook() -> openpyxl.Workbook:
     wb.remove(default_ws)
     return wb
 
-@st.cache_data(ttl=18000, show_spinner=False)
+@st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
 def fetch_pwr_2027_consolidation_workbook_bytes(force_drive: bool = False) -> bytes:
     """Reads cached CTG_PWR_2027_CONSOLIDATION.xlsx in <5ms for zero lag when force_drive=False,
     and pulls fresh bytes from Google Drive when force_drive=True or local cache is missing."""
@@ -12262,7 +12291,7 @@ def _download_drive_spreadsheet_bytes_any_format(sheet_url_or_id: str) -> bytes 
             continue
     return None
 
-@st.cache_data(ttl=18000, show_spinner=False)
+@st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
 def fetch_outreach_drive_spreadsheet_df(sheet_url: str = "") -> tuple[pd.DataFrame, str]:
     """Binabasa ang lahat ng rows mula sa Google Drive Spreadsheet para sa House Visitation, Missionary Work, Indoctrination & Remarks
     (https://docs.google.com/spreadsheets/d/1FZLr3gFvU-YXWJMTrRkOqJ2X0hTAaQ3rRerX9cdUIb8/edit?usp=sharing)."""
@@ -12945,7 +12974,7 @@ def _sync_from_editor_bar():
     if p and p in PARISH_ORDER:
         st.session_state["up_sel_parish"] = p
 
-@st.cache_data(ttl=18000, show_spinner=False)
+@st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
 def auto_poll_drive_weekly_report_changes(target_month: str, target_week: str) -> str:
     """Awtomatikong tinitingnan kung may binago/in-adjust sa Google Drive Weekly Report Excel files
     at kusang ina-update ang datos at attendance list sa app."""
@@ -18197,9 +18226,12 @@ def extract_page_images_from_pdf_bytes(raw_pdf: bytes) -> list[Image.Image]:
         page_cnt = min(8, len(doc))
         for i in range(page_cnt):
             page = doc[i]
-            bitmap = page.render(scale=1.35)
-            pil_im = bitmap.to_pil().convert("RGB").copy()
-            imgs.append(pil_im)
+            bitmap = page.render(scale=1.15)
+            pil_im = bitmap.to_pil().convert("RGB")
+            if max(pil_im.size) > 1150:
+                _sc = 1150.0 / float(max(pil_im.size))
+                pil_im = pil_im.resize((int(pil_im.width * _sc), int(pil_im.height * _sc)), Image.Resampling.BILINEAR)
+            imgs.append(pil_im.copy())
             try:
                 bitmap.close()
                 page.close()
@@ -18218,9 +18250,13 @@ def extract_page_images_from_pdf_bytes(raw_pdf: bytes) -> list[Image.Image]:
             fitz = importlib.import_module("fitz")
             doc = fitz.open(stream=raw_pdf, filetype="pdf")
             for page in list(doc)[:8]:
-                pix = page.get_pixmap(dpi=140)
-                pil_im = Image.open(io.BytesIO(pix.tobytes("jpeg"))).convert("RGB").copy()
-                imgs.append(pil_im)
+                pix = page.get_pixmap(dpi=115)
+                pil_im = Image.open(io.BytesIO(pix.tobytes("jpeg"))).convert("RGB")
+                if max(pil_im.size) > 1150:
+                    _sc = 1150.0 / float(max(pil_im.size))
+                    pil_im = pil_im.resize((int(pil_im.width * _sc), int(pil_im.height * _sc)), Image.Resampling.BILINEAR)
+                imgs.append(pil_im.copy())
+                del pix
             try:
                 doc.close()
             except Exception:
@@ -19693,12 +19729,18 @@ def extract_members_from_uploaded_files_batch(uploaded_files_list: list, default
             pdf_parts = []
             for p_idx, p_im in enumerate(pdf_pils, 1):
                 jb = io.BytesIO()
-                p_im.save(jb, format="JPEG", quality=85)
+                p_im.save(jb, format="JPEG", quality=78)
                 jpg_b = jb.getvalue()
                 pdf_parts.append(types.Part.from_bytes(data=jpg_b, mime_type="image/jpeg"))
+                p_prev = p_im
+                if max(p_prev.size) > 900:
+                    _sc_p = 900.0 / float(max(p_prev.size))
+                    p_prev = p_prev.resize((int(p_prev.width * _sc_p), int(p_prev.height * _sc_p)), Image.Resampling.BILINEAR)
+                jb_prev = io.BytesIO()
+                p_prev.save(jb_prev, format="JPEG", quality=70)
                 pdf_page_preview_jpegs.append({
                     "caption": f"{f_name} — Page {p_idx}/{len(pdf_pils)}",
-                    "bytes": jpg_b
+                    "bytes": jb_prev.getvalue()
                 })
             if not pdf_parts:
                 pdf_parts.append(types.Part.from_bytes(data=f_bytes, mime_type="application/pdf"))
@@ -19754,12 +19796,13 @@ def extract_members_from_uploaded_files_batch(uploaded_files_list: list, default
         st.session_state.pop("extracted_pdf_page_previews", None)
 
     if all_extracted_members:
-        if "_fast_upload_extraction_memo" not in st.session_state or not isinstance(st.session_state["_fast_upload_extraction_memo"], dict):
-            st.session_state["_fast_upload_extraction_memo"] = {}
-        st.session_state["_fast_upload_extraction_memo"][batch_cache_key] = {
-            "members": [m.copy() for m in all_extracted_members],
-            "previews": pdf_page_preview_jpegs,
+        st.session_state["_fast_upload_extraction_memo"] = {
+            batch_cache_key: {
+                "members": [m.copy() for m in all_extracted_members],
+                "previews": pdf_page_preview_jpegs,
+            }
         }
+    gc.collect()
 
     return all_extracted_members
 
@@ -19967,6 +20010,7 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                         ext_members = extract_members_from_uploaded_files_batch(
                             batch_payload, def_p_auto, "gemini-3.8-flash"
                         )
+                        st.session_state.pop("_pending_raw_upload_files", None)
                         st.session_state["_last_processed_upload_sig"] = cur_file_sig
 
                         if auto_save_on_drop or manual_reprocess_clicked:
