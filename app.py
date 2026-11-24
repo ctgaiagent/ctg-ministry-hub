@@ -896,9 +896,41 @@ def _sha256_hex(val: str) -> str:
     return hashlib.sha256(str(val or "").encode("utf-8")).hexdigest()
 
 # 🔐 SECURE CREDENTIAL REGISTRY (Uses SHA-256 digests + st.secrets override; zero plaintext passwords in code)
+# 🏛️ DIOCESE HEAD JURISDICTIONS (Scoped Multi-Parish RBAC)
+DIOCESE_1_KEY = "DIOCESE HEAD I - REGION 1"
+DIOCESE_1_LEADER_NAME = "Msgr. BELLA B. BINABICE"
+DIOCESE_1_PARISHES = [
+    "LIPAY NORTE PARISH", "MALANAS PARISH", "POBLACION PARISH", "DUPLAS PARISH",
+    "SANTIAGO PARISH", "CABA PARISH", "MANILA PARISH", "HONGKONG PARISH",
+]
+
+DIOCESE_2_KEY = "DIOCESE HEAD 2 - REGION 2"
+DIOCESE_2_LEADER_NAME = "MSGR. ELORDE A. WAYET"
+DIOCESE_2_PARISHES = [
+    "ANDABUEN PARISH", "APAYAO PARISH",
+]
+
+DIOCESE_ACCOUNT_KEYS = [DIOCESE_1_KEY, DIOCESE_2_KEY]
+DIOCESE_PARISH_MAP = {
+    DIOCESE_1_KEY: DIOCESE_1_PARISHES,
+    DIOCESE_2_KEY: DIOCESE_2_PARISHES,
+}
+
 PARISH_ACCOUNTS = {
     "ctg.ministry.master.admin": {"pw_hash": "10d3135d22d6d882860211e3e9345efbb20975149ab24dfdc8c44f8779060713", "parish": "Lahat ng Parokya", "role": "Master Admin"},
     APP_USER.lower(): {"pw_hash": _sha256_hex(APP_PASSWORD) if APP_PASSWORD else "10d3135d22d6d882860211e3e9345efbb20975149ab24dfdc8c44f8779060713", "parish": "Lahat ng Parokya", "role": "Master Admin"},
+    "diocese1.admin": {"pw_hash": _sha256_hex("CTG@Diocese1_2027"), "parish": DIOCESE_1_KEY, "role": "Diocese Admin"},
+    "msgr.bella.binabice": {"pw_hash": _sha256_hex("CTG@Diocese1_2027"), "parish": DIOCESE_1_KEY, "role": "Diocese Admin"},
+    "bella.binabice": {"pw_hash": _sha256_hex("CTG@Diocese1_2027"), "parish": DIOCESE_1_KEY, "role": "Diocese Admin"},
+    "diocese head i - region 1": {"pw_hash": _sha256_hex("CTG@Diocese1_2027"), "parish": DIOCESE_1_KEY, "role": "Diocese Admin"},
+    "diocese head 1": {"pw_hash": _sha256_hex("CTG@Diocese1_2027"), "parish": DIOCESE_1_KEY, "role": "Diocese Admin"},
+    "region1.admin": {"pw_hash": _sha256_hex("CTG@Diocese1_2027"), "parish": DIOCESE_1_KEY, "role": "Diocese Admin"},
+    "diocese2.admin": {"pw_hash": _sha256_hex("CTG@Diocese2_2027"), "parish": DIOCESE_2_KEY, "role": "Diocese Admin"},
+    "msgr.elorde.wayet": {"pw_hash": _sha256_hex("CTG@Diocese2_2027"), "parish": DIOCESE_2_KEY, "role": "Diocese Admin"},
+    "elorde.wayet": {"pw_hash": _sha256_hex("CTG@Diocese2_2027"), "parish": DIOCESE_2_KEY, "role": "Diocese Admin"},
+    "diocese head 2 - region 2": {"pw_hash": _sha256_hex("CTG@Diocese2_2027"), "parish": DIOCESE_2_KEY, "role": "Diocese Admin"},
+    "diocese head 2": {"pw_hash": _sha256_hex("CTG@Diocese2_2027"), "parish": DIOCESE_2_KEY, "role": "Diocese Admin"},
+    "region2.admin": {"pw_hash": _sha256_hex("CTG@Diocese2_2027"), "parish": DIOCESE_2_KEY, "role": "Diocese Admin"},
     "lipay norte parish": {"pw_hash": "5fde976f32458c7d2bcfbebe87b1a3c70678f7987d618b98667e5c95176c9a74", "parish": "LIPAY NORTE PARISH", "role": "Parish Leader"},
     "lipaynorteparish": {"pw_hash": "5fde976f32458c7d2bcfbebe87b1a3c70678f7987d618b98667e5c95176c9a74", "parish": "LIPAY NORTE PARISH", "role": "Parish Leader"},
     "malanas parish": {"pw_hash": "d05c4fdecac72853bebd617131d7dc425ee70ccc8ff825e591a3561e6ea62d7c", "parish": "MALANAS PARISH", "role": "Parish Leader"},
@@ -920,6 +952,40 @@ PARISH_ACCOUNTS = {
     "hongkong parish": {"pw_hash": "3c8d89e094f6fdac11af6eddf1c6315697e38ec220b83f08a9a6280fb30d4607", "parish": "HONGKONG PARISH", "role": "Parish Leader"},
     "hongkongparish": {"pw_hash": "3c8d89e094f6fdac11af6eddf1c6315697e38ec220b83f08a9a6280fb30d4607", "parish": "HONGKONG PARISH", "role": "Parish Leader"},
 }
+
+def get_current_diocese_scope_key() -> str:
+    """Returns DIOCESE_1_KEY or DIOCESE_2_KEY if the logged-in user (or current view mode) is a Diocese Head Admin, else ''."""
+    d_key = str(st.session_state.get("diocese_scope_key", "") or "").strip()
+    if d_key in DIOCESE_PARISH_MAP:
+        return d_key
+    lp = str(st.session_state.get("login_parish", "") or "").strip()
+    if lp in DIOCESE_PARISH_MAP and st.session_state.get("user_role") == "Diocese Admin":
+        return lp
+    ap = str(st.session_state.get("assigned_parish", "") or "").strip()
+    if ap in DIOCESE_PARISH_MAP:
+        return ap
+    return ""
+
+def is_current_user_diocese_admin() -> bool:
+    return bool(st.session_state.get("user_role") == "Diocese Admin" and get_current_diocese_scope_key() in DIOCESE_PARISH_MAP)
+
+def get_allowed_parishes_for_current_user() -> list[str]:
+    """Returns the strict list of Parishes the current user is authorized to access:
+    - Master Admin: all 10 parishes (PARISH_ORDER)
+    - Diocese Head I (Msgr. BELLA B. BINABICE): Region 1 + Manila & Hong Kong (8 parishes)
+    - Diocese Head 2 (MSGR. ELORDE A. WAYET): Region 2 / CAR — Andabuen & Apayao (2 parishes)
+    - Parish Leader: strictly their single assigned parish"""
+    role = str(st.session_state.get("user_role", "") or "")
+    if role == "Master Admin":
+        return list(PARISH_ORDER)
+    d_key = get_current_diocese_scope_key()
+    if role == "Diocese Admin" and d_key in DIOCESE_PARISH_MAP:
+        return list(DIOCESE_PARISH_MAP[d_key])
+    ap = str(st.session_state.get("assigned_parish", "") or "").strip()
+    if ap in PARISH_ORDER:
+        return [ap]
+    return [PARISH_ORDER[0]]
+
 
 LOCAL_ENCRYPTED_ACCOUNTS_FILE = "ctg_encrypted_user_accounts.json"
 LOCAL_LEADERSHIP_PROFILES_FILE = "ctg_leadership_and_priests_profiles.json"
@@ -958,7 +1024,31 @@ def get_default_encrypted_accounts_registry() -> dict:
             "is_active": True,
             "one_time_changed": False,
             "updated_at": "Default (SHA-256 Encrypted)"
-        }
+        },
+        DIOCESE_1_KEY: {
+            "account_key": DIOCESE_1_KEY,
+            "username": "diocese1.admin",
+            "pw_hash": PARISH_ACCOUNTS["diocese1.admin"]["pw_hash"],
+            "parish": DIOCESE_1_KEY,
+            "role": "Diocese Admin",
+            "leader_name": DIOCESE_1_LEADER_NAME,
+            "covered_parishes": DIOCESE_1_PARISHES,
+            "is_active": True,
+            "one_time_changed": False,
+            "updated_at": "Default (SHA-256 Encrypted)"
+        },
+        DIOCESE_2_KEY: {
+            "account_key": DIOCESE_2_KEY,
+            "username": "diocese2.admin",
+            "pw_hash": PARISH_ACCOUNTS["diocese2.admin"]["pw_hash"],
+            "parish": DIOCESE_2_KEY,
+            "role": "Diocese Admin",
+            "leader_name": DIOCESE_2_LEADER_NAME,
+            "covered_parishes": DIOCESE_2_PARISHES,
+            "is_active": True,
+            "one_time_changed": False,
+            "updated_at": "Default (SHA-256 Encrypted)"
+        },
     }
     for p_name in PARISH_ORDER:
         p_low = p_name.lower()
@@ -1197,8 +1287,10 @@ def save_leadership_and_priests_profiles(profiles: dict):
         pass
 
 def record_parish_leader_active_presence(parish_name: str):
-    """Records a live active heartbeat timestamp when a Parish Admin Leader logs in or opens the app."""
-    if not parish_name or parish_name not in PARISH_ORDER:
+    """Records a live active heartbeat timestamp when a Parish Admin Leader or Diocese Head logs in or opens the app."""
+    d_scope = get_current_diocese_scope_key()
+    target_key = d_scope if d_scope in DIOCESE_ACCOUNT_KEYS else parish_name
+    if not target_key or (target_key not in PARISH_ORDER and target_key not in DIOCESE_ACCOUNT_KEYS):
         return
     now_str = get_philippine_datetime_str()
     now_ep = time.time()
@@ -1207,27 +1299,47 @@ def record_parish_leader_active_presence(parish_name: str):
         return
     try:
         profiles = load_leadership_and_priests_profiles()
-        if parish_name in profiles.get("parish_priests", {}):
-            profiles["parish_priests"][parish_name]["is_active_online"] = True
-            profiles["parish_priests"][parish_name]["last_active_epoch"] = now_ep
-            profiles["parish_priests"][parish_name]["last_active_ph"] = now_str
+        if target_key == DIOCESE_1_KEY and "diocese_head_1" in profiles:
+            profiles["diocese_head_1"]["is_active_online"] = True
+            profiles["diocese_head_1"]["last_active_epoch"] = now_ep
+            profiles["diocese_head_1"]["last_active_ph"] = now_str
             save_leadership_and_priests_profiles(profiles)
-            st.session_state["_last_heartbeat_saved_ep"] = now_ep
-            st.session_state["_last_heartbeat_saved_ph"] = now_str
+        elif target_key == DIOCESE_2_KEY and "diocese_head_2" in profiles:
+            profiles["diocese_head_2"]["is_active_online"] = True
+            profiles["diocese_head_2"]["last_active_epoch"] = now_ep
+            profiles["diocese_head_2"]["last_active_ph"] = now_str
+            save_leadership_and_priests_profiles(profiles)
+        elif target_key in profiles.get("parish_priests", {}):
+            profiles["parish_priests"][target_key]["is_active_online"] = True
+            profiles["parish_priests"][target_key]["last_active_epoch"] = now_ep
+            profiles["parish_priests"][target_key]["last_active_ph"] = now_str
+            save_leadership_and_priests_profiles(profiles)
+        st.session_state["_last_heartbeat_saved_ep"] = now_ep
+        st.session_state["_last_heartbeat_saved_ph"] = now_str
     except Exception:
         pass
 
 def set_parish_leader_offline_presence(parish_name: str):
-    """Marks a Parish Admin Leader as Offline (Red) when they log out."""
-    if not parish_name or parish_name not in PARISH_ORDER:
+    """Marks a Parish Admin Leader or Diocese Head as Offline (Red) when they log out."""
+    d_scope = get_current_diocese_scope_key()
+    target_key = d_scope if d_scope in DIOCESE_ACCOUNT_KEYS else parish_name
+    if not target_key or (target_key not in PARISH_ORDER and target_key not in DIOCESE_ACCOUNT_KEYS):
         return
     try:
         profiles = load_leadership_and_priests_profiles()
-        if parish_name in profiles.get("parish_priests", {}):
-            profiles["parish_priests"][parish_name]["is_active_online"] = False
-            profiles["parish_priests"][parish_name]["last_active_epoch"] = 0.0
+        if target_key == DIOCESE_1_KEY and "diocese_head_1" in profiles:
+            profiles["diocese_head_1"]["is_active_online"] = False
+            profiles["diocese_head_1"]["last_active_epoch"] = 0.0
             save_leadership_and_priests_profiles(profiles)
-            st.session_state.pop("_last_heartbeat_saved_ep", None)
+        elif target_key == DIOCESE_2_KEY and "diocese_head_2" in profiles:
+            profiles["diocese_head_2"]["is_active_online"] = False
+            profiles["diocese_head_2"]["last_active_epoch"] = 0.0
+            save_leadership_and_priests_profiles(profiles)
+        elif target_key in profiles.get("parish_priests", {}):
+            profiles["parish_priests"][target_key]["is_active_online"] = False
+            profiles["parish_priests"][target_key]["last_active_epoch"] = 0.0
+            save_leadership_and_priests_profiles(profiles)
+        st.session_state.pop("_last_heartbeat_saved_ep", None)
     except Exception:
         pass
 
@@ -1348,41 +1460,56 @@ def render_church_leadership_and_priests_directory(context_key: str = "home"):
             unsafe_allow_html=True
         )
 
-    # TIER 2: TWO DIOCESE HEADS (Region 1 & Region 2 — Position shown ONLY ONCE per card)
+    # TIER 2: TWO DIOCESE HEADS (Region 1 + Manila/HK & Region 2 — Position shown ONLY ONCE per card)
     dio1 = profiles["diocese_head_1"]
     dio2 = profiles["diocese_head_2"]
     dio1_pos_clean = str(dio1.get("position", "") or "DIOCESE HEAD I - REGION 1").strip()
     dio2_pos_clean = str(dio2.get("position", "") or "DIOCESE HEAD 2 - REGION 2").strip()
+    cur_d_scope = get_current_diocese_scope_key()
+    d1_online = (cur_d_scope == DIOCESE_1_KEY) or (bool(dio1.get("is_active_online")) and (time.time() - float(dio1.get("last_active_epoch", 0) or 0)) <= 1800.0)
+    d2_online = (cur_d_scope == DIOCESE_2_KEY) or (bool(dio2.get("is_active_online")) and (time.time() - float(dio2.get("last_active_epoch", 0) or 0)) <= 1800.0)
+    d1_badge = _build_top_right_status_badge_html(is_online=d1_online) if (is_master or cur_d_scope == DIOCESE_1_KEY) else ""
+    d2_badge = _build_top_right_status_badge_html(is_online=d2_online) if (is_master or cur_d_scope == DIOCESE_2_KEY) else ""
     dsp_L, col_dio1, col_dio2, dsp_R = st.columns([0.45, 1.55, 1.55, 0.45])
     with col_dio1:
         av_d1 = _build_profile_avatar_html(dio1.get("photo_b64", ""), "#10B981", 86, "🏛️")
         st.markdown(
-            f"<div style='background:rgba(15,23,42,0.94);border:1.5px solid #10B981;border-radius:12px;"
-            f"padding:16px 12px;text-align:center;margin-bottom:12px;min-height:185px;'>"
+            f"<div style='position:relative;background:rgba(15,23,42,0.94);border:1.5px solid #10B981;border-radius:12px;"
+            f"padding:16px 12px;text-align:center;margin-bottom:12px;min-height:198px;'>"
+            f"{d1_badge}"
             f"{av_d1}<br>"
             f"<div style='font-size:1.04rem;font-weight:800;color:#ECFDF5;margin-top:6px;'>{dio1.get('name')}</div>"
             f"<div style='font-size:0.84rem;color:#6EE7B7;font-weight:700;margin-top:5px;'>{dio1_pos_clean}</div>"
+            f"<div style='font-size:0.71rem;color:#94A3B8;margin-top:4px;'>Sakop: Region 1 Parishes, Manila & Hong Kong</div>"
             f"</div>",
             unsafe_allow_html=True
         )
     with col_dio2:
         av_d2 = _build_profile_avatar_html(dio2.get("photo_b64", ""), "#10B981", 86, "🏛️")
         st.markdown(
-            f"<div style='background:rgba(15,23,42,0.94);border:1.5px solid #10B981;border-radius:12px;"
-            f"padding:16px 12px;text-align:center;margin-bottom:12px;min-height:185px;'>"
+            f"<div style='position:relative;background:rgba(15,23,42,0.94);border:1.5px solid #10B981;border-radius:12px;"
+            f"padding:16px 12px;text-align:center;margin-bottom:12px;min-height:198px;'>"
+            f"{d2_badge}"
             f"{av_d2}<br>"
             f"<div style='font-size:1.04rem;font-weight:800;color:#ECFDF5;margin-top:6px;'>{dio2.get('name')}</div>"
             f"<div style='font-size:0.84rem;color:#6EE7B7;font-weight:700;margin-top:5px;'>{dio2_pos_clean}</div>"
+            f"<div style='font-size:0.71rem;color:#94A3B8;margin-top:4px;'>Sakop: Region 2 Parishes (Andabuen & Apayao)</div>"
             f"</div>",
             unsafe_allow_html=True
         )
 
-    # TIER 3: 10 PARISHES — VISIBLE ONLY TO MASTER ADMIN!
-    if is_master:
-        st.markdown("##### ⛪ Mga Parish Priests, Malanas House Church & Hongkong Leader (10 Parishes — Master Admin Live Active/Offline Monitor)")
+    # TIER 3: PARISHES — VISIBLE TO MASTER ADMIN (ALL 10) OR DIOCESE ADMIN (THEIR SCOPED PARISHES ONLY)
+    if is_master or is_current_user_diocese_admin():
+        visible_tier3_parishes = PARISH_ORDER if is_master else get_allowed_parishes_for_current_user()
+        hdr_tier3 = (
+            "##### ⛪ Mga Parish Priests, Malanas House Church & Hongkong Leader (10 Parishes — Master Admin Live Active/Offline Monitor)"
+            if is_master else
+            f"##### ⛪ Mga Sakop na Parokya sa Ilalim ng {cur_d_scope} ({len(visible_tier3_parishes)} Parishes — Live Active/Offline Monitor)"
+        )
+        st.markdown(hdr_tier3)
         priests_dict = profiles.get("parish_priests", {})
-        for row_start in range(0, len(PARISH_ORDER), 5):
-            row_parishes = PARISH_ORDER[row_start:row_start + 5]
+        for row_start in range(0, len(visible_tier3_parishes), 5):
+            row_parishes = visible_tier3_parishes[row_start:row_start + 5]
             p_cols = st.columns(5)
             for c_i, p_name in enumerate(row_parishes):
                 def_role_p = get_default_parish_leader_role_title(p_name)
@@ -3861,6 +3988,13 @@ def load_complete_parish_members(spreadsheet_url: str):
                     cm_str = str(cm_raw if pd.notna(cm_raw) else "").strip().upper()
                     st_raw = r.get("Status", "")
                     st_str = str(st_raw if pd.notna(st_raw) else "").strip().upper()
+                    rem_raw_for_st = r.get("Remarks", "")
+                    rem_up_for_st = str(rem_raw_for_st if pd.notna(rem_raw_for_st) else "").strip().upper()
+                    combined_st_rem = f"{st_str} {rem_up_for_st}".strip()
+                    if p_name != "MANILA PARISH" and re.search(r"ACTIVE\s*(?:IN|SA|@|-)\s*MANILA|MANILA\s+ACTIVE", combined_st_rem):
+                        st_str = "ACTIVE IN MANILA"
+                    elif p_name != "HONGKONG PARISH" and re.search(r"ACTIVE\s*(?:IN|SA|@|-)\s*HONG\s*KONG|HONG\s*KONG\s+ACTIVE|ACTIVE\s+OFW\s+HK", combined_st_rem):
+                        st_str = "ACTIVE IN HONGKONG"
                     if not cm_str:
                         cm_str = "NO" if "NON" in st_str else ("YES" if st_str else "")
 
@@ -3976,6 +4110,10 @@ def style_member_status_dataframe(df_in: pd.DataFrame, default_badge: str = "ALL
             return "background-color: rgba(148, 163, 184, 0.22); color: #E2E8F0; font-weight: 700;"
         if any(k in v for k in ["REMOVED", "DECEASED", "TANGGAL", "PATAY"]):
             return "background-color: rgba(239, 68, 68, 0.22); color: #FCA5A5; font-weight: 700;"
+        if "MANILA" in v and "ACTIVE" in v:
+            return "background-color: rgba(56, 189, 248, 0.24); color: #7DD3FC; font-weight: 700;"
+        if ("HONGKONG" in v or "HONG KONG" in v) and "ACTIVE" in v:
+            return "background-color: rgba(168, 85, 247, 0.24); color: #D8B4FE; font-weight: 700;"
         if "ACTIVE" in v:
             return "background-color: rgba(16, 185, 129, 0.22); color: #6EE7B7; font-weight: 700;"
         return ""
@@ -4578,7 +4716,15 @@ def _normalize_ctg_form_codes(item: dict) -> dict:
     civ_map = {"S": "SINGLE", "SINGLE": "SINGLE", "M": "MARRIED", "MARRIED": "MARRIED", "W": "WIDOWED", "WIDOWED": "WIDOWED", "SP": "SEPARATED", "SEPARATED": "SEPARATED"}
     sw_map = {"S": "STUDENT", "STUDENT": "STUDENT", "W": "WORKING", "WORKING": "WORKING", "N": "NONE", "NONE": "NONE", "N/A": "NONE", "NA": "NONE"}
     yn_map = {"Y": "YES", "YES": "YES", "N": "NO", "NO": "NO"}
-    st_map = {"A": "ACTIVE", "ACTIVE": "ACTIVE", "I": "INACTIVE", "INACTIVE": "INACTIVE", "NM": "NON-MEMBER", "NON-MEMBER": "NON-MEMBER"}
+    st_map = {
+        "A": "ACTIVE", "ACTIVE": "ACTIVE",
+        "ACTIVE IN MANILA": "ACTIVE IN MANILA", "ACTIVE SA MANILA": "ACTIVE IN MANILA",
+        "ACTIVE IN HONGKONG": "ACTIVE IN HONGKONG", "ACTIVE IN HONG KONG": "ACTIVE IN HONGKONG",
+        "ACTIVE SA HONGKONG": "ACTIVE IN HONGKONG", "ACTIVE SA HONG KONG": "ACTIVE IN HONGKONG",
+        "I": "INACTIVE", "INACTIVE": "INACTIVE",
+        "NM": "NON-MEMBER", "NON-MEMBER": "NON-MEMBER",
+        "ON GOING INDOC": "ON GOING INDOC"
+    }
 
     out = {}
     for k, v in item.items():
@@ -5321,7 +5467,11 @@ def _auto_clean_and_complete_family_records(records: list[dict], default_parish:
             break
     is_hk = (matched_p == "HONGKONG PARISH")
 
-    hof_raw = _clean_cell_str(first.get("Head of Family", "")) or _clean_cell_str(first.get("Full Name", ""))
+    explicit_hof_in_recs = next(
+        (_clean_cell_str(r.get("Full Name", "")) for r in records if _clean_cell_str(r.get("Relationship", "")).upper() in ("HEAD OF FAMILY", "HOF")),
+        ""
+    )
+    hof_raw = _clean_cell_str(first.get("Head of Family", "")) or explicit_hof_in_recs or _clean_cell_str(first.get("Full Name", ""))
     if fn_ref_name and hof_raw:
         hof_raw = _auto_correct_person_name_with_filename(hof_raw, fn_ref_name)
     elif fn_ref_name and not hof_raw:
@@ -6181,19 +6331,27 @@ def normalize_parish_match(row_parish: str, target_parish: str) -> bool:
     tp = str(target_parish).upper().replace("PARISH", "").replace("CHAPTER", "").strip()
     return bool(rp and tp and (rp in tp or tp in rp))
 
-def classify_member_status(status_val, church_member_val):
-    st_up = str(status_val).upper().strip()
-    cm_up = str(church_member_val).upper().strip()
-    # Members marked "ACTIVE in Manila", "ACTIVE in Manila Parish", or "ACTIVE in Hongkong" in their old home parish
-    # are already active in Manila/Hongkong Parish and must NOT be counted as Active in their old home parish.
-    if re.search(r"ACTIVE\s+IN\s+(?:MANILA|HONG\s*KONG|OTHER|ABROAD)", st_up):
+def classify_member_status(status_val, church_member_val, remarks_val: str = "", parish_val: str = ""):
+    """Classifies a member's status while strictly separating members who are 'ACTIVE IN MANILA' ('Active sa Manila')
+    or 'ACTIVE IN HONGKONG' ('Active sa Hong Kong') from the home parish's local 'ACTIVE' count across ALL parishes."""
+    st_up = str(status_val or "").upper().strip()
+    cm_up = str(church_member_val or "").upper().strip()
+    rem_up = str(remarks_val or "").upper().strip()
+    par_up = str(parish_val or "").upper().strip()
+    combined_txt = f"{st_up} {rem_up}".strip()
+
+    if re.search(r"ACTIVE\s*(?:IN|SA|@|-)\s*MANILA|MANILA\s+ACTIVE", combined_txt):
+        return "ACTIVE" if par_up == "MANILA PARISH" else "ACTIVE IN MANILA"
+    if re.search(r"ACTIVE\s*(?:IN|SA|@|-)\s*HONG\s*KONG|HONG\s*KONG\s+ACTIVE|ACTIVE\s+OFW\s+HK", combined_txt):
+        return "ACTIVE" if par_up == "HONGKONG PARISH" else "ACTIVE IN HONGKONG"
+    if re.search(r"ACTIVE\s+IN\s+(?:OTHER|ABROAD)", combined_txt):
         return "INACTIVE"
     if "NON-MEMBER" in st_up or "NON MEMBER" in st_up or cm_up == "NO":
         if "INACTIVE" in st_up:
             return "INACTIVE"
         elif "ACTIVE" in st_up and cm_up != "NO":
             return "ACTIVE"
-        elif "NON" in st_up:
+        elif "NON" in st_up or cm_up == "NO":
             return "NON-MEMBER"
     if "INACTIVE" in st_up:
         return "INACTIVE"
@@ -6219,15 +6377,17 @@ def build_status_summary_and_lists(df):
     categories = ["Seniors", "Adults", "Youth", "Kids", "No category"]
     counts = {
         "ACTIVE": {c: 0 for c in categories},
+        "ACTIVE IN MANILA": {c: 0 for c in categories},
+        "ACTIVE IN HONGKONG": {c: 0 for c in categories},
         "INACTIVE": {c: 0 for c in categories},
         "NON-MEMBER": {c: 0 for c in categories},
         "OTHER": {c: 0 for c in categories},
     }
     active_rows, inactive_rows, non_member_rows = [], [], []
     for _, row in df.iterrows():
-        st_group = classify_member_status(row.get("Status", ""), row.get("Church Member", ""))
+        st_group = classify_member_status(row.get("Status", ""), row.get("Church Member", ""), row.get("Remarks", ""), row.get("Parish", ""))
         cat_group = classify_category(row.get("Category", ""))
-        counts[st_group][cat_group] += 1
+        counts.setdefault(st_group, {c: 0 for c in categories})[cat_group] += 1
         mini_rec = {
             "Full name": row.get("Full Name", ""),
             "Family ID": row.get("Family ID", ""),
@@ -6249,22 +6409,25 @@ def build_status_summary_and_lists(df):
         tot = say + k + nc
         return [label, s, a, y, say, k, nc, tot]
 
-    r_act = make_summary_row("Active members", "ACTIVE")
+    r_act = make_summary_row("Active sa Parokya (Local Active)", "ACTIVE")
+    r_mnl = make_summary_row("Active sa Manila (ACTIVE IN MANILA)", "ACTIVE IN MANILA")
+    r_hk = make_summary_row("Active sa Hong Kong (ACTIVE IN HONGKONG)", "ACTIVE IN HONGKONG")
     r_inact = make_summary_row("Inactive members", "INACTIVE")
     r_non = make_summary_row("Non-members", "NON-MEMBER")
-    r_oth = make_summary_row("Other / No status", "OTHER")
+    r_oth = make_summary_row("Other / On Going Indoc", "OTHER")
+    all_r = [r_act, r_mnl, r_hk, r_inact, r_non, r_oth]
     tot_row = [
         "TOTAL PERSONS",
-        r_act[1] + r_inact[1] + r_non[1] + r_oth[1],
-        r_act[2] + r_inact[2] + r_non[2] + r_oth[2],
-        r_act[3] + r_inact[3] + r_non[3] + r_oth[3],
-        r_act[4] + r_inact[4] + r_non[4] + r_oth[4],
-        r_act[5] + r_inact[5] + r_non[5] + r_oth[5],
-        r_act[6] + r_inact[6] + r_non[6] + r_oth[6],
-        r_act[7] + r_inact[7] + r_non[7] + r_oth[7],
+        sum(x[1] for x in all_r),
+        sum(x[2] for x in all_r),
+        sum(x[3] for x in all_r),
+        sum(x[4] for x in all_r),
+        sum(x[5] for x in all_r),
+        sum(x[6] for x in all_r),
+        sum(x[7] for x in all_r),
     ]
     summary_cols = ["Status", "Seniors", "Adults", "Youth", "Seniors + Adults + Youth", "Kids", "No category", "Total persons"]
-    summary_df = pd.DataFrame([r_act, r_inact, r_non, r_oth, tot_row], columns=summary_cols)
+    summary_df = pd.DataFrame([r_act, r_mnl, r_hk, r_inact, r_non, r_oth, tot_row], columns=summary_cols)
     mini_cols = ["Full name", "Family ID", "Category", "Status", "Church member"]
     df_act_list = pd.DataFrame(active_rows, columns=mini_cols) if active_rows else pd.DataFrame(columns=mini_cols)
     df_inact_list = pd.DataFrame(inactive_rows, columns=mini_cols) if inactive_rows else pd.DataFrame(columns=mini_cols)
@@ -6278,7 +6441,7 @@ def build_age_category_tables(df):
     seniors_rows, adults_rows, youth_rows, kids_rows = [], [], [], []
     cat_cols = ["Name", "Category", "Status"]
     for _, row in df.iterrows():
-        st_group = classify_member_status(row.get("Status", ""), row.get("Church Member", ""))
+        st_group = classify_member_status(row.get("Status", ""), row.get("Church Member", ""), row.get("Remarks", ""), row.get("Parish", ""))
         if st_group != "ACTIVE":
             continue
 
@@ -6310,7 +6473,7 @@ def get_parish_member_denominators(parish_name: str) -> dict:
         if not sub.empty:
             act_say, act_y, act_k = 0, 0, 0
             for _, r in sub.iterrows():
-                if classify_member_status(r.get("Status", ""), r.get("Church Member", "")) == "ACTIVE":
+                if classify_member_status(r.get("Status", ""), r.get("Church Member", ""), r.get("Remarks", ""), r.get("Parish", "")) == "ACTIVE":
                     c_g = classify_category(r.get("Category", ""))
                     if c_g in ["Seniors", "Adults", "Youth"]:
                         act_say += 1
@@ -6621,6 +6784,8 @@ def clear_all_internal_chat_messages(sync_drive_now: bool = True) -> int:
 def get_current_chat_identity() -> str:
     if st.session_state.get("user_role") == "Master Admin":
         return "MASTER ADMIN"
+    if is_current_user_diocese_admin():
+        return get_current_diocese_scope_key()
     return str(st.session_state.get("assigned_parish", "PARISH USER")).upper().strip()
 
 if "authenticated" not in st.session_state:
@@ -6783,10 +6948,15 @@ if not st.session_state.authenticated:
                 if acc_info is not None:
                     st.session_state.authenticated = True
                     st.session_state.user_role = acc_info["role"]
-                    st.session_state.assigned_parish = acc_info["parish"]
                     st.session_state.login_role = acc_info["role"]
                     st.session_state.login_parish = acc_info["parish"]
                     st.session_state.logged_in_username = acc_info.get("username", username_input)
+                    if acc_info["role"] == "Diocese Admin" and acc_info["parish"] in DIOCESE_PARISH_MAP:
+                        st.session_state.diocese_scope_key = acc_info["parish"]
+                        st.session_state.assigned_parish = DIOCESE_PARISH_MAP[acc_info["parish"]][0]
+                    else:
+                        st.session_state.pop("diocese_scope_key", None)
+                        st.session_state.assigned_parish = acc_info["parish"]
                     if acc_info["role"] != "Master Admin":
                         record_parish_leader_active_presence(acc_info["parish"])
                     st.session_state.app_mode_override = "🧭 Parish Leader Portal (Wizard & Summary)"
@@ -6812,8 +6982,15 @@ if not st.session_state.authenticated:
         st.caption(t_ui("security_badge"))
     st.stop()
 
-# 🔒 STRICT ROLE-BASED ACCESS CONTROL (RLS) ENFORCEMENT PARA SA MGA PARISH ADMINS
-if st.session_state.get("login_role") != "Master Admin":
+# 🔒 STRICT ROLE-BASED ACCESS CONTROL (RLS) ENFORCEMENT PARA SA MGA DIOCESE HEADS AT PARISH ADMINS
+if st.session_state.get("login_role") == "Diocese Admin":
+    st.session_state.user_role = "Diocese Admin"
+    _d_key_rls = st.session_state.get("login_parish", DIOCESE_1_KEY)
+    st.session_state.diocese_scope_key = _d_key_rls
+    _d_allowed_rls = DIOCESE_PARISH_MAP.get(_d_key_rls, DIOCESE_1_PARISHES)
+    if st.session_state.get("assigned_parish") not in _d_allowed_rls:
+        st.session_state.assigned_parish = _d_allowed_rls[0]
+elif st.session_state.get("login_role") != "Master Admin":
     st.session_state.user_role = "Parish Leader"
     st.session_state.assigned_parish = st.session_state.get("login_parish", st.session_state.get("assigned_parish", PARISH_ORDER[0]))
 
@@ -6922,7 +7099,10 @@ def build_combined_records_df(df_p: pd.DataFrame, df_q: pd.DataFrame, df_co: pd.
             continue
         for _, r in df_src.iterrows():
             parish_val = get_first_non_empty(r, ["Parish", "Assigned Parish", "Parokya"], "Unassigned Parish")
-            if st.session_state.user_role == "Parish Leader" and not normalize_parish_match(parish_val, st.session_state.assigned_parish):
+            if st.session_state.user_role == "Diocese Admin":
+                if not any(normalize_parish_match(parish_val, p_ok) for p_ok in get_allowed_parishes_for_current_user()):
+                    continue
+            elif st.session_state.user_role == "Parish Leader" and not normalize_parish_match(parish_val, st.session_state.assigned_parish):
                 continue
             records.append({
                 "Uri ng Request": cat_name,
@@ -6979,7 +7159,9 @@ def query_excel_database(search_query: str) -> str:
         return "Error: Walang laman o hindi makita ang Excel database."
     try:
         df_scope = master_members_df.copy()
-        if st.session_state.user_role == "Parish Leader":
+        if st.session_state.user_role == "Diocese Admin":
+            df_scope = df_scope[df_scope["Parish"].isin(get_allowed_parishes_for_current_user())]
+        elif st.session_state.user_role == "Parish Leader":
             df_scope = df_scope[df_scope["Parish"] == st.session_state.assigned_parish]
         match = df_scope[df_scope.astype(str).apply(lambda x: x.str.contains(search_query, case=False, na=False)).any(axis=1)]
         if not match.empty:
@@ -12410,10 +12592,12 @@ def render_weekly_report_page():
     if "editor_sel_week" not in st.session_state or st.session_state["editor_sel_week"] not in valid_ed_weeks:
         st.session_state["editor_sel_week"] = valid_ed_weeks[0]
 
-    default_parish_choice = my_parish if (not is_master and my_parish in PARISH_ORDER) else PARISH_ORDER[0]
-    if "up_sel_parish" not in st.session_state or (not is_master and st.session_state["up_sel_parish"] != my_parish):
+    allowed_wr_parishes = get_allowed_parishes_for_current_user()
+    is_multi_parish_admin = (is_master or is_current_user_diocese_admin())
+    default_parish_choice = my_parish if (my_parish in allowed_wr_parishes) else allowed_wr_parishes[0]
+    if "up_sel_parish" not in st.session_state or st.session_state["up_sel_parish"] not in allowed_wr_parishes:
         st.session_state["up_sel_parish"] = default_parish_choice
-    if "editor_sel_parish" not in st.session_state or (not is_master and st.session_state["editor_sel_parish"] != my_parish):
+    if "editor_sel_parish" not in st.session_state or st.session_state["editor_sel_parish"] not in allowed_wr_parishes:
         st.session_state["editor_sel_parish"] = st.session_state["up_sel_parish"]
 
     # Kunin ang kasalukuyang filter state mula sa session_state (upang gumana sa lahat ng subpages kahit nakatago ang Home header sa Pages 2..6)
@@ -12445,6 +12629,13 @@ def render_weekly_report_page():
         view_parish_scope = st.session_state.get("mon_view_parish", PARISH_ORDER[0])
         effective_parish_filter = "Lahat ng Parokya" if "Lahat ng Parokya" in view_parish_scope else view_parish_scope
         focused_parish_for_sheets = effective_parish_filter if effective_parish_filter in PARISH_ORDER else st.session_state.get("editor_sel_parish", PARISH_ORDER[0])
+    elif is_current_user_diocese_admin():
+        master_parish_opts = allowed_wr_parishes
+        if "mon_view_parish" not in st.session_state or st.session_state["mon_view_parish"] not in master_parish_opts:
+            st.session_state["mon_view_parish"] = default_parish_choice
+        view_parish_scope = st.session_state.get("mon_view_parish", default_parish_choice)
+        effective_parish_filter = view_parish_scope
+        focused_parish_for_sheets = view_parish_scope
     else:
         effective_parish_filter = my_parish
         focused_parish_for_sheets = my_parish
@@ -12467,7 +12658,7 @@ def render_weekly_report_page():
         with v_c1:
             v_parish = st.selectbox(
                 "Parokya:",
-                PARISH_ORDER if is_master else [my_parish],
+                get_allowed_parishes_for_current_user(),
                 key="editor_sel_parish",
                 on_change=_sync_from_editor_bar
             )
@@ -14013,7 +14204,7 @@ def render_weekly_report_page():
             # 2. MONTHLY PERFORMANCE SHEETS (EXACT IMAGE 1 LAYOUT — EXPANDABLE ▶ JANUARY TO ▶ DECEMBER)
             # =================================================================
             st.markdown(f"#### 📂 2. Monthly Performance Report Sheets (`▶` Pindutin ang Buwan para Makita ang Layout Tulad ng Nasa Excel Image 1)")
-            target_parishes_for_monthly_view = PARISH_ORDER if is_master else [my_parish]
+            target_parishes_for_monthly_view = get_allowed_parishes_for_current_user()
             all_year_computed_cache = {}  # {month_upper: {parish_full: act_rows_list}}
 
             for m_iter in MONTHS_2027:
@@ -14718,7 +14909,7 @@ def render_outreach_visitation_missionary_page():
         "Opisyal na Pahina sa Pag-submit at Pag-monitor ng House Visitation (10 Families Req.), Missionary Work, Indoctrination, at Remarks para sa lahat ng Parokya."
     )
 
-    outreach_parish_options = (["Lahat ng Parokya"] + PARISH_ORDER) if is_master else [my_parish]
+    outreach_parish_options = (["Lahat ng Parokya"] + PARISH_ORDER) if is_master else get_allowed_parishes_for_current_user()
     if "outreach_sel_parish" not in st.session_state or st.session_state["outreach_sel_parish"] not in outreach_parish_options:
         st.session_state["outreach_sel_parish"] = outreach_parish_options[0]
     if "outreach_sel_month" not in st.session_state or st.session_state["outreach_sel_month"] not in MONTHS_2027:
@@ -14811,7 +15002,7 @@ def render_outreach_visitation_missionary_page():
     # =====================================================================
     # 📤 OUTREACH SUBMISSION & UPDATE FORM (PARA SA LAHAT NG USERS: PARISH LEADERS & MASTER ADMIN)
     # =====================================================================
-    form_parish_choices = PARISH_ORDER if is_master else [my_parish]
+    form_parish_choices = get_allowed_parishes_for_current_user()
     default_form_parish = out_parish if out_parish in form_parish_choices else form_parish_choices[0]
     default_form_week = out_week_sel if out_week_sel in out_month_actual_weeks else out_month_actual_weeks[0]
 
@@ -15088,6 +15279,65 @@ with st.sidebar:
             f"</div>",
             unsafe_allow_html=True
         )
+    elif is_current_user_diocese_admin():
+        _d_scope_sb = get_current_diocese_scope_key()
+        _dio_prof_k = "diocese_head_1" if _d_scope_sb == DIOCESE_1_KEY else "diocese_head_2"
+        _my_dio_prof = _ldr_profiles_sb.get(_dio_prof_k, {})
+        _my_dio_name = _my_dio_prof.get("name") or (DIOCESE_1_LEADER_NAME if _d_scope_sb == DIOCESE_1_KEY else DIOCESE_2_LEADER_NAME)
+        _my_dio_pos = _my_dio_prof.get("position") or _d_scope_sb
+        _sb_av_html = _build_profile_avatar_html(_my_dio_prof.get("photo_b64", ""), "#10B981", 78, "🏛️")
+        _sb_act_html = _build_top_right_status_badge_html(is_online=True)
+        _dio_allowed_sb = get_allowed_parishes_for_current_user()
+        st.markdown(
+            f"<div style='position:relative;background:linear-gradient(145deg, rgba(15,23,42,0.96), rgba(30,41,59,0.92));"
+            f"border:1.5px solid #10B981;border-radius:14px;padding:18px 10px 14px 10px;text-align:center;margin-bottom:10px;'>"
+            f"{_sb_act_html}"
+            f"{_sb_av_html}<br>"
+            f"<span style='background:#065F46;color:#D1FAE5;font-size:0.70rem;font-weight:700;padding:2px 9px;border-radius:10px;'>"
+            f"{_my_dio_pos}</span>"
+            f"<div style='font-size:0.98rem;font-weight:800;color:#F8FAFC;margin-top:6px;'>{_my_dio_name}</div>"
+            f"<div style='font-size:0.76rem;color:#38BDF8;font-weight:700;margin-top:2px;'>📍 Sakop: {len(_dio_allowed_sb)} Parokya | Active: {st.session_state.assigned_parish}</div>"
+            f"<div style='font-size:0.72rem;color:#94A3B8;margin-top:2px;'>Role: Diocese Head Admin</div>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+        _sel_dio_p_idx = _dio_allowed_sb.index(st.session_state.assigned_parish) if st.session_state.assigned_parish in _dio_allowed_sb else 0
+        _chosen_dio_parish = st.selectbox(
+            f"🏛️ Pumili ng Sakop na Parokya ({_my_dio_pos}):",
+            _dio_allowed_sb,
+            index=_sel_dio_p_idx,
+            key="sidebar_diocese_parish_selector"
+        )
+        if _chosen_dio_parish != st.session_state.assigned_parish:
+            st.session_state.assigned_parish = _chosen_dio_parish
+            st.session_state["up_sel_parish"] = _chosen_dio_parish
+            st.session_state["editor_sel_parish"] = _chosen_dio_parish
+            st.session_state["mon_view_parish"] = _chosen_dio_parish
+            st.session_state["outreach_sel_parish"] = _chosen_dio_parish
+            st.session_state["auto_add_mem_parish"] = _chosen_dio_parish
+            st.rerun()
+        with st.expander(f"👤 I-edit ang Aking {_my_dio_pos} Profile & Picture", expanded=False):
+            with st.form("sidebar_my_diocese_profile_form"):
+                sb_d_name = st.text_input("Pangalan (Diocese Head):", value=str(_my_dio_name)).strip()
+                sb_d_pos = st.text_input("Position:", value=str(_my_dio_pos)).strip()
+                sb_d_pic = st.file_uploader("Palitan ang Picture (.jpg, .png):", type=["jpg", "jpeg", "png"], key="sb_dio_prof_pic_up")
+                if st.form_submit_button("💾 I-save ang Aking Diocese Profile", type="primary", use_container_width=True):
+                    new_d_b64 = _my_dio_prof.get("photo_b64", "")
+                    if sb_d_pic is not None:
+                        comp_d = compress_profile_image_to_data_uri(sb_d_pic.read())
+                        if comp_d:
+                            new_d_b64 = comp_d
+                    _ldr_profiles_sb[_dio_prof_k].update({
+                        "name": sb_d_name or _my_dio_name,
+                        "position": sb_d_pos or _my_dio_pos,
+                        "photo_b64": new_d_b64,
+                        "is_active_online": True,
+                        "last_active_ph": get_philippine_datetime_str()
+                    })
+                    save_leadership_and_priests_profiles(_ldr_profiles_sb)
+                    st.success("✅ Na-update na ang iyong Diocese Head Profile!")
+                    time.sleep(0.1)
+                    st.rerun()
     else:
         _def_role_sb = get_default_parish_leader_role_title(st.session_state.assigned_parish)
         _my_sb_prof = _ldr_profiles_sb.get("parish_priests", {}).get(st.session_state.assigned_parish, {})
@@ -15206,18 +15456,36 @@ with st.sidebar:
                             st.error(res_b)
 
     if st.session_state.login_role == "Master Admin":
-        with st.expander("🛠️ Admin View & Parish Switcher", expanded=False):
-            st.caption("Silipin o kontrolin ang dashboard ng kahit anong Parokya:")
-            override_role = st.selectbox("Pumili ng View Mode:", ["Master Admin (Lahat)", "Parish Leader View"], key="ctrl_role_override")
+        with st.expander("🛠️ Admin View & Diocese/Parish Switcher", expanded=False):
+            st.caption("Silipin o kontrolin ang dashboard ng Diocese Head o kahit anong Parokya:")
+            override_role = st.selectbox(
+                "Pumili ng View Mode:",
+                ["Master Admin (Lahat)", "Diocese Head I View (Region 1 + Manila/HK)", "Diocese Head 2 View (Region 2)", "Parish Leader View"],
+                key="ctrl_role_override"
+            )
             if override_role == "Master Admin (Lahat)":
                 new_role = "Master Admin"
                 new_parish = "Lahat ng Parokya"
+                new_dio_key = ""
+            elif override_role.startswith("Diocese Head I"):
+                new_role = "Diocese Admin"
+                new_dio_key = DIOCESE_1_KEY
+                new_parish = st.selectbox("Pumili ng Sakop na Parokya (Diocese I):", DIOCESE_1_PARISHES, key="ctrl_d1_parish_override")
+            elif override_role.startswith("Diocese Head 2"):
+                new_role = "Diocese Admin"
+                new_dio_key = DIOCESE_2_KEY
+                new_parish = st.selectbox("Pumili ng Sakop na Parokya (Diocese 2):", DIOCESE_2_PARISHES, key="ctrl_d2_parish_override")
             else:
                 new_role = "Parish Leader"
+                new_dio_key = ""
                 new_parish = st.selectbox("Pumili ng Parokya:", PARISH_ORDER, key="ctrl_parish_override")
             if st.button("🔄 Ilipat ang Control View", use_container_width=True):
                 st.session_state.user_role = new_role
                 st.session_state.assigned_parish = new_parish
+                if new_dio_key:
+                    st.session_state.diocese_scope_key = new_dio_key
+                else:
+                    st.session_state.pop("diocese_scope_key", None)
                 st.rerun()
 
     if st.session_state.user_role == "Master Admin" or st.session_state.get("login_role") == "Master Admin":
@@ -15650,23 +15918,37 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
             st.cache_data.clear()
             st.rerun()
         return
+    is_diocese_admin = is_current_user_diocese_admin()
+    allowed_census_parishes = get_allowed_parishes_for_current_user()
     if is_master_admin:
         parish_options = ["Lahat ng Parokya (All 10 Parishes)"] + PARISH_ORDER
+    elif is_diocese_admin:
+        _d_lbl_c = get_current_diocese_scope_key()
+        parish_options = [f"Lahat ng Sakop na Parokya ({_d_lbl_c})"] + allowed_census_parishes
     else:
         # Strict RBAC: Parish Admin is strictly locked to their assigned Parish only
         parish_options = [st.session_state.assigned_parish]
 
     col_p, col_f, col_s = st.columns([1.15, 1.25, 1.6])
     with col_p:
+        _def_c_idx = parish_options.index(st.session_state.assigned_parish) if (is_diocese_admin and st.session_state.assigned_parish in parish_options) else 0
         selected_parish = st.selectbox(
-            "1. Pumili ng Parish (RBAC Scoped):" if is_master_admin else "1. Nakatalagang Parokya (Locked):",
+            "1. Pumili ng Parish (RBAC Scoped):" if (is_master_admin or is_diocese_admin) else "1. Nakatalagang Parokya (Locked):",
             parish_options,
-            disabled=(not is_master_admin)
+            index=_def_c_idx,
+            disabled=(not (is_master_admin or is_diocese_admin))
         )
 
     if selected_parish.startswith("Lahat ng Parokya"):
         parish_filtered_df = master_members_df.copy()
         removed_deceased_base_df = load_removed_and_deceased_sheet_members(ACTIVE_SPREADSHEET_URL, master_members_df)
+    elif selected_parish.startswith("Lahat ng Sakop na Parokya"):
+        parish_filtered_df = master_members_df[master_members_df["Parish"].isin(allowed_census_parishes)].copy()
+        all_rem_df = load_removed_and_deceased_sheet_members(ACTIVE_SPREADSHEET_URL, master_members_df)
+        removed_deceased_base_df = (
+            all_rem_df[all_rem_df["Parish"].apply(lambda p: any(normalize_parish_match(str(p), ap) for ap in allowed_census_parishes))].copy()
+            if not all_rem_df.empty else pd.DataFrame()
+        )
     else:
         parish_filtered_df = master_members_df[master_members_df["Parish"] == selected_parish].copy()
         all_rem_df = load_removed_and_deceased_sheet_members(ACTIVE_SPREADSHEET_URL, master_members_df)
@@ -15760,21 +16042,31 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
             )
             final_removed_df = final_removed_df[rem_q_mask]
 
-    # Segment members by Status & Remarks
+    # Segment members by Status & Remarks (Separating Local Parish Active vs Active sa Manila vs Active sa Hong Kong across ALL Parishes!)
     active_mask = final_df.apply(
-        lambda r: (not is_removed_or_deceased_record(r)) and classify_member_status(r.get("Status", ""), r.get("Church Member", "")) == "ACTIVE",
+        lambda r: (not is_removed_or_deceased_record(r)) and classify_member_status(r.get("Status", ""), r.get("Church Member", ""), r.get("Remarks", ""), r.get("Parish", "")) == "ACTIVE",
+        axis=1
+    ) if not final_df.empty else pd.Series(dtype=bool)
+    active_manila_mask = final_df.apply(
+        lambda r: (not is_removed_or_deceased_record(r)) and classify_member_status(r.get("Status", ""), r.get("Church Member", ""), r.get("Remarks", ""), r.get("Parish", "")) == "ACTIVE IN MANILA",
+        axis=1
+    ) if not final_df.empty else pd.Series(dtype=bool)
+    active_hk_mask = final_df.apply(
+        lambda r: (not is_removed_or_deceased_record(r)) and classify_member_status(r.get("Status", ""), r.get("Church Member", ""), r.get("Remarks", ""), r.get("Parish", "")) == "ACTIVE IN HONGKONG",
         axis=1
     ) if not final_df.empty else pd.Series(dtype=bool)
     inactive_mask = final_df.apply(
-        lambda r: (not is_removed_or_deceased_record(r)) and classify_member_status(r.get("Status", ""), r.get("Church Member", "")) == "INACTIVE",
+        lambda r: (not is_removed_or_deceased_record(r)) and classify_member_status(r.get("Status", ""), r.get("Church Member", ""), r.get("Remarks", ""), r.get("Parish", "")) == "INACTIVE",
         axis=1
     ) if not final_df.empty else pd.Series(dtype=bool)
     non_member_mask = final_df.apply(
-        lambda r: (not is_removed_or_deceased_record(r)) and classify_member_status(r.get("Status", ""), r.get("Church Member", "")) == "NON-MEMBER",
+        lambda r: (not is_removed_or_deceased_record(r)) and classify_member_status(r.get("Status", ""), r.get("Church Member", ""), r.get("Remarks", ""), r.get("Parish", "")) == "NON-MEMBER",
         axis=1
     ) if not final_df.empty else pd.Series(dtype=bool)
 
     df_active_full = final_df[active_mask].copy() if not final_df.empty else pd.DataFrame(columns=final_df.columns)
+    df_active_manila_full = final_df[active_manila_mask].copy() if not final_df.empty else pd.DataFrame(columns=final_df.columns)
+    df_active_hk_full = final_df[active_hk_mask].copy() if not final_df.empty else pd.DataFrame(columns=final_df.columns)
     df_inactive_full = final_df[inactive_mask].copy() if not final_df.empty else pd.DataFrame(columns=final_df.columns)
     df_non_member_full = final_df[non_member_mask].copy() if not final_df.empty else pd.DataFrame(columns=final_df.columns)
     df_removed_full = final_removed_df.copy() if not final_removed_df.empty else pd.DataFrame(columns=final_df.columns)
@@ -15785,14 +16077,16 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
 
     st.divider()
 
-    # Top Summary Metrics (st.metric)
-    m1, m2, m3, m4, m5, m6 = st.columns(6)
-    m1.metric("🆔 Total OFW Records" if is_hk_census_view else "👨‍👩‍👧‍👦 Total Families", total_families)
-    m2.metric("👥 Total OFW Members" if is_hk_census_view else "👥 Total Members", len(final_df))
-    m3.metric("🟢 Total Active", len(df_active_full))
-    m4.metric("🟡 Total Inactive", len(df_inactive_full))
-    m5.metric("⚪ Non-Members", len(df_non_member_full))
-    m6.metric("🔴 Removed & Deceased", len(df_removed_full))
+    # Top Summary Metrics (st.metric) — Separated Local Active, Active sa Manila & Active sa Hong Kong
+    m1, m2, m3, m4, m5, m6, m7, m8 = st.columns(8)
+    m1.metric("🆔 OFW Records" if is_hk_census_view else "👨‍👩‍👧‍👦 Families", total_families)
+    m2.metric("👥 Total Members", len(final_df))
+    m3.metric("🟢 Active sa Parokya", len(df_active_full))
+    m4.metric("🏙️ Active sa Manila", len(df_active_manila_full))
+    m5.metric("🇭🇰 Active sa Hong Kong", len(df_active_hk_full))
+    m6.metric("🟡 Inactive", len(df_inactive_full))
+    m7.metric("⚪ Non-Members", len(df_non_member_full))
+    m8.metric("🔴 Removed/Deceased", len(df_removed_full))
 
     if is_hk_census_view:
         c_tot1, c_tot2 = st.columns(2)
@@ -15839,8 +16133,10 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
     st.markdown("### 🗂️ Status Filtering Dashboard & Color-Coded Member Directory")
     st.caption("Pumili ng Status Tab sa ibaba upang makita ang color-coded na listahan at i-download ang CSV o Printable PDF/HTML Report.")
 
-    tab_act, tab_inact, tab_non, tab_rem, tab_all, tab_sum = st.tabs([
-        f"🟢 Active Members ({len(df_active_full)})",
+    tab_act, tab_act_mnl, tab_act_hk, tab_inact, tab_non, tab_rem, tab_all, tab_sum = st.tabs([
+        f"🟢 Active sa Parokya ({len(df_active_full)})",
+        f"🏙️ Active sa Manila ({len(df_active_manila_full)})",
+        f"🇭🇰 Active sa Hong Kong ({len(df_active_hk_full)})",
         f"🟡 Inactive Members ({len(df_inactive_full)})",
         f"⚪ Non-Members ({len(df_non_member_full)})",
         f"🔴 Removed & Deceased ({len(df_removed_full)})",
@@ -15930,7 +16226,31 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
             st.caption(f"Walang nahanap na rekord sa ilalim ng {status_title}.")
 
     with tab_act:
-        _render_status_tab_content(df_active_full, "🟢 Active Members (Status = ACTIVE)", "ACTIVE", "success", "Active_Members")
+        _render_status_tab_content(
+            df_active_full,
+            "🟢 Active Members sa Parokya (Local Parish Active Only — Hindi Kasama ang Active sa Manila / Hong Kong)",
+            "ACTIVE",
+            "success",
+            "Active_Local_Parish_Members"
+        )
+
+    with tab_act_mnl:
+        _render_status_tab_content(
+            df_active_manila_full,
+            "🏙️ Active sa Manila (Mga Miyembro ng Parokyang Ito na Kasalukuyang Active sa Manila — ACTIVE IN MANILA)",
+            "ACTIVE IN MANILA",
+            "info",
+            "Active_In_Manila_Members"
+        )
+
+    with tab_act_hk:
+        _render_status_tab_content(
+            df_active_hk_full,
+            "🇭🇰 Active sa Hong Kong (Mga Miyembro ng Parokyang Ito na Kasalukuyang Active sa Hong Kong — ACTIVE IN HONGKONG)",
+            "ACTIVE IN HONGKONG",
+            "info",
+            "Active_In_Hongkong_Members"
+        )
 
     with tab_inact:
         _render_status_tab_content(df_inactive_full, "🟡 Inactive Members (Status = INACTIVE)", "INACTIVE", "warning", "Inactive_Members")
@@ -16019,6 +16339,13 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
                 use_container_width=True,
                 hide_index=True,
                 disabled=["Parish", "Family ID"],
+                column_config={
+                    "Status": st.column_config.SelectboxColumn(
+                        "Status",
+                        options=["ACTIVE", "ACTIVE IN MANILA", "ACTIVE IN HONGKONG", "INACTIVE", "NON-MEMBER", "ON GOING INDOC"],
+                        width="medium"
+                    )
+                },
                 key=f"live_census_editor_{selected_parish}_{selected_family_id}"
             )
             with cs_btn2:
@@ -16056,15 +16383,19 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
 
             u_col1, u_col2, u_col3 = st.columns([1.2, 1.2, 2])
             with u_col1:
-                status_choices = ["ACTIVE", "INACTIVE", "NON-MEMBER", "ON GOING INDOC"]
+                status_choices = ["ACTIVE", "ACTIVE IN MANILA", "ACTIVE IN HONGKONG", "INACTIVE", "NON-MEMBER", "ON GOING INDOC"]
                 cur_st = str(sel_row["Status"]).upper().strip()
                 def_st_idx = 0
-                if "INACTIVE" in cur_st:
+                if "MANILA" in cur_st and "ACTIVE" in cur_st:
                     def_st_idx = 1
-                elif "NON" in cur_st:
+                elif ("HONGKONG" in cur_st or "HONG KONG" in cur_st) and "ACTIVE" in cur_st:
                     def_st_idx = 2
-                elif "INDOC" in cur_st:
+                elif "INACTIVE" in cur_st:
                     def_st_idx = 3
+                elif "NON" in cur_st:
+                    def_st_idx = 4
+                elif "INDOC" in cur_st:
+                    def_st_idx = 5
                 upd_status = st.selectbox("Bagong Status:", status_choices, index=def_st_idx, key="quick_upd_st")
             with u_col2:
                 cat_choices = ["SENIOR CITIZEN", "ADULT", "YOUTH", "KIDS"]
@@ -16736,9 +17067,23 @@ elif app_mode == "🧭 Parish Leader Portal (Wizard & Summary)":
 
     # Live Parish Census & Ministry Executive Dashboard Bar
     is_master_dash = (st.session_state.user_role == "Master Admin")
-    dash_scope_lbl = "Lahat ng 10 Parokya (Master Overview)" if is_master_dash else st.session_state.assigned_parish
+    is_dio_dash = is_current_user_diocese_admin()
+    dio_allowed_dash = get_allowed_parishes_for_current_user()
+    dash_scope_lbl = (
+        "Lahat ng 10 Parokya (Master Overview)"
+        if is_master_dash else (
+            f"{get_current_diocese_scope_key()} ({len(dio_allowed_dash)} Sakop na Parokya — Active: {st.session_state.assigned_parish})"
+            if is_dio_dash else st.session_state.assigned_parish
+        )
+    )
     if not master_members_df.empty:
-        df_home_scope = master_members_df.copy() if is_master_dash else master_members_df[master_members_df["Parish"] == st.session_state.assigned_parish].copy()
+        df_home_scope = (
+            master_members_df.copy()
+            if is_master_dash else (
+                master_members_df[master_members_df["Parish"].isin(dio_allowed_dash)].copy()
+                if is_dio_dash else master_members_df[master_members_df["Parish"] == st.session_state.assigned_parish].copy()
+            )
+        )
     else:
         df_home_scope = pd.DataFrame()
 
@@ -17254,10 +17599,10 @@ def _parse_member_rows_from_2d_ocr_overlay(overlay_lines: list, img_w: int, img_
         wt_raw = w["text"].strip()
         wu = wt_raw.upper().strip(".:-")
         if (
-            wu in ("SEPARATELY)", "SEPARATELY", "BAPTISM", "CATE", "-GORY", "STAT", "WORKING", "III", "MEMBERS", "GUIDE", "REFERENCE")
-            or "=" in wt_raw or "(0-12)" in wt_raw or "(13-24)" in wt_raw or "(25-59)" in wt_raw
-        ) and w["yc"] < 0.65:
-            header_y_max = max(header_y_max, w["yc"] + 0.035)
+            wu in ("SEPARATELY)", "SEPARATELY", "BAPTISM", "CATE", "-GORY", "III", "MEMBERS", "GUIDE", "REFERENCE")
+            or "(0-12)" in wt_raw or "(13-24)" in wt_raw or "(25-59)" in wt_raw
+        ) and w["yc"] < 0.30:
+            header_y_max = max(header_y_max, w["yc"] + 0.025)
         if wu in ("HOUSEHOLD", "SUMMARY", "IV", "IV.") and w["yc"] > 0.45:
             footer_y_min = min(footer_y_min, w["yc"] - 0.015)
 
@@ -17272,17 +17617,18 @@ def _parse_member_rows_from_2d_ocr_overlay(overlay_lines: list, img_w: int, img_
         "BR", "SR", "5R", "GF", "GM", "OT"
     }
 
-    # Find row Y-anchors: distinguish top-left printed row numbers (1..10, which sit at the TOP of each row)
-    # from centered Relationship codes (which sit near the VERTICAL MIDDLE of each row)
+    # Find row Y-anchors: distinguish top-left printed row numbers (1..15, which sit at the TOP of each row)
+    # from centered Relationship codes (which sit near the VERTICAL MIDDLE of each row).
+    # Use 0.036 minimum vertical spacing so all 8 rows on Page 3 (or 10 rows on a full table) are captured without skipping!
     anchors = []
     for w in sorted(body_words, key=lambda x: x["yc"]):
         wt_c = w["text"].upper().strip(".,|()'-")
-        is_row_num = (w["xc"] < 0.072 and wt_c in {"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"})
-        is_rel_col = (0.165 <= w["xc"] <= 0.250 and wt_c in rel_codes_set)
+        is_row_num = (w["xc"] < 0.072 and wt_c in {"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15"})
+        is_rel_col = (0.160 <= w["xc"] <= 0.255 and wt_c in rel_codes_set)
         if is_row_num or is_rel_col:
             # Convert anchor to estimated row TOP y_top so 2-line surnames & birth years at the bottom of the cell stay inside the row!
-            est_row_top = max(header_y_max, (w["top"] - 0.012) if is_row_num else (w["yc"] - 0.048))
-            if not anchors or abs(est_row_top - anchors[-1]) >= 0.065:
+            est_row_top = max(header_y_max, (w["top"] - 0.010) if is_row_num else (w["yc"] - 0.036))
+            if not anchors or abs(est_row_top - anchors[-1]) >= 0.036:
                 anchors.append(est_row_top)
 
     if not anchors:
@@ -17314,7 +17660,8 @@ def _parse_member_rows_from_2d_ocr_overlay(overlay_lines: list, img_w: int, img_
         mob_toks = [w["text"] for w in r_words if 0.502 <= w["xc"] < 0.605]
         cm_toks = [w["text"].upper().strip(".,") for w in r_words if 0.598 <= w["xc"] < 0.668]
         st_toks = [w["text"].upper().strip(".,") for w in r_words if 0.664 <= w["xc"] < 0.725]
-        bap_toks = [w["text"].upper().strip(".,") for w in r_words if 0.720 <= w["xc"] < 0.778]
+        bap_toks = [w["text"].upper().strip(".,") for w in r_words if 0.720 <= w["xc"] < 0.775]
+        bapd_toks = [w["text"] for w in r_words if 0.772 <= w["xc"] < 0.830]
         addr_toks = [w["text"] for w in r_words if w["xc"] >= 0.825]
 
         full_name = re.sub(r"\s+", " ", " ".join(name_toks)).strip(" .-_|/")
@@ -17348,6 +17695,24 @@ def _parse_member_rows_from_2d_ocr_overlay(overlay_lines: list, img_w: int, img_
             addr_val = addr_raw
             prev_addr = addr_raw
 
+        bapd_str = _normalize_handwritten_date_to_iso(" ".join(bapd_toks)) if bapd_toks else ""
+        # Cross-check with full-row sequence parser in case columns were slightly shifted horizontally
+        row_joined_str = " ".join(w["text"] for w in r_words)
+        seq_fallback, prev_addr = _parse_single_section3_row_text(row_joined_str, len(parsed_rows) + 1, prev_addr)
+        if seq_fallback:
+            if not bdate_str and seq_fallback.get("Birthdate"):
+                bdate_str = seq_fallback["Birthdate"]
+            if not age_val and seq_fallback.get("Age"):
+                age_val = seq_fallback["Age"]
+            if not cat_val and seq_fallback.get("Category"):
+                cat_val = seq_fallback["Category"]
+            if not sex_val and seq_fallback.get("Sex"):
+                sex_val = seq_fallback["Sex"]
+            if not mob_val and seq_fallback.get("Contact No."):
+                mob_val = seq_fallback["Contact No."]
+            if not addr_val and seq_fallback.get("Current Address (If living separately)"):
+                addr_val = seq_fallback["Current Address (If living separately)"]
+
         parsed_rows.append(_normalize_ctg_form_codes({
             "No.": str(len(parsed_rows) + 1),
             "Full Name": full_name.title(),
@@ -17362,6 +17727,7 @@ def _parse_member_rows_from_2d_ocr_overlay(overlay_lines: list, img_w: int, img_
             "Church Member": cm_val,
             "Status": st_val,
             "Baptized": bap_val,
+            "Baptism Date": bapd_str,
             "Current Address (If living separately)": addr_val,
         }))
     return parsed_rows
@@ -17941,23 +18307,24 @@ def _detect_section3_horizontal_row_bands(pil_img: Image.Image) -> list[tuple[in
         smoothed = _np.convolve(line_votes, _np.ones(5) / 5.0, mode="same")
         thresh = max(18.0, float(_np.percentile(smoothed, 82)))
         peaks = []
+        min_row_gap = max(18, int(h * 0.036))
         for y in range(6, h - 6):
-            if smoothed[y] >= thresh and smoothed[y] == max(smoothed[y - 6:y + 7]):
-                if not peaks or (y - peaks[-1]) > max(24, int(h * 0.065)):
+            if smoothed[y] >= thresh and smoothed[y] == max(smoothed[y - 5:y + 6]):
+                if not peaks or (y - peaks[-1]) > min_row_gap:
                     peaks.append(y)
         if len(peaks) < 2:
             return []
         written_bands = []
         for i in range(len(peaks) - 1):
             y1, y2 = peaks[i], peaks[i + 1]
-            if (y2 - y1) < max(26, int(h * 0.07)):
+            if (y2 - y1) < min_row_gap or (y2 - y1) > int(h * 0.45):
                 continue
             # Check handwriting ink in Full Name cell (x in 0.058..0.180) AND Relationship cell (x in 0.180..0.235)
-            name_cell = arr[y1 + 4:max(y1 + 5, y2 - 4), int(w * 0.058):int(w * 0.180)]
-            rel_cell = arr[y1 + 4:max(y1 + 5, y2 - 4), int(w * 0.180):int(w * 0.235)]
-            name_ink = float((name_cell < 180).mean()) if name_cell.size > 0 else 0.0
-            rel_ink = float((rel_cell < 180).mean()) if rel_cell.size > 0 else 0.0
-            if name_ink > 0.014 and rel_ink > 0.008:
+            name_cell = arr[y1 + 3:max(y1 + 4, y2 - 3), int(w * 0.058):int(w * 0.180)]
+            rel_cell = arr[y1 + 3:max(y1 + 4, y2 - 3), int(w * 0.180):int(w * 0.235)]
+            name_ink = float((name_cell < 185).mean()) if name_cell.size > 0 else 0.0
+            rel_ink = float((rel_cell < 185).mean()) if rel_cell.size > 0 else 0.0
+            if name_ink > 0.010 and rel_ink > 0.005:
                 written_bands.append((max(0, y1 - 2), min(h, y2 + 2)))
         return written_bands
     except Exception:
@@ -18031,7 +18398,7 @@ def _extract_single_family_from_vision_parts(
                 if len(enhanced_pil_list) >= 3:
                     p3_im = enhanced_pil_list[2]
                     pw3, ph3 = p3_im.size
-                    p3_crop = p3_im if (pw3 / float(max(1, ph3)) > 1.85) else p3_im.crop((0, int(ph3 * 0.01), pw3, int(ph3 * 0.98)))
+                    p3_crop = p3_im if (pw3 / float(max(1, ph3)) > 1.85) else p3_im.crop((0, int(ph3 * 0.01), pw3, int(ph3 * 0.72)))
                     section3_table_crops_pil.append(p3_crop)
             else:
                 p1_im = enhanced_pil_list[0]
@@ -18195,9 +18562,8 @@ def _extract_single_family_from_vision_parts(
                             need_dedicated_table_pass = (
                                 bool(section3_table_crops_pil or p2_table_crop_pil is not None)
                                 and (
-                                    len(vision_members) <= 1
-                                    or expected_tot > len(vision_members)
-                                    or (len(vision_members) == 1 and not vision_members[0].get("Birthdate") and not vision_members[0].get("Age"))
+                                    len(vision_members) < max(2, expected_tot)
+                                    or any(not m.get("Birthdate") and not m.get("Age") for m in vision_members)
                                 )
                             )
                             if need_dedicated_table_pass:
@@ -18303,7 +18669,7 @@ def _extract_single_family_from_vision_parts(
                     ocr_target_images.append(p2 if (p2.width / float(max(1, p2.height))) > 1.85 else p2.crop((0, int(p2.height * 0.56), p2.width, int(p2.height * 0.96))))
                 if len(enhanced_pil_list) >= 3:
                     p3 = enhanced_pil_list[2]
-                    ocr_target_images.append(p3 if (p3.width / float(max(1, p3.height))) > 1.85 else p3.crop((0, int(p3.height * 0.01), p3.width, int(p3.height * 0.98))))
+                    ocr_target_images.append(p3 if (p3.width / float(max(1, p3.height))) > 1.85 else p3.crop((0, int(p3.height * 0.01), p3.width, int(p3.height * 0.72))))
                 if len(enhanced_pil_list) >= 4:
                     p4 = enhanced_pil_list[3]
                     ocr_target_images.append(p4.crop((0, 0, p4.width, int(p4.height * 0.65))))
@@ -18352,7 +18718,7 @@ def _extract_single_family_from_vision_parts(
 
         # If this is a Section III table crop (aspect ratio > 1.6) and whole-image overlay found fewer rows than detected ink row bands,
         # slice the table into individual row bands and OCR them so 2-line wrapped names/dates never collide across rows!
-        if (iw / float(max(1, ih))) > 1.6:
+        if (iw / float(max(1, ih))) > 1.25:
             row_bands_px = _detect_section3_horizontal_row_bands(pil_img)
             if len(row_bands_px) > len(best_ov_rows):
                 sliced_rows = []
@@ -18849,17 +19215,20 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
         "➕ Magdagdag at Mag-upload ng Miyembro (Guided 3-Step Family Registration & Google Drive Sync)",
         "Malinaw at madaling sundan na proseso: (1) Piliin ang Parokya at i-upload ang Form PDF/Image/Excel (o mag-encode nang manual), (2) Tingnan ang Form Image at i-check sa iisang Validated Table, at (3) I-save sa Google Drive."
     )
-    allowed_parishes_add = [st.session_state.assigned_parish] if st.session_state.user_role != "Master Admin" else PARISH_ORDER
+    allowed_parishes_add = get_allowed_parishes_for_current_user()
+    can_switch_add_parish = (st.session_state.user_role in ("Master Admin", "Diocese Admin"))
 
     # =================================================================
     # TOP LIVE PARISH STATUS BAR & 1-CLICK GOOGLE DRIVE SYNC
     # =================================================================
     top_p_col1, top_p_col2, top_p_col3 = st.columns([1.25, 1.55, 1.2])
     with top_p_col1:
+        _def_add_idx = allowed_parishes_add.index(st.session_state.assigned_parish) if st.session_state.assigned_parish in allowed_parishes_add else 0
         def_p_auto = st.selectbox(
             "🏛️ 1. Target na Parokya (RBAC Scoped):",
             allowed_parishes_add,
-            disabled=(st.session_state.user_role != "Master Admin"),
+            index=_def_add_idx,
+            disabled=(not can_switch_add_parish),
             key="auto_add_mem_parish"
         )
     is_hk_add_mode = (def_p_auto == "HONGKONG PARISH")
@@ -19065,7 +19434,7 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                         if not ext_members:
                             st.warning("⚠️ Walang nabasang pangalan sa file. Maaari kang mag-encode nang direkta sa Step 3 Table sa ibaba.")
                         else:
-                            target_p = def_p_auto if st.session_state.user_role == "Master Admin" else st.session_state.assigned_parish
+                            target_p = def_p_auto if def_p_auto in get_allowed_parishes_for_current_user() else st.session_state.assigned_parish
                             ext_members = _auto_clean_and_complete_family_records(ext_members, target_p, auto_mem_files[0].name)
                             for em_it in ext_members:
                                 em_it["Parish"] = target_p
@@ -19401,7 +19770,7 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                     "I. Parish:",
                     allowed_parishes_add,
                     index=allowed_parishes_add.index(first_rec_meta.get("Parish")) if first_rec_meta.get("Parish") in allowed_parishes_add else 0,
-                    disabled=(st.session_state.user_role != "Master Admin"),
+                    disabled=(not can_switch_add_parish),
                     key=f"pv_meta_parish_{pv_rev_k}"
                 )
                 pv_area = st.text_input("Area/Zone:", value=str(first_rec_meta.get("Area/Zone", "")), placeholder="Hal. 2 o Zone 1", key=f"pv_meta_area_{pv_rev_k}")
@@ -19478,7 +19847,7 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                 "Student/Working": st.column_config.SelectboxColumn("Student/Working", options=sw_valid_opts, width="medium"),
                 "Contact No.": st.column_config.TextColumn("Contact No.", width="medium"),
                 "Church Member": st.column_config.SelectboxColumn("Church Member", options=["YES", "NO"], width="small"),
-                "Status": st.column_config.SelectboxColumn("Status", options=["ACTIVE", "INACTIVE", "NON-MEMBER", "ON GOING INDOC"], width="small"),
+                "Status": st.column_config.SelectboxColumn("Status", options=["ACTIVE", "ACTIVE IN MANILA", "ACTIVE IN HONGKONG", "INACTIVE", "NON-MEMBER", "ON GOING INDOC"], width="medium"),
                 "Baptized": st.column_config.SelectboxColumn("Baptized", options=["YES", "NO"], width="small"),
                 "Baptism Date": st.column_config.TextColumn("Baptism Date", width="small"),
                 "Current Address (If living separately)": st.column_config.TextColumn("Current Address", width="large"),
@@ -19849,7 +20218,7 @@ elif app_mode == "🛠️ App Settings":
 
         acc_reg = load_encrypted_accounts_registry()
         is_master_sec = (st.session_state.user_role == "Master Admin" or st.session_state.get("login_role") == "Master Admin")
-        my_slot_key = "MASTER ADMIN" if is_master_sec else st.session_state.get("assigned_parish", PARISH_ORDER[0])
+        my_slot_key = "MASTER ADMIN" if is_master_sec else (get_current_diocese_scope_key() if is_current_user_diocese_admin() else st.session_state.get("assigned_parish", PARISH_ORDER[0]))
         my_acc_obj = acc_reg.get(my_slot_key, {})
 
         if not is_master_sec:
@@ -19903,7 +20272,7 @@ elif app_mode == "🛠️ App Settings":
             st.caption("Bilang Master Admin, kontrolado mo ang access ng lahat ng 10 Parokya. Maaari mong i-lock/i-unlock ang access ng kahit sinong user, buksan muli ang kanilang 1-Time Password Setup, o direktang palitan ang kanilang Username at Encrypted Password.")
 
             acc_rows_disp = []
-            for slot_k in ["MASTER ADMIN"] + PARISH_ORDER:
+            for slot_k in ["MASTER ADMIN"] + DIOCESE_ACCOUNT_KEYS + PARISH_ORDER:
                 ao = acc_reg.get(slot_k, {})
                 h_str = str(ao.get("pw_hash", ""))
                 enc_badge = "PBKDF2-HMAC-SHA256 (Salted)" if h_str.startswith("pbkdf2_sha256$") else "SHA-256 Digest"
@@ -19919,7 +20288,7 @@ elif app_mode == "🛠️ App Settings":
             st.dataframe(pd.DataFrame(acc_rows_disp), use_container_width=True, hide_index=True)
 
             st.markdown("##### ⚙️ I-manage ang Account, Access, o Mag-create ng Username & Encrypted Password")
-            target_slots_all = ["MASTER ADMIN"] + PARISH_ORDER
+            target_slots_all = ["MASTER ADMIN"] + DIOCESE_ACCOUNT_KEYS + PARISH_ORDER
             sel_acc_slot = st.selectbox("🎯 Piliin ang Account / Parokya na I-ma-manage:", target_slots_all, key="admin_sec_slot_sel")
             sel_ao = acc_reg.get(sel_acc_slot, {})
 
