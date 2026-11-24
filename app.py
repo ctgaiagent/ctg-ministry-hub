@@ -1808,8 +1808,6 @@ def _embed_encrypted_rt_into_excel_bytes(excel_bytes: bytes, rt_plain: str = "")
                 ws_v.cell(3, 1, _encrypt_rt_for_cloud_vault(g_keys_now[1]))
         except Exception:
             pass
-        if "HEAD OF FAMILY MASTER" in wb.sheetnames:
-            wb["HEAD OF FAMILY MASTER"].cell(1, 52, enc_blob)
         out = io.BytesIO()
         wb.save(out)
         return out.getvalue()
@@ -3208,9 +3206,12 @@ def generate_next_family_id_for_parish(parish_name: str, df_members: pd.DataFram
         try:
             if "HEAD OF FAMILY MASTER" in wb.sheetnames:
                 ws_m = wb["HEAD OF FAMILY MASTER"]
-                for row_vals in ws_m.iter_rows(min_row=4, max_col=2, values_only=True):
+                for row_vals in ws_m.iter_rows(min_row=4, max_col=5, values_only=True):
                     cell_v = str(row_vals[0] if len(row_vals) > 0 and row_vals[0] is not None else "").strip()
                     row_p = str(row_vals[1] if len(row_vals) > 1 and row_vals[1] is not None else "").strip()
+                    row_hof = str(row_vals[4] if len(row_vals) > 4 and row_vals[4] is not None else "").strip()
+                    if not row_hof:
+                        continue
                     if normalize_parish_match(row_p, parish_name):
                         max_num = max(max_num, _extract_fid_num(cell_v, allow_generic=True))
                     else:
@@ -3335,22 +3336,16 @@ def _merge_persistent_journal_into_excel_bytes(excel_bytes: bytes) -> bytes:
                 if v_fid and v_fn:
                     existing_fid_rows_map.setdefault(v_fid, []).append(r_i)
             ex_rows_for_fid = existing_fid_rows_map.get(fid_k.upper(), [])
-            if len(ex_rows_for_fid) < len(members):
-                # Clear partial rows first so the full family from journal is cleanly written without duplicates
-                for r_clr in ex_rows_for_fid:
-                    for c_clr in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]:
-                        v_c = ws_p.cell(r_clr, c_clr).value
-                        if not (isinstance(v_c, str) and v_c.startswith("=")):
-                            ws_p.cell(r_clr, c_clr).value = None
-            if len(ex_rows_for_fid) < len(members):
+            # STRICT NON-DESTRUCTIVE RULE: If this Family ID ALREADY exists in the Excel workbook, NEVER touch or overwrite it!
+            if len(ex_rows_for_fid) == 0:
                 changed = True
-                # Insert into HEAD OF FAMILY MASTER if missing
                 if "HEAD OF FAMILY MASTER" in wb.sheetnames:
                     ws_m = wb["HEAD OF FAMILY MASTER"]
                     slot_r = None
                     for r_m in range(4, (ws_m.max_row or 0) + 1):
                         ex_fid = str(ws_m.cell(r_m, 1).value or "").strip().upper()
-                        if ex_fid == fid_k.upper():
+                        ex_hof = str(ws_m.cell(r_m, 5).value or "").strip()
+                        if ex_fid == fid_k.upper() and not ex_hof:
                             slot_r = r_m
                             break
                     if slot_r is None:
@@ -3362,22 +3357,21 @@ def _merge_persistent_journal_into_excel_bytes(excel_bytes: bytes) -> bytes:
                                 slot_r = r_m
                                 break
                     if slot_r is not None:
-                        ws_m.cell(slot_r, 1, fid_k)
-                        ws_m.cell(slot_r, 2, p_name)
-                        ws_m.cell(slot_r, 3, str(head_m.get("Area/Zone", "")))
-                        ws_m.cell(slot_r, 4, str(head_m.get("Cell Group", "")))
-                        ws_m.cell(slot_r, 5, str(head_m.get("Head of Family", head_m.get("Full Name", ""))))
-                        ws_m.cell(slot_r, 6, str(head_m.get("Contact No.", "")))
-                        ws_m.cell(slot_r, 8, str(head_m.get("Barangay", "")))
-                        ws_m.cell(slot_r, 9, str(head_m.get("City/Municipality", "")))
-                        ws_m.cell(slot_r, 10, str(head_m.get("Province / Area", "")))
-                        ws_m.cell(slot_r, 11, str(head_m.get("ZIP Code", "")))
-                        ws_m.cell(slot_r, 12, str(head_m.get("Emergency Contact Name", "")))
-                        ws_m.cell(slot_r, 13, str(head_m.get("Emergency Relationship", "")))
-                        ws_m.cell(slot_r, 14, str(head_m.get("Emergency Contact Number", "")))
-                        ws_m.cell(slot_r, 35, str(head_m.get("House / Street / Purok", "")))
-                        ws_m.cell(slot_r, 36, str(head_m.get("Current Address (If living separately)", "")))
-                # Insert members into Parish sheet
+                        _safe_write_cell_preserving_formulas(ws_m, slot_r, 1, fid_k)
+                        _safe_write_cell_preserving_formulas(ws_m, slot_r, 2, p_name)
+                        _safe_write_cell_preserving_formulas(ws_m, slot_r, 3, str(head_m.get("Area/Zone", "")))
+                        _safe_write_cell_preserving_formulas(ws_m, slot_r, 4, str(head_m.get("Cell Group", "")))
+                        _safe_write_cell_preserving_formulas(ws_m, slot_r, 5, str(head_m.get("Head of Family", head_m.get("Full Name", ""))))
+                        _safe_write_cell_preserving_formulas(ws_m, slot_r, 6, str(head_m.get("Contact No.", "")))
+                        _safe_write_cell_preserving_formulas(ws_m, slot_r, 8, str(head_m.get("Barangay", "")))
+                        _safe_write_cell_preserving_formulas(ws_m, slot_r, 9, str(head_m.get("City/Municipality", "")))
+                        _safe_write_cell_preserving_formulas(ws_m, slot_r, 10, str(head_m.get("Province / Area", "")))
+                        _safe_write_cell_preserving_formulas(ws_m, slot_r, 11, str(head_m.get("ZIP Code", "")))
+                        _safe_write_cell_preserving_formulas(ws_m, slot_r, 12, str(head_m.get("Emergency Contact Name", "")))
+                        _safe_write_cell_preserving_formulas(ws_m, slot_r, 13, str(head_m.get("Emergency Relationship", "")))
+                        _safe_write_cell_preserving_formulas(ws_m, slot_r, 14, str(head_m.get("Emergency Contact Number", "")))
+                        _safe_write_cell_preserving_formulas(ws_m, slot_r, 36, str(head_m.get("Current Address (If living separately)", "")))
+                # Insert members into empty rows of Parish sheet while preserving Col 2 (HOF), Col 8 (Age), Col 9 (Category), Col 17 (Address) formulas!
                 for idx_m, m_rec in enumerate(members, 1):
                     ins_r = None
                     for r_p in range(5, (ws_p.max_row or 0) + 1):
@@ -3386,24 +3380,27 @@ def _merge_persistent_journal_into_excel_bytes(excel_bytes: bytes) -> bytes:
                             break
                     if ins_r is None:
                         ins_r = (ws_p.max_row or 4) + 1
-                    ws_p.cell(ins_r, 1, fid_k)
-                    ws_p.cell(ins_r, 2, str(m_rec.get("Head of Family", head_m.get("Full Name", ""))))
-                    ws_p.cell(ins_r, 3, int(m_rec.get("No.", idx_m)) if str(m_rec.get("No.", idx_m)).isdigit() else idx_m)
-                    ws_p.cell(ins_r, 4, str(m_rec.get("Full Name", "")))
-                    ws_p.cell(ins_r, 5, str(m_rec.get("Relationship", "HEAD OF FAMILY" if idx_m == 1 else "DEPENDENT")))
-                    ws_p.cell(ins_r, 6, str(m_rec.get("Sex", "MALE")))
-                    ws_p.cell(ins_r, 7, str(m_rec.get("Birthdate", "")))
-                    ws_p.cell(ins_r, 8, str(m_rec.get("Age", "")))
-                    ws_p.cell(ins_r, 9, str(m_rec.get("Category", "ADULT")))
-                    ws_p.cell(ins_r, 10, str(m_rec.get("Civil Status", "SINGLE")))
-                    ws_p.cell(ins_r, 11, str(m_rec.get("Student/Working", "WORKING")))
-                    ws_p.cell(ins_r, 12, str(m_rec.get("Contact No.", "")))
-                    ws_p.cell(ins_r, 13, str(m_rec.get("Church Member", "YES")))
-                    ws_p.cell(ins_r, 14, str(m_rec.get("Status", "ACTIVE")))
-                    ws_p.cell(ins_r, 15, str(m_rec.get("Baptized", "YES")))
-                    ws_p.cell(ins_r, 16, str(m_rec.get("Baptism Date", "")))
-                    ws_p.cell(ins_r, 17, str(m_rec.get("Current Address (If living separately)", "")))
-                    ws_p.cell(ins_r, 18, str(m_rec.get("Remarks", "")))
+                    _safe_write_cell_preserving_formulas(ws_p, ins_r, 1, fid_k)
+                    _safe_write_cell_preserving_formulas(ws_p, ins_r, 2, str(m_rec.get("Head of Family", head_m.get("Full Name", ""))), allow_overwrite_formula=False)
+                    _safe_write_cell_preserving_formulas(ws_p, ins_r, 3, int(m_rec.get("No.", idx_m)) if str(m_rec.get("No.", idx_m)).isdigit() else idx_m)
+                    _safe_write_cell_preserving_formulas(ws_p, ins_r, 4, str(m_rec.get("Full Name", "")))
+                    _safe_write_cell_preserving_formulas(ws_p, ins_r, 5, str(m_rec.get("Relationship", "HEAD OF FAMILY" if idx_m == 1 else "DEPENDENT")))
+                    _safe_write_cell_preserving_formulas(ws_p, ins_r, 6, str(m_rec.get("Sex", "MALE")))
+                    bd_j = str(m_rec.get("Birthdate", "")).strip()
+                    if bd_j:
+                        try:
+                            ws_p.cell(ins_r, 7).value = pd.to_datetime(bd_j).to_pydatetime()
+                            ws_p.cell(ins_r, 7).number_format = "yyyy-mm-dd"
+                        except Exception:
+                            _safe_write_cell_preserving_formulas(ws_p, ins_r, 7, bd_j)
+                    _safe_write_cell_preserving_formulas(ws_p, ins_r, 10, str(m_rec.get("Civil Status", "SINGLE")))
+                    _safe_write_cell_preserving_formulas(ws_p, ins_r, 11, str(m_rec.get("Student/Working", "WORKING")))
+                    _safe_write_cell_preserving_formulas(ws_p, ins_r, 12, str(m_rec.get("Contact No.", "")))
+                    _safe_write_cell_preserving_formulas(ws_p, ins_r, 13, str(m_rec.get("Church Member", "YES")))
+                    _safe_write_cell_preserving_formulas(ws_p, ins_r, 14, str(m_rec.get("Status", "ACTIVE")))
+                    _safe_write_cell_preserving_formulas(ws_p, ins_r, 15, str(m_rec.get("Baptized", "YES")))
+                    _safe_write_cell_preserving_formulas(ws_p, ins_r, 16, str(m_rec.get("Baptism Date", "")))
+                    _safe_write_cell_preserving_formulas(ws_p, ins_r, 18, str(m_rec.get("Remarks", "")))
         if changed:
             ob = io.BytesIO()
             wb.save(ob)
@@ -4514,10 +4511,16 @@ def batch_update_members_in_excel_and_sync(
     and HEAD OF FAMILY MASTER in one single atomic workbook pass and syncs immediately to Google Drive."""
     if not edited_rows:
         return False, "Walang binagong rekord."
+    excel_bytes = b""
     try:
-        excel_bytes, _ = fetch_live_excel_bytes(spreadsheet_url)
+        excel_bytes, _ = fetch_live_excel_bytes(spreadsheet_url, force_cloud=True)
+        if not excel_bytes:
+            excel_bytes, _ = fetch_live_excel_bytes(spreadsheet_url, force_cloud=False)
     except Exception:
-        return False, "Updating database, please try again in a few minutes."
+        try:
+            excel_bytes, _ = fetch_live_excel_bytes(spreadsheet_url, force_cloud=False)
+        except Exception:
+            return False, "Updating database, please try again in a few minutes."
     if not excel_bytes:
         return False, "Hindi mabasa ang Master Excel file."
 
@@ -4593,10 +4596,16 @@ def update_member_in_excel_and_sync(
 ) -> tuple[bool, str]:
     if parish and not parish_name:
         parish_name = parish
+    excel_bytes = b""
     try:
-        excel_bytes, _ = fetch_live_excel_bytes(spreadsheet_url)
+        excel_bytes, _ = fetch_live_excel_bytes(spreadsheet_url, force_cloud=True)
+        if not excel_bytes:
+            excel_bytes, _ = fetch_live_excel_bytes(spreadsheet_url, force_cloud=False)
     except Exception:
-        return False, "Updating database, please try again in a few minutes."
+        try:
+            excel_bytes, _ = fetch_live_excel_bytes(spreadsheet_url, force_cloud=False)
+        except Exception:
+            return False, "Updating database, please try again in a few minutes."
     if not excel_bytes:
         return False, "Updating database, please try again in a few minutes (Hindi mabasa ang Excel file)."
     try:
@@ -4624,17 +4633,96 @@ def update_member_in_excel_and_sync(
     except Exception as e:
         return False, f"Updating database, please try again in a few minutes ({str(e)})"
 
+MASTER_PROTECTED_FORMULA_COLS = {7, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 28, 29, 37, 38, 39}
+PARISH_PROTECTED_FORMULA_COLS = {2, 8, 9, 17, 21, 45, 46}
+
 def _safe_write_cell_preserving_formulas(ws, row_idx: int, col_idx: int, new_value, allow_overwrite_formula: bool = False):
-    """Writes new_value to ws.cell(row_idx, col_idx) ONLY if the cell does not contain a background formula (unless allow_overwrite_formula=True)."""
+    """Writes new_value to ws.cell(row_idx, col_idx) ONLY if the cell does NOT contain an Excel formula
+    and is NOT a protected formula column in HEAD OF FAMILY MASTER or a Philippine Parish sheet."""
     if not col_idx or new_value is None:
         return
     val_str = str(new_value).strip()
     if val_str == "":
         return
+    sheet_title = str(getattr(ws, "title", "") or "").strip().upper()
+    if sheet_title == "HEAD OF FAMILY MASTER" and col_idx in MASTER_PROTECTED_FORMULA_COLS:
+        return
+    if sheet_title != "HONGKONG PARISH" and sheet_title in PARISH_ORDER and col_idx in PARISH_PROTECTED_FORMULA_COLS:
+        return
     existing_val = ws.cell(row=row_idx, column=col_idx).value
-    if not allow_overwrite_formula and isinstance(existing_val, str) and existing_val.strip().startswith("="):
+    if isinstance(existing_val, str) and existing_val.strip().startswith("="):
         return
     ws.cell(row=row_idx, column=col_idx).value = new_value
+
+def _ensure_row_formulas_intact(ws, row_idx: int, is_master_sheet: bool = False):
+    """Ensures that all protected Excel Table formula columns on row_idx contain their intact structured formulas
+    (copying from a clean template row if row_idx is a newly appended row or had any missing formula)."""
+    try:
+        max_r = ws.max_row or 0
+        if is_master_sheet:
+            tpl_row = None
+            for r_t in range(4, max_r + 1):
+                v7 = ws.cell(row=r_t, column=7).value
+                v15 = ws.cell(row=r_t, column=15).value
+                if isinstance(v7, str) and v7.startswith("=") and isinstance(v15, str) and v15.startswith("="):
+                    tpl_row = r_t
+                    break
+            if tpl_row is not None:
+                for c_f in sorted(MASTER_PROTECTED_FORMULA_COLS):
+                    cur_v = ws.cell(row=row_idx, column=c_f).value
+                    if not (isinstance(cur_v, str) and cur_v.strip().startswith("=")):
+                        tpl_v = ws.cell(row=tpl_row, column=c_f).value
+                        if isinstance(tpl_v, str) and tpl_v.strip().startswith("="):
+                            ws.cell(row=row_idx, column=c_f).value = tpl_v
+        else:
+            sheet_title = str(getattr(ws, "title", "") or "").strip().upper()
+            if sheet_title == "HONGKONG PARISH":
+                return
+            tpl_row = None
+            for r_t in range(5, max_r + 1):
+                v2 = ws.cell(row=r_t, column=2).value
+                v8 = ws.cell(row=r_t, column=8).value
+                v17 = ws.cell(row=r_t, column=17).value
+                if isinstance(v2, str) and v2.startswith("=") and isinstance(v8, str) and v8.startswith("=") and isinstance(v17, str) and v17.startswith("="):
+                    tpl_row = r_t
+                    break
+            if tpl_row is not None:
+                for c_f in (2, 8, 9, 17):
+                    cur_v = ws.cell(row=row_idx, column=c_f).value
+                    if not (isinstance(cur_v, str) and cur_v.strip().startswith("=")):
+                        tpl_v = ws.cell(row=tpl_row, column=c_f).value
+                        if isinstance(tpl_v, str) and tpl_v.strip().startswith("="):
+                            ws.cell(row=row_idx, column=c_f).value = tpl_v
+                for c_f in (21, 45, 46):
+                    if c_f <= (ws.max_column or 0):
+                        cur_v = ws.cell(row=row_idx, column=c_f).value
+                        if not (isinstance(cur_v, str) and cur_v.strip().startswith("=")):
+                            tpl_v = ws.cell(row=tpl_row, column=c_f).value
+                            if isinstance(tpl_v, str) and tpl_v.strip().startswith("="):
+                                adapted_f = re.sub(rf"(?<=[A-Z]){tpl_row}\b", str(row_idx), tpl_v)
+                                ws.cell(row=row_idx, column=c_f).value = adapted_f
+    except Exception:
+        pass
+
+def _split_clean_house_street_for_master_excel(raw_house_addr: str, brgy: str, city: str, prov: str) -> tuple[str, str]:
+    """Separates the pure House/Street/Purok/Sitio prefix (Col 35 AI) from Barangay/City/Province
+    so Excel's Col G (Complete Address) formula never duplicates the barangay/city/province,
+    while returning the full composed address for Col 36 (Manual / Previous Full Address)."""
+    h_s = _clean_cell_str(raw_house_addr)
+    b_s = _clean_cell_str(brgy)
+    c_s = _clean_cell_str(city)
+    p_s = _clean_cell_str(prov)
+    street_only = h_s
+    for tok_rm in [f"Brgy. {b_s}", f"Brgy {b_s}", f"Barangay {b_s}", b_s, c_s, p_s, "Brgy.", "Brgy", "Barangay", "L.U.", "LU", "SGLU"]:
+        t_clean = tok_rm.strip()
+        if t_clean and len(t_clean) >= 2:
+            street_only = re.sub(r"(?i)(?:^|(?<=[\s,.\-]))" + re.escape(t_clean) + r"(?=$|[\s,.\-])", " ", street_only)
+    street_only = re.sub(r"\s+", " ", street_only).strip(" ,.-")
+    if street_only.upper() in ("SAME ADDRESS", "NONE", "N/A", "-"):
+        street_only = ""
+    full_parts = [x for x in [street_only, b_s, c_s, p_s] if x]
+    composed_full = ", ".join(full_parts) if full_parts else h_s
+    return street_only, composed_full
 
 def _clear_master_row_preserving_formulas(ws_master, row_idx: int, template_row_idx: int = 395):
     """Clears all non-formula data entry cells in a HEAD OF FAMILY MASTER row while keeping Parish (Col 2) and all formulas intact."""
@@ -6218,15 +6306,21 @@ def _is_same_head_of_family_fuzzy(name_a: str, name_b: str, mob_a: str = "", mob
 
 def append_new_member_to_excel_and_sync(spreadsheet_url: str, member_data: dict, dependents_list: list[dict] = None) -> tuple[bool, str]:
     """
-    Implements the Exact Two-Step Excel Data Workflow with STRICT ANTI-DUPLICATE & IN-PLACE UPDATE PROTECTION:
-    - If the Head of Family (or Family ID / fuzzy OCR match like ALPREAD JR. TADINA -> Alfredo Jr. Tadina) already exists in the target Parish,
-      reuses their existing Family ID and updates/replaces member rows in-place (by Full Name OR Member No.) so duplicate Family IDs NEVER occur.
-    - Preserves structured Excel formulas in HEAD OF FAMILY MASTER and the Parish Sheet (Col B Head of Family, Col H Age, Col I Category, Col Q Current Address).
+    Implements the Exact Two-Step Append-Only & 100% Formula-Preserving Excel Workflow:
+    - Always pulls the latest live CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx from Google Drive first so existing families and rows are NEVER overwritten by stale local cache.
+    - Leaves all existing families, existing data rows, and all Excel Table formulas (HEAD OF FAMILY MASTER Cols G, O–X, AB–AC, AK–AM and Parish Sheet Cols B, H, I, Q, U, AS, AT) 100% untouched.
+    - Appends new families into the next available empty slot in HEAD OF FAMILY MASTER and the next available empty rows in the target Parish sheet.
     """
+    excel_bytes = b""
     try:
-        excel_bytes, _ = fetch_live_excel_bytes(spreadsheet_url)
+        excel_bytes, _ = fetch_live_excel_bytes(spreadsheet_url, force_cloud=True)
+        if not excel_bytes:
+            excel_bytes, _ = fetch_live_excel_bytes(spreadsheet_url, force_cloud=False)
     except Exception:
-        return False, "Updating database, please try again in a few minutes."
+        try:
+            excel_bytes, _ = fetch_live_excel_bytes(spreadsheet_url, force_cloud=False)
+        except Exception:
+            return False, "Updating database, please try again in a few minutes."
     if not excel_bytes:
         return False, "Updating database, please try again in a few minutes (Hindi mabasa ang Excel file)."
 
@@ -6234,24 +6328,27 @@ def append_new_member_to_excel_and_sync(spreadsheet_url: str, member_data: dict,
         parish_name = str(member_data.get("Parish", "") or "").strip()
         wb = openpyxl.load_workbook(io.BytesIO(excel_bytes))
         if parish_name not in wb.sheetnames:
+            wb.close()
             return False, f"Wala ang sheet na '{parish_name}' sa Excel."
 
         full_name = _clean_cell_str(member_data.get("Full Name", ""))
         rel_val = _clean_cell_str(member_data.get("Relationship", "HEAD OF FAMILY")).upper() or "HEAD OF FAMILY"
         head_name = _clean_cell_str(member_data.get("Head of Family", "")) or full_name
         member_data["Head of Family"] = head_name
-        head_mob = _clean_cell_str(member_data.get("Contact No.", ""))
 
         raw_fid = _clean_cell_str(member_data.get("Family ID", "")).upper()
         if raw_fid in ("NAN", "NONE", "NULL", "AUTO", "-") or raw_fid.endswith("-NEW"):
             raw_fid = ""
 
         # =================================================================
-        # STRICT ANTI-DUPLICATE CHECK: Check if Family ID or Head of Family already exists in this Parish!
+        # APPEND-ONLY CHECK: Only reuse an existing Family ID if raw_fid was explicitly specified
+        # (e.g. re-saving the currently locked Family ID in Step 3 / Paraan 3) OR exact normalized Head of Family match!
+        # NEVER use fuzzy matching to overwrite a different existing family in the Excel file!
         # =================================================================
         existing_fid_for_head = ""
         master_slot_row = None
         master_already_exists = False
+        norm_head_alpha = re.sub(r"[^A-Z]", "", head_name.upper())
 
         if "HEAD OF FAMILY MASTER" in wb.sheetnames:
             ws_master = wb["HEAD OF FAMILY MASTER"]
@@ -6259,32 +6356,25 @@ def append_new_member_to_excel_and_sync(spreadsheet_url: str, member_data: dict,
                 row_parish = _clean_cell_str(ws_master.cell(row=r_m, column=2).value)
                 ex_fid = _clean_cell_str(ws_master.cell(row=r_m, column=1).value)
                 ex_hof = _clean_cell_str(ws_master.cell(row=r_m, column=5).value)
-                ex_mob = _clean_cell_str(ws_master.cell(row=r_m, column=6).value)
                 if normalize_parish_match(row_parish, parish_name):
                     if raw_fid and ex_fid and ex_fid.upper() == raw_fid:
                         existing_fid_for_head = ex_fid.upper()
                         master_slot_row = r_m
-                        master_already_exists = True
+                        master_already_exists = bool(ex_hof)
                         break
-                    if ex_hof and head_name and _is_same_head_of_family_fuzzy(ex_hof, head_name, ex_mob, head_mob):
+                    if not raw_fid and ex_hof and norm_head_alpha and re.sub(r"[^A-Z]", "", ex_hof.upper()) == norm_head_alpha:
                         existing_fid_for_head = ex_fid.upper() if ex_fid else ""
                         master_slot_row = r_m
                         master_already_exists = True
                         break
 
         ws = wb[parish_name]
-        if not existing_fid_for_head:
+        if not existing_fid_for_head and raw_fid:
             for r_p in range(5, (ws.max_row or 0) + 1):
                 p_fid = _clean_cell_str(ws.cell(row=r_p, column=1).value)
-                p_fn = _clean_cell_str(ws.cell(row=r_p, column=4).value)
-                p_mob = _clean_cell_str(ws.cell(row=r_p, column=12).value)
-                if p_fid.upper().startswith("CTG-"):
-                    if raw_fid and p_fid.upper() == raw_fid:
-                        existing_fid_for_head = p_fid.upper()
-                        break
-                    if p_fn and head_name and _is_same_head_of_family_fuzzy(p_fn, head_name, p_mob, head_mob):
-                        existing_fid_for_head = p_fid.upper()
-                        break
+                if p_fid.upper() == raw_fid:
+                    existing_fid_for_head = p_fid.upper()
+                    break
 
         if existing_fid_for_head:
             family_id = existing_fid_for_head
@@ -6317,7 +6407,7 @@ def append_new_member_to_excel_and_sync(spreadsheet_url: str, member_data: dict,
                     row_parish = _clean_cell_str(ws_master.cell(row=r_m, column=2).value)
                     ex_fid = _clean_cell_str(ws_master.cell(row=r_m, column=1).value)
                     ex_hof = _clean_cell_str(ws_master.cell(row=r_m, column=5).value)
-                    if normalize_parish_match(row_parish, parish_name) and not ex_fid and not ex_hof:
+                    if normalize_parish_match(row_parish, parish_name) and not ex_hof and (not ex_fid or ex_fid.upper() == family_id.upper()):
                         master_slot_row = r_m
                         break
 
@@ -6359,14 +6449,19 @@ def append_new_member_to_excel_and_sync(spreadsheet_url: str, member_data: dict,
                         except Exception:
                             ws_master.cell(row=master_slot_row, column=34).value = str(bap_d)
 
-                house_st = _clean_cell_str(member_data.get("House / Street / Purok", ""))
-                _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 35, house_st)
-                addr_parts = [x for x in [house_st, _clean_cell_str(member_data.get("Barangay", "")), _clean_cell_str(member_data.get("City/Municipality", "")), _clean_cell_str(member_data.get("Province / Area", ""))] if x]
-                composed_household_addr = ", ".join(addr_parts)
+                clean_street_only, composed_household_addr = _split_clean_house_street_for_master_excel(
+                    member_data.get("House / Street / Purok", ""),
+                    member_data.get("Barangay", ""),
+                    member_data.get("City/Municipality", ""),
+                    member_data.get("Province / Area", "")
+                )
+                if clean_street_only:
+                    _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 35, clean_street_only)
                 manual_addr = _clean_cell_str(member_data.get("Manual / Previous Full Address", "")) or composed_household_addr or _clean_cell_str(member_data.get("Current Address (If living separately)", ""))
                 if manual_addr.upper() == "SAME ADDRESS":
                     manual_addr = composed_household_addr
                 _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 36, manual_addr)
+                _ensure_row_formulas_intact(ws_master, master_slot_row, is_master_sheet=True)
 
         # =================================================================
         # STEP 2: PARISH SHEET ROUTING (In-place update by Name or Member No., never duplicates!)
@@ -6451,12 +6546,10 @@ def append_new_member_to_excel_and_sync(spreadsheet_url: str, member_data: dict,
                 member_no = idx_rec + 1
 
             insert_row = None
+            # STRICT APPEND-ONLY PROTECTION: Only update an existing row if it has the EXACT same Full Name under this Family ID.
+            # Never overwrite an existing row belonging to a different member name!
             if rec_fn.upper() in existing_member_row_map and existing_member_row_map[rec_fn.upper()] not in used_target_rows:
                 insert_row = existing_member_row_map[rec_fn.upper()]
-            elif member_no in existing_member_no_row_map and existing_member_no_row_map[member_no] not in used_target_rows:
-                insert_row = existing_member_no_row_map[member_no]
-            elif idx_rec < len(all_existing_fid_rows) and all_existing_fid_rows[idx_rec] not in used_target_rows:
-                insert_row = all_existing_fid_rows[idx_rec]
 
             if insert_row is None:
                 for r_idx in range(5, (ws.max_row or 0) + 1):
@@ -6481,21 +6574,19 @@ def append_new_member_to_excel_and_sync(spreadsheet_url: str, member_data: dict,
             ws.cell(row=insert_row, column=sex_col).value = _clean_cell_str(rec.get("Sex", "MALE")).upper() or "MALE"
 
             bdate_val = _clean_cell_str(rec.get("Birthdate", ""))
-            has_valid_bdate = False
             if bdate_val:
                 try:
                     ws.cell(row=insert_row, column=bdate_col).value = pd.to_datetime(bdate_val).to_pydatetime()
                     ws.cell(row=insert_row, column=bdate_col).number_format = "yyyy-mm-dd"
-                    has_valid_bdate = True
                 except Exception:
                     ws.cell(row=insert_row, column=bdate_col).value = bdate_val
 
             age_in = _clean_cell_str(rec.get("Age", ""))
             if age_in:
-                _safe_write_cell_preserving_formulas(ws, insert_row, age_col, int(age_in) if age_in.isdigit() else age_in, allow_overwrite_formula=(not has_valid_bdate))
+                _safe_write_cell_preserving_formulas(ws, insert_row, age_col, int(age_in) if age_in.isdigit() else age_in, allow_overwrite_formula=False)
             cat_in = _clean_cell_str(rec.get("Category", "")).upper()
             if cat_in:
-                _safe_write_cell_preserving_formulas(ws, insert_row, cat_col, cat_in, allow_overwrite_formula=(not has_valid_bdate))
+                _safe_write_cell_preserving_formulas(ws, insert_row, cat_col, cat_in, allow_overwrite_formula=False)
 
             ws.cell(row=insert_row, column=civ_col).value = _clean_cell_str(rec.get("Civil Status", "SINGLE")).upper() or "SINGLE"
             ws.cell(row=insert_row, column=sw_col).value = _clean_cell_str(rec.get("Student/Working", "WORKING")) or "WORKING"
@@ -6517,14 +6608,9 @@ def append_new_member_to_excel_and_sync(spreadsheet_url: str, member_data: dict,
                     ws.cell(row=insert_row, column=bapd_col).value = bapd_val
 
             cur_addr_in = _clean_cell_str(rec.get("Current Address (If living separately)", ""))
-            house_st_chk = _clean_cell_str(rec.get("House / Street / Purok", ""))
-            is_separate_addr = bool(
-                cur_addr_in
-                and cur_addr_in.upper() != "SAME ADDRESS"
-                and (not house_st_chk or house_st_chk.upper() not in cur_addr_in.upper())
-            )
-            if is_separate_addr:
-                _safe_write_cell_preserving_formulas(ws, insert_row, addr_col, cur_addr_in, allow_overwrite_formula=True)
+            if parish_name == "HONGKONG PARISH" and cur_addr_in and cur_addr_in.upper() != "SAME ADDRESS":
+                _safe_write_cell_preserving_formulas(ws, insert_row, addr_col, cur_addr_in, allow_overwrite_formula=False)
+            _ensure_row_formulas_intact(ws, insert_row, is_master_sheet=False)
 
             raw_rem_in = _clean_cell_str(rec.get("Remarks", ""))
             clean_rem_excel = re.sub(r"\s*\(Drive\s+(?:File|Photo):\s*https?://[^\)]+\)", "", raw_rem_in, flags=re.I).strip()
@@ -6572,16 +6658,7 @@ def append_new_member_to_excel_and_sync(spreadsheet_url: str, member_data: dict,
 
             inserted_rows_info.append(f"{rec_fn} (No. {member_no}, Row {insert_row})")
 
-        # Clear any leftover/orphan rows of this same Family ID if a corrected family has fewer rows than before
-        if parish_name != "HONGKONG PARISH":
-            tpl_clr_r = 45
-            for r_t in range(25, (ws.max_row or 0) + 1):
-                if isinstance(ws.cell(r_t, 2).value, str) and str(ws.cell(r_t, 2).value).startswith("="):
-                    tpl_clr_r = r_t
-                    break
-            for orphan_r in all_existing_fid_rows:
-                if orphan_r not in used_target_rows:
-                    _clear_parish_sheet_row_preserving_formulas(ws, orphan_r, tpl_clr_r)
+        # Preserve all existing rows in the Parish sheet (never delete or clear existing member rows during append!)
 
         _save_family_to_persistent_journal(family_id, parish_name, member_data, unique_records_to_insert)
         out_buf = io.BytesIO()
@@ -7437,95 +7514,6 @@ elif st.session_state.get("login_role") != "Master Admin":
     st.session_state.assigned_parish = st.session_state.get("login_parish", st.session_state.get("assigned_parish", PARISH_ORDER[0]))
 
 master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
-_cur_df_len_key = f"len_{len(master_members_df)}"
-if not st.session_state.get("_andabuen_purged_session") and _cur_df_len_key not in _STARTUP_UPGRADES_CHECKED_DIGESTS:
-    st.session_state["_andabuen_purged_session"] = True
-    _STARTUP_UPGRADES_CHECKED_DIGESTS.add(_cur_df_len_key)
-    if not master_members_df.empty and "ROBERTO SANTOS" in master_members_df["Full Name"].astype(str).str.upper().values:
-        _auto_purge_andabuen_test_santos_records_once(ACTIVE_SPREADSHEET_URL)
-        master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
-    if not master_members_df.empty and "ALPREAD JR. TADINA" in master_members_df["Full Name"].astype(str).str.upper().values:
-        _auto_upgrade_partial_tadina_record_once(ACTIVE_SPREADSHEET_URL)
-        master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
-    if not master_members_df.empty and any("SHIP US WORKING" in str(nm).upper() or "PAGUH" in str(nm).upper() for nm in master_members_df["Full Name"].dropna().values):
-        _auto_upgrade_partial_paquit_record_once(ACTIVE_SPREADSHEET_URL)
-        master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
-    if not master_members_df.empty:
-        up_all_nms = set(master_members_df["Full Name"].dropna().astype(str).str.upper().values)
-        if any("AVELINO AST" in nm for nm in up_all_nms) and not any("ERLINDA AST" in nm for nm in up_all_nms):
-            _auto_upgrade_partial_astodillo_record_once(ACTIVE_SPREADSHEET_URL)
-            master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
-        if any("MO = MOTHER" in nm or "BR = BROTHER" in nm or "DESAY OLAYO" in nm or nm in ("CESAR C.", "CESAR CLARO", "CESAR B. CLARO") for nm in up_all_nms) and not any("JOAN CLARO" in nm for nm in up_all_nms):
-            _auto_upgrade_partial_cesar_claro_record_once(ACTIVE_SPREADSHEET_URL)
-            master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
-        if any("DARIO" in nm and "CLARO" in nm for nm in up_all_nms) and not any("DAISY A. CLARO" in nm for nm in up_all_nms):
-            _auto_upgrade_partial_dario_claro_record_once(ACTIVE_SPREADSHEET_URL)
-            master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
-        if any("ERMITO" in nm and "CLARO" in nm for nm in up_all_nms) and not any("DOMINGA BILAR CLARO" in nm for nm in up_all_nms):
-            _auto_upgrade_partial_ermito_claro_record_once(ACTIVE_SPREADSHEET_URL)
-            master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
-        if (
-            any(nm in ("RELA- S TION- E X", "BIRTH- DATE", "CATE", "BAP", "AGE", "RELA", "AGE STAT BAP", "ZEARNE B.") for nm in up_all_nms)
-            or (any("EVANGELINE PALMA" in nm for nm in up_all_nms) and not any("MONINA JOY PALMA" in nm for nm in up_all_nms))
-        ):
-            _auto_repair_evangeline_palma_and_junk_header_rows_once(ACTIVE_SPREADSHEET_URL)
-            master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
-    if not st.session_state.get("_apolonio_upgraded_once") and not master_members_df.empty:
-        st.session_state["_apolonio_upgraded_once"] = True
-        up_names_set = set(master_members_df["Full Name"].astype(str).str.upper().values)
-        if any("APOLONIO" in nm for nm in up_names_set) and not any("SOLEDAD" in nm for nm in up_names_set):
-            try:
-                apol_head = {
-                    "Parish": "LIPAY NORTE PARISH",
-                    "Family ID": "",
-                    "Area/Zone": "",
-                    "Cell Group": "",
-                    "Head of Family": "Apolonio B. Claro",
-                    "No.": "1",
-                    "Full Name": "Apolonio B. Claro",
-                    "Relationship": "HEAD OF FAMILY",
-                    "Sex": "MALE",
-                    "Birthdate": "1958-01-10",
-                    "Age": "68",
-                    "Category": "SENIOR CITIZEN",
-                    "Civil Status": "MARRIED",
-                    "Student/Working": "WORKING",
-                    "Contact No.": "09755486681",
-                    "Church Member": "YES",
-                    "Status": "ACTIVE",
-                    "Baptized": "YES",
-                    "Baptism Date": "",
-                    "House / Street / Purok": "Sitio Labiao, Lipay Norte, San Gabriel, La Union",
-                    "Barangay": "Lipay Norte",
-                    "City/Municipality": "San Gabriel",
-                    "Province / Area": "La Union",
-                    "ZIP Code": "2513",
-                    "Current Address (If living separately)": "Sitio Labiao, Lipay Norte, San Gabriel, La Union",
-                    "Emergency Contact Name": "Soledad L. Claro",
-                    "Emergency Relationship": "Wife",
-                    "Emergency Contact Number": "09755486681",
-                    "Remarks": "Collected/Certified by Rev. Billy C. Pagwit (Date Accomplished: 29-Oct-2026 / Nov 20, 2026)",
-                }
-                apol_wife = apol_head.copy()
-                apol_wife.update({
-                    "No.": "2",
-                    "Full Name": "Soledad L. Claro",
-                    "Relationship": "WIFE",
-                    "Sex": "FEMALE",
-                    "Birthdate": "1960-09-11",
-                    "Age": "66",
-                    "Category": "SENIOR CITIZEN",
-                    "Civil Status": "MARRIED",
-                    "Student/Working": "WORKING",
-                    "Contact No.": "",
-                    "Church Member": "YES",
-                    "Status": "ACTIVE",
-                    "Baptized": "YES",
-                })
-                append_new_member_to_excel_and_sync(ACTIVE_SPREADSHEET_URL, apol_head, [apol_wife])
-                master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
-            except Exception:
-                pass
 
 if "custom_secrets" not in st.session_state:
     st.session_state.custom_secrets = {
@@ -19617,9 +19605,30 @@ def _extract_single_family_from_vision_parts(
             })
             built_members.append(m_rec)
 
-        # Merge with any members extracted by Gemini Vision if Vision found additional family members
-        if len(vision_members) > len(built_members):
-            built_members = vision_members
+        # Smart Hybrid Field-Level Merger: combine Gemini Vision members and 2D Row-Band OCR members
+        # so every row gets the most complete Full Name, Birthdate, Age, Relationship, Sex, Category, Civil Status, Student/Working, and Contact No.!
+        if vision_members:
+            clean_vis = [vm for vm in vision_members if not _is_junk_ocr_header_name(vm.get("Full Name", "")) and not _is_ocr_table_header_line(vm.get("Full Name", ""))]
+            if len(clean_vis) > len(built_members):
+                merged_hyb = []
+                for idx_v, vm_row in enumerate(clean_vis):
+                    vm_cp = vm_row.copy()
+                    if idx_v < len(built_members):
+                        ocr_cp = built_members[idx_v]
+                        for fld_k in ("Birthdate", "Age", "Category", "Relationship", "Sex", "Civil Status", "Student/Working", "Contact No.", "Current Address (If living separately)"):
+                            if not _clean_cell_str(vm_cp.get(fld_k, "")) and _clean_cell_str(ocr_cp.get(fld_k, "")):
+                                vm_cp[fld_k] = ocr_cp[fld_k]
+                    merged_hyb.append(vm_cp)
+                built_members = merged_hyb
+            elif clean_vis:
+                for idx_b, bm_row in enumerate(built_members):
+                    if idx_b < len(clean_vis):
+                        vm_cp = clean_vis[idx_b]
+                        for fld_k in ("Birthdate", "Age", "Category", "Relationship", "Sex", "Civil Status", "Student/Working", "Contact No.", "Current Address (If living separately)"):
+                            if not _clean_cell_str(bm_row.get(fld_k, "")) and _clean_cell_str(vm_cp.get(fld_k, "")):
+                                bm_row[fld_k] = vm_cp[fld_k]
+                        if len(_clean_cell_str(vm_cp.get("Full Name", "")).split()) > len(_clean_cell_str(bm_row.get("Full Name", "")).split()):
+                            bm_row["Full Name"] = vm_cp["Full Name"]
 
         if not built_members and final_hof_name:
             first_m = base_meta.copy()
