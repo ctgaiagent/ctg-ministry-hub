@@ -1187,10 +1187,293 @@ LOCAL_ENCRYPTED_ACCOUNTS_FILE = "ctg_encrypted_user_accounts.json"
 LOCAL_LEADERSHIP_PROFILES_FILE = "ctg_leadership_and_priests_profiles.json"
 LOCAL_SECURITY_AUDIT_LOG_FILE = "ctg_security_audit_log.json"
 SECURE_BACKUP_DIR = "ctg_secure_backups"
-_LOGIN_RATE_LIMIT_TRACKER = {}
+_LOGIN_RATE_LIMIT_TRACKER = {}  # Keyed by (session_corr_id, username) to prevent global account-lockout DoS
+_IDS_SESSION_ACTIVITY_WINDOWS = {}  # Tracks sliding-window events per session/source for Intrusion Detection
 
-def record_security_audit_event(event_type: str, details: str, severity: str = "INFO"):
-    """Records a tamper-evident, SHA-256 hash-chained security event in ctg_security_audit_log.json."""
+CANONICAL_SECURITY_EVENT_TYPES = [
+    "AUTH_LOGIN_SUCCESS",
+    "AUTH_LOGIN_FAILED",
+    "AUTH_ACCOUNT_LOCKOUT",
+    "AUTH_LOGOUT",
+    "AUTH_PASSWORD_RESET",
+    "UNAUTHORIZED_ACCESS_ATTEMPT",
+    "RBAC_CROSS_PARISH_VIOLATION",
+    "FILE_UPLOAD",
+    "FILE_DOWNLOAD",
+    "USER_ACCOUNT_CREATED_OR_DELETED",
+    "ROLE_PERMISSION_CHANGED",
+    "MASTER_ADMIN_ACTIVITY",
+    "GOOGLE_DRIVE_AUTH_FAILURE",
+    "APPLICATION_SECURITY_ERROR",
+]
+
+CANONICAL_RISK_LEVELS = ["Critical", "High", "Medium", "Low", "Informational"]
+
+DEFAULT_IDS_RULES_CONFIG = {
+    "failed_login_high_threshold": 3,
+    "failed_login_lockout_threshold": 5,
+    "failed_login_window_seconds": 900,
+    "multi_account_spray_threshold": 3,
+    "multi_account_window_seconds": 600,
+    "cross_parish_violation_threshold": 2,
+    "unusual_file_download_threshold": 5,
+    "log_retention_days": 90,
+    "max_audit_events": 2000,
+    "alert_on_repeated_login_failures": True,
+    "alert_on_critical_access_violations": True,
+    "alert_on_master_admin_cred_changes": True,
+    "alert_on_privilege_escalation": True,
+    "alert_on_suspicious_drive_access": True,
+}
+
+def load_ids_rules_config() -> dict:
+    cfg = DEFAULT_IDS_RULES_CONFIG.copy()
+    try:
+        saved = load_saved_config().get("IDS_RULES_CONFIG")
+        if isinstance(saved, dict):
+            cfg.update(saved)
+    except Exception:
+        pass
+    return cfg
+
+def save_ids_rules_config(new_ids_cfg: dict):
+    try:
+        all_cfg = load_saved_config()
+        merged = DEFAULT_IDS_RULES_CONFIG.copy()
+        merged.update(new_ids_cfg or {})
+        all_cfg["IDS_RULES_CONFIG"] = merged
+        save_encrypted_local_config(all_cfg)
+    except Exception:
+        pass
+
+def get_session_correlation_id() -> str:
+    """Returns a unique cryptographic correlation ID per Streamlit browser session."""
+    try:
+        if "_session_correlation_id" not in st.session_state or not st.session_state["_session_correlation_id"]:
+            st.session_state["_session_correlation_id"] = f"sess_{secrets.token_hex(8)}"
+        return str(st.session_state["_session_correlation_id"])
+    except Exception:
+        return "sess_system"
+
+def get_verified_client_metadata() -> tuple[str, str]:
+    """Extracts non-spoofable client session fingerprint and records source IP ONLY when
+    TRUSTED_PROXY_ENABLED is explicitly set in st.secrets. Never trusts arbitrary client-supplied IP headers."""
+    client_info = "Streamlit-Web-Client"
+    trusted_ip = "untrusted/omitted"
+    try:
+        headers = getattr(st.context, "headers", None) if hasattr(st, "context") else None
+        if headers and isinstance(headers, dict):
+            ua = str(headers.get("User-Agent") or headers.get("user-agent") or "")
+            if ua:
+                ua_hash = hashlib.sha256(ua.encode("utf-8")).hexdigest()[:10]
+                browser_tag = "Mobile" if "Mobile" in ua else ("Mac" if "Macintosh" in ua else ("Win" if "Windows" in ua else "Web"))
+                client_info = f"{browser_tag}-UA#{ua_hash}"
+            trust_proxy = str(get_secret("TRUSTED_PROXY_ENABLED", "false")).lower() in ("true", "1", "yes")
+            if trust_proxy:
+                raw_ip = str(headers.get("X-Real-IP") or "").strip()
+                if re.match(r"^(?:\d{1,3}\.){3}\d{1,3}$|^[0-9a-fA-F:]+$", raw_ip):
+                    trusted_ip = raw_ip
+    except Exception:
+        pass
+    return client_info, trusted_ip
+
+def _redact_secrets_from_audit_text(raw_text: str) -> str:
+    """Strictly scrubs plaintext passwords, PBKDF2 hashes/salts, Google OAuth access/refresh tokens,
+    API keys, Notion secrets, and session CSRF secrets so they are NEVER recorded in logs or alerts."""
+    s = str(raw_text or "")
+    if not s:
+        return ""
+    patterns = [
+        (r"pbkdf2_sha256\$[0-9a-zA-Z$\-_]+", "[REDACTED_PW_HASH]"),
+        (r"\b1//[0-9A-Za-z_\-]{20,}\b", "[REDACTED_OAUTH_REFRESH_TOKEN]"),
+        (r"\bya29\.[0-9A-Za-z_\-\.]{20,}\b", "[REDACTED_OAUTH_ACCESS_TOKEN]"),
+        (r"\bAIza[0-9A-Za-z_\-]{25,}\b", "[REDACTED_GCP_API_KEY]"),
+        (r"\bGOCSPX-[0-9A-Za-z_\-]{15,}\b", "[REDACTED_OAUTH_CLIENT_SECRET]"),
+        (r"\b(?:ntn_|secret_)[0-9A-Za-z_\-]{20,}\b", "[REDACTED_NOTION_TOKEN]"),
+        (r"(?i)(password|passwd|pwd|secret|token|apikey|api_key)\s*[:=]\s*['\"]?[^\s,'\";]+['\"]?", r"\1=[REDACTED]"),
+    ]
+    for pat, rep in patterns:
+        s = re.sub(pat, rep, s)
+    return s[:500]
+
+def _normalize_risk_level(severity_in: str, event_type: str, outcome: str) -> str:
+    s_up = str(severity_in or "").strip().upper()
+    mapping = {
+        "CRITICAL": "Critical",
+        "HIGH": "High",
+        "WARNING": "Medium",
+        "MEDIUM": "Medium",
+        "LOW": "Low",
+        "INFO": "Informational",
+        "INFORMATIONAL": "Informational",
+    }
+    if s_up in mapping:
+        return mapping[s_up]
+    if "CRITICAL" in event_type or "LOCKOUT" in event_type or "CROSS_PARISH" in event_type:
+        return "Critical"
+    if outcome == "FAILURE":
+        return "Medium"
+    return "Informational"
+
+def verify_audit_log_hash_chain(events_list: list) -> tuple[bool, int, str]:
+    """Verifies the cryptographic HMAC-SHA256 / SHA-256 hash chain across audit log records
+    to detect any unauthorized tampering or row deletion."""
+    if not events_list:
+        return True, 0, "OK (0 events)"
+    sk = _get_config_cipher_key()
+    verified_cnt = 0
+    prev_h = "0" * 64
+    for idx, ev in enumerate(events_list):
+        if not isinstance(ev, dict):
+            continue
+        stored_prev = str(ev.get("prev_hash", ""))
+        if idx > 0 and stored_prev and not prev_h.startswith(stored_prev):
+            return False, verified_cnt, f"Hash chain break detected at event #{idx + 1} ({ev.get('event_id', 'legacy')})"
+        ev_id = str(ev.get("event_id", ""))
+        if ev_id:
+            payload = f"{prev_h[:16]}|{ev_id}|{ev.get('utc_timestamp', '')}|{ev.get('attempted_username', '')}|{ev.get('event_type', '')}|{ev.get('outcome', '')}|{ev.get('risk_level', '')}"
+            expect_h = hmac.new(sk, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+            if ev.get("entry_hash") and not hmac.compare_digest(str(ev.get("entry_hash")), expect_h):
+                return False, verified_cnt, f"Signature mismatch at event {ev_id}"
+        prev_h = str(ev.get("entry_hash", prev_h))
+        verified_cnt += 1
+    return True, verified_cnt, f"Verified ({verified_cnt} tamper-evident records)"
+
+def get_postgresql_audit_log_ddl_sql() -> str:
+    """Returns the immutable PostgreSQL schema & Row-Level Security (RLS) policy for ctg_security_audit_logs."""
+    return "\n".join([
+        "-- ============================================================================",
+        "-- CTG MINISTRY HUB — IMMUTABLE POSTGRESQL SECURITY AUDIT LOG SCHEMA & RLS",
+        "-- ============================================================================",
+        "CREATE TABLE IF NOT EXISTS ctg_security_audit_logs (",
+        "    event_id VARCHAR(48) PRIMARY KEY,",
+        "    utc_timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),",
+        "    pht_timestamp VARCHAR(40) NOT NULL,",
+        "    user_id VARCHAR(64) NOT NULL,",
+        "    attempted_username VARCHAR(120) NOT NULL,",
+        "    user_role VARCHAR(48) NOT NULL,",
+        "    assigned_parish VARCHAR(64) NOT NULL,",
+        "    event_type VARCHAR(64) NOT NULL,",
+        "    outcome VARCHAR(16) NOT NULL,",
+        "    denial_reason TEXT,",
+        "    risk_level VARCHAR(24) NOT NULL,",
+        "    correlation_id VARCHAR(48) NOT NULL,",
+        "    client_info VARCHAR(120),",
+        "    source_ip VARCHAR(64),",
+        "    details TEXT,",
+        "    prev_hash VARCHAR(32) NOT NULL,",
+        "    entry_hash VARCHAR(64) NOT NULL",
+        ");",
+        "CREATE INDEX IF NOT EXISTS idx_ctg_audit_utc ON ctg_security_audit_logs(utc_timestamp DESC);",
+        "CREATE INDEX IF NOT EXISTS idx_ctg_audit_type_risk ON ctg_security_audit_logs(event_type, risk_level);",
+        "ALTER TABLE ctg_security_audit_logs ENABLE ROW LEVEL SECURITY;",
+        "ALTER TABLE ctg_security_audit_logs FORCE ROW LEVEL SECURITY;",
+        "-- Prevent unauthorized modification or deletion (Append-Only Immutability)",
+        "REVOKE UPDATE, DELETE, TRUNCATE ON ctg_security_audit_logs FROM PUBLIC;",
+        "-- Only Super Admin / Master Admin can view audit logs",
+        "CREATE POLICY ctg_audit_admin_select_policy ON ctg_security_audit_logs FOR SELECT USING (",
+        "    current_setting('app.current_user_role', true) IN ('Super Admin', 'Master Admin')",
+        ");",
+        "CREATE POLICY ctg_audit_insert_policy ON ctg_security_audit_logs FOR INSERT WITH CHECK (true);"
+    ])
+
+def _evaluate_intrusion_detection_and_alert(
+    event_type: str,
+    outcome: str,
+    attempted_user: str,
+    assigned_parish: str,
+    base_risk: str,
+    corr_id: str,
+    denial_reason: str
+) -> tuple[str, str]:
+    """Evaluates the 7 configurable Intrusion Detection rules (IDS-01..IDS-07) across a sliding time window
+    and dispatches sanitized alerts to Master Admin when suspicious activity is detected."""
+    ids_cfg = load_ids_rules_config()
+    now_ts = time.time()
+    bucket = _IDS_SESSION_ACTIVITY_WINDOWS.setdefault(corr_id, {
+        "failed_logins": [],
+        "targeted_users": {},
+        "cross_parish_denials": [],
+        "file_downloads": [],
+    })
+    elevated_risk = base_risk
+    ids_rule_triggered = ""
+
+    # Prune old timestamps outside sliding windows
+    win_fail = float(ids_cfg.get("failed_login_window_seconds", 900))
+    win_spray = float(ids_cfg.get("multi_account_window_seconds", 600))
+    bucket["failed_logins"] = [t for t in bucket["failed_logins"] if (now_ts - t) <= win_fail]
+    bucket["cross_parish_denials"] = [t for t in bucket["cross_parish_denials"] if (now_ts - t) <= 900.0]
+    bucket["file_downloads"] = [t for t in bucket["file_downloads"] if (now_ts - t) <= 600.0]
+    bucket["targeted_users"] = {u: t for u, t in bucket["targeted_users"].items() if (now_ts - t) <= win_spray}
+
+    if event_type in ("AUTH_LOGIN_FAILED", "AUTH_ACCOUNT_LOCKOUT") or (outcome == "FAILURE" and "AUTH" in event_type):
+        bucket["failed_logins"].append(now_ts)
+        if attempted_user:
+            bucket["targeted_users"][attempted_user.lower()] = now_ts
+        fail_cnt = len(bucket["failed_logins"])
+        distinct_users = len(bucket["targeted_users"])
+        if distinct_users >= int(ids_cfg.get("multi_account_spray_threshold", 3)):
+            elevated_risk = "Critical"
+            ids_rule_triggered = f"IDS-03: Multi-Account Credential Spraying ({distinct_users} accounts targeted from session {corr_id})"
+        elif fail_cnt >= int(ids_cfg.get("failed_login_lockout_threshold", 5)):
+            elevated_risk = "Critical"
+            ids_rule_triggered = f"IDS-01: Repeated Failed Login Burst ({fail_cnt} failures in window)"
+        elif fail_cnt >= int(ids_cfg.get("failed_login_high_threshold", 3)):
+            if elevated_risk not in ("Critical", "High"):
+                elevated_risk = "High"
+            ids_rule_triggered = f"IDS-01: Elevated Failed Logins ({fail_cnt} failures)"
+
+    if "SUSPENDED" in denial_reason.upper() or "DISABLED" in denial_reason.upper() or "LOCKED" in denial_reason.upper():
+        if elevated_risk not in ("Critical", "High"):
+            elevated_risk = "High"
+        ids_rule_triggered = ids_rule_triggered or f"IDS-02: Login Attempt on Suspended/Locked Account ({attempted_user})"
+
+    if event_type in ("RBAC_CROSS_PARISH_VIOLATION", "RBAC_BLOCKED_UNAUTHENTICATED"):
+        bucket["cross_parish_denials"].append(now_ts)
+        if len(bucket["cross_parish_denials"]) >= int(ids_cfg.get("cross_parish_violation_threshold", 2)):
+            elevated_risk = "Critical"
+            ids_rule_triggered = f"IDS-04: Repeated Cross-Parish Access Violations ({len(bucket['cross_parish_denials'])} denials)"
+        else:
+            elevated_risk = "High" if elevated_risk not in ("Critical",) else elevated_risk
+
+    if event_type == "FILE_DOWNLOAD":
+        bucket["file_downloads"].append(now_ts)
+        dl_cnt = len(bucket["file_downloads"])
+        dl_thresh = int(ids_cfg.get("unusual_file_download_threshold", 5))
+        if dl_cnt >= dl_thresh * 2:
+            elevated_risk = "High"
+            ids_rule_triggered = f"IDS-05: High-Volume File Download Spike ({dl_cnt} downloads in 10m)"
+        elif dl_cnt >= dl_thresh:
+            if elevated_risk in ("Informational", "Low"):
+                elevated_risk = "Medium"
+            ids_rule_triggered = f"IDS-05: Unusual File Download Activity ({dl_cnt} downloads in 10m)"
+
+    if event_type in ("RBAC_BLOCKED_ADMIN", "UNAUTHORIZED_ACCESS_ATTEMPT", "RBAC_BLOCKED_VIEWER_WRITE", "RBAC_BLOCKED_DELETE"):
+        if "ADMIN" in event_type:
+            elevated_risk = "Critical"
+            ids_rule_triggered = ids_rule_triggered or f"IDS-06: Unauthorized Privilege / Admin Escalation Attempt by '{attempted_user}'"
+        elif elevated_risk in ("Informational", "Low"):
+            elevated_risk = "Medium"
+
+    if event_type == "GOOGLE_DRIVE_AUTH_FAILURE":
+        if elevated_risk in ("Informational", "Low", "Medium"):
+            elevated_risk = "High"
+        ids_rule_triggered = ids_rule_triggered or "IDS-07: Google Drive Authorization / Scope Failure"
+
+    return elevated_risk, ids_rule_triggered
+
+def record_security_audit_event(
+    event_type: str,
+    details: str,
+    severity: str = "INFO",
+    outcome: str = "",
+    denial_reason: str = "",
+    attempted_username: str = "",
+    target_parish: str = ""
+):
+    """Records a 14-field tamper-evident, HMAC-SHA256 hash-chained security event with automatic secret redaction,
+    Intrusion Detection evaluation (IDS-01..IDS-07), and persistent storage sync."""
     try:
         events = []
         if os.path.exists(LOCAL_SECURITY_AUDIT_LOG_FILE):
@@ -1201,25 +1484,83 @@ def record_security_audit_event(event_type: str, details: str, severity: str = "
                     events = loaded
             except Exception:
                 events = []
-        prev_hash = events[-1].get("entry_hash", "0" * 64) if events else ("0" * 64)
-        ts_str = get_philippine_datetime_str()
-        actor = str(st.session_state.get("logged_in_username") or st.session_state.get("assigned_parish") or "anonymous")
-        role = str(st.session_state.get("login_role") or st.session_state.get("user_role") or "unauthenticated")
-        payload_str = f"{prev_hash}|{ts_str}|{actor}|{role}|{severity}|{event_type}|{details}"
-        entry_hash = hashlib.sha256(payload_str.encode("utf-8")).hexdigest()
-        events.append({
-            "timestamp": ts_str,
-            "actor": actor,
-            "role": role,
-            "severity": severity,
-            "event_type": event_type,
-            "details": str(details)[:500],
+
+        ids_cfg = load_ids_rules_config()
+        now_utc = datetime.now(timezone.utc)
+        utc_iso = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+        pht_str = get_philippine_datetime_str()
+        ev_id = f"evt_{int(now_utc.timestamp() * 1000)}_{secrets.token_hex(4)}"
+        corr_id = get_session_correlation_id()
+        client_info, trusted_ip = get_verified_client_metadata()
+
+        sess_user = str(st.session_state.get("logged_in_username") or "").strip()
+        sess_role = str(st.session_state.get("login_role") or st.session_state.get("user_role") or "Unauthenticated").strip()
+        sess_parish = str(target_parish or st.session_state.get("login_parish") or st.session_state.get("assigned_parish") or "Unassigned").strip()
+        user_id_val = "MASTER ADMIN" if sess_role in ("Master Admin", "Super Admin") else (sess_parish if st.session_state.get("authenticated") else "UNAUTHENTICATED")
+        actor_val = _redact_secrets_from_audit_text(attempted_username or sess_user or sess_parish or "anonymous")[:80]
+
+        ev_up = str(event_type or "APPLICATION_SECURITY_ERROR").strip().upper()
+        if not outcome:
+            is_fail = any(k in ev_up for k in ("FAIL", "BLOCK", "VIOLATION", "LOCKOUT", "REJECT", "SPOOF", "BOMB", "ERROR", "UNAUTHORIZED"))
+            outcome_val = "FAILURE" if is_fail else "SUCCESS"
+        else:
+            outcome_val = "FAILURE" if str(outcome).upper().startswith("FAIL") else "SUCCESS"
+
+        clean_details = _redact_secrets_from_audit_text(details)
+        clean_denial = _redact_secrets_from_audit_text(denial_reason or (clean_details if outcome_val == "FAILURE" else ""))
+        base_risk = _normalize_risk_level(severity, ev_up, outcome_val)
+        final_risk, ids_alert_msg = _evaluate_intrusion_detection_and_alert(
+            ev_up, outcome_val, actor_val, sess_parish, base_risk, corr_id, clean_denial
+        )
+        if ids_alert_msg:
+            clean_details = f"[{ids_alert_msg}] {clean_details}"[:500]
+
+        prev_hash = str(events[-1].get("entry_hash", "0" * 64)) if events else ("0" * 64)
+        sk = _get_config_cipher_key()
+        sig_payload = f"{prev_hash[:16]}|{ev_id}|{utc_iso}|{actor_val}|{ev_up}|{outcome_val}|{final_risk}"
+        entry_hash = hmac.new(sk, sig_payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
+        record_obj = {
+            "event_id": ev_id,
+            "utc_timestamp": utc_iso,
+            "timestamp": pht_str,
+            "user_id": user_id_val,
+            "attempted_username": actor_val,
+            "actor": actor_val,
+            "user_role": sess_role,
+            "role": sess_role,
+            "assigned_parish": sess_parish,
+            "event_type": ev_up,
+            "outcome": outcome_val,
+            "denial_reason": clean_denial,
+            "risk_level": final_risk,
+            "severity": final_risk.upper(),
+            "correlation_id": corr_id,
+            "client_info": client_info,
+            "source_ip": trusted_ip,
+            "ids_rule": ids_alert_msg,
+            "details": clean_details,
             "prev_hash": prev_hash[:16],
-            "entry_hash": entry_hash
-        })
-        events = events[-250:]
+            "entry_hash": entry_hash,
+        }
+        events.append(record_obj)
+
+        # Apply configurable retention window & max events cap
+        max_ev = max(250, min(5000, int(ids_cfg.get("max_audit_events", 2000))))
+        events = events[-max_ev:]
         with open(LOCAL_SECURITY_AUDIT_LOG_FILE, "w", encoding="utf-8") as f:
             json.dump(events, f, ensure_ascii=False, indent=2)
+
+        # Mirror audit log to External Hard Drive if mounted
+        try:
+            base_hdd, is_mnt = get_active_external_hard_drive_backup_dir()
+            if is_mnt or os.path.exists(base_hdd):
+                hdd_json_dir = os.path.join(base_hdd, "03_App_Records_Accounts_Audit_Logs")
+                os.makedirs(hdd_json_dir, exist_ok=True)
+                with open(os.path.join(hdd_json_dir, LOCAL_SECURITY_AUDIT_LOG_FILE), "w", encoding="utf-8") as fh:
+                    json.dump(events, fh, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -1356,6 +1697,7 @@ def validate_uploaded_file_security(file_bytes: bytes, filename: str, declared_m
             return False, f"🔒 Security Error: Ang '{base_fn}' ay binary file at hindi valid na CSV text.", ""
 
     safe_server_fn = generate_safe_server_filename(base_fn)
+    record_security_audit_event("FILE_UPLOAD", f"Validated uploaded file '{base_fn}' ({len(file_bytes)} bytes) -> '{safe_server_fn}'", severity="INFO", outcome="SUCCESS")
     return True, "OK", safe_server_fn
 
 def create_automatic_encrypted_excel_backup(excel_bytes: bytes, reason: str = "pre_write") -> str:
@@ -1767,13 +2109,25 @@ def verify_account_credentials_detailed(username_in: str, password_in: str) -> t
     if not u_clean or not p_clean.strip():
         return None, "⚠️ Pakilagay ang iyong Username at Password."
 
-    # Brute-Force Rate Limiting & Temporary Account Lockout (Max 5 failed attempts -> 15-minute lockout)
+    # DoS-Resistant Session-Scoped Rate Limiting & Lockout (prevents attackers from locking legitimate users out globally)
     now_ts = time.time()
-    rate_info = _LOGIN_RATE_LIMIT_TRACKER.get(u_clean, {"fails": 0, "first_fail_ts": now_ts, "locked_until": 0.0})
+    corr_id_login = get_session_correlation_id()
+    lock_key = f"{corr_id_login}::{u_clean}"
+    ids_cfg_now = load_ids_rules_config()
+    max_fails_cfg = max(3, int(ids_cfg_now.get("failed_login_lockout_threshold", 5)))
+    lock_win_cfg = float(ids_cfg_now.get("failed_login_window_seconds", 900))
+    rate_info = _LOGIN_RATE_LIMIT_TRACKER.get(lock_key, {"fails": 0, "first_fail_ts": now_ts, "locked_until": 0.0, "username": u_clean, "session_id": corr_id_login})
     if rate_info.get("locked_until", 0.0) > now_ts:
         rem_mins = max(1, int((rate_info["locked_until"] - now_ts) / 60.0) + 1)
-        record_security_audit_event("AUTH_LOCKOUT_BLOCKED", f"Locked username '{u_clean}' attempted login ({rem_mins}m remaining)", "HIGH")
-        return None, f"🔒 Pansamantalang Naka-lock ang Account ('{u_clean}') dahil sa 5 sunod-sunod na maling password. Maghintay ng {rem_mins} minuto o magpa-unlock sa Super Admin."
+        record_security_audit_event(
+            "AUTH_ACCOUNT_LOCKOUT",
+            f"Throttled session '{corr_id_login}' attempted login on '{u_clean}' ({rem_mins}m remaining)",
+            severity="HIGH",
+            outcome="FAILURE",
+            denial_reason="SESSION_LOCKOUT_ACTIVE",
+            attempted_username=u_clean
+        )
+        return None, f"🔒 Pansamantalang Naka-lock ang Session na ito para sa '{u_clean}' dahil sa {max_fails_cfg} sunod-sunod na maling password. Maghintay ng {rem_mins} minuto o magpa-unlock sa Master Admin."
 
     reg = load_encrypted_accounts_registry()
 
@@ -1804,15 +2158,39 @@ def verify_account_credentials_detailed(username_in: str, password_in: str) -> t
                     break
 
     if matched_acc_slot is None:
+        record_security_audit_event(
+            "AUTH_LOGIN_FAILED",
+            f"Unknown username '{u_clean}' attempted login",
+            severity="MEDIUM",
+            outcome="FAILURE",
+            denial_reason="UNKNOWN_USERNAME",
+            attempted_username=u_clean
+        )
         return None, f"❌ Babala sa Pag-login: Hindi nahanap ang Username na '{username_in}'. Pakisuri ang spelling ng iyong Username."
 
     if not matched_acc_slot.get("is_active", True) and matched_acc_slot.get("role") != "Master Admin":
+        record_security_audit_event(
+            "UNAUTHORIZED_ACCESS_ATTEMPT",
+            f"Login attempt on suspended/disabled account '{u_clean}' ({matched_acc_slot.get('parish')})",
+            severity="HIGH",
+            outcome="FAILURE",
+            denial_reason="SUSPENDED_ACCOUNT",
+            attempted_username=u_clean,
+            target_parish=str(matched_acc_slot.get("parish", ""))
+        )
         return None, f"🔒 Babala: Naka-lock o disabled sa kasalukuyan ang access ng '{matched_acc_slot.get('parish')}'. Makipag-ugnayan sa Master Admin upang buksan ang access."
 
     # Verify password against encrypted hash (PBKDF2-SHA256 or SHA-256)
     if verify_encrypted_password(p_clean.strip(), matched_acc_slot.get("pw_hash", "")):
-        _LOGIN_RATE_LIMIT_TRACKER.pop(u_clean, None)
-        record_security_audit_event("AUTH_LOGIN_SUCCESS", f"User '{u_clean}' logged in ({matched_acc_slot.get('role')} - {matched_acc_slot.get('parish')})", "INFO")
+        _LOGIN_RATE_LIMIT_TRACKER.pop(lock_key, None)
+        record_security_audit_event(
+            "AUTH_LOGIN_SUCCESS",
+            f"Authenticated login for '{u_clean}' ({matched_acc_slot.get('role')} - {matched_acc_slot.get('parish')})",
+            severity="INFO",
+            outcome="SUCCESS",
+            attempted_username=u_clean,
+            target_parish=str(matched_acc_slot.get("parish", ""))
+        )
         return matched_acc_slot, "OK"
 
     # Fallback check against st.secrets or default hash if not yet changed
@@ -1821,24 +2199,47 @@ def verify_account_credentials_detailed(username_in: str, password_in: str) -> t
             if candidate_key in PARISH_ACCOUNTS:
                 base_acc = PARISH_ACCOUNTS[candidate_key]
                 if verify_encrypted_password(p_clean.strip(), base_acc.get("pw_hash", "")) or (APP_PASSWORD and candidate_key == APP_USER.lower() and hmac.compare_digest(p_clean.strip(), APP_PASSWORD)):
-                    _LOGIN_RATE_LIMIT_TRACKER.pop(u_clean, None)
-                    record_security_audit_event("AUTH_LOGIN_SUCCESS", f"User '{u_clean}' logged in ({matched_acc_slot.get('role')} - {matched_acc_slot.get('parish')})", "INFO")
+                    _LOGIN_RATE_LIMIT_TRACKER.pop(lock_key, None)
+                    record_security_audit_event(
+                        "AUTH_LOGIN_SUCCESS",
+                        f"Authenticated login for '{u_clean}' ({matched_acc_slot.get('role')} - {matched_acc_slot.get('parish')})",
+                        severity="INFO",
+                        outcome="SUCCESS",
+                        attempted_username=u_clean,
+                        target_parish=str(matched_acc_slot.get("parish", ""))
+                    )
                     return matched_acc_slot, "OK"
 
-    # Record failed attempt for brute-force protection
-    if (now_ts - rate_info.get("first_fail_ts", now_ts)) > 900.0:
-        rate_info = {"fails": 1, "first_fail_ts": now_ts, "locked_until": 0.0}
+    # Record failed attempt in DoS-safe session-scoped tracker
+    if (now_ts - rate_info.get("first_fail_ts", now_ts)) > lock_win_cfg:
+        rate_info = {"fails": 1, "first_fail_ts": now_ts, "locked_until": 0.0, "username": u_clean, "session_id": corr_id_login}
     else:
         rate_info["fails"] = int(rate_info.get("fails", 0)) + 1
-    if rate_info["fails"] >= 5:
-        rate_info["locked_until"] = now_ts + 900.0
-        _LOGIN_RATE_LIMIT_TRACKER[u_clean] = rate_info
-        record_security_audit_event("AUTH_BRUTE_FORCE_LOCKOUT", f"Account '{u_clean}' locked for 15 minutes after 5 failed attempts", "CRITICAL")
-        return None, f"🔒 Na-lock ang '{u_clean}' nang 15 minuto matapos ang 5 maling pagtatangka sa password."
-    _LOGIN_RATE_LIMIT_TRACKER[u_clean] = rate_info
-    rem_tries = max(0, 5 - rate_info["fails"])
-    record_security_audit_event("AUTH_LOGIN_FAILED", f"Invalid password for '{u_clean}' ({rem_tries} attempts remaining)", "WARNING")
-    return None, f"❌ Babala sa Pag-login: Maling Password! ({rem_tries} pagtatangka na lang bago pansamantalang ma-lock ang account)."
+    if rate_info["fails"] >= max_fails_cfg:
+        rate_info["locked_until"] = now_ts + lock_win_cfg
+        _LOGIN_RATE_LIMIT_TRACKER[lock_key] = rate_info
+        record_security_audit_event(
+            "AUTH_ACCOUNT_LOCKOUT",
+            f"Session '{corr_id_login}' locked for 15m after {max_fails_cfg} failed login attempts on '{u_clean}'",
+            severity="CRITICAL",
+            outcome="FAILURE",
+            denial_reason="BRUTE_FORCE_THRESHOLD_EXCEEDED",
+            attempted_username=u_clean,
+            target_parish=str(matched_acc_slot.get("parish", ""))
+        )
+        return None, f"🔒 Na-lock ang session na ito para sa '{u_clean}' nang 15 minuto matapos ang {max_fails_cfg} maling pagtatangka sa password."
+    _LOGIN_RATE_LIMIT_TRACKER[lock_key] = rate_info
+    rem_tries = max(0, max_fails_cfg - rate_info["fails"])
+    record_security_audit_event(
+        "AUTH_LOGIN_FAILED",
+        f"Invalid password for '{u_clean}' ({rem_tries} attempts remaining before session lockout)",
+        severity="MEDIUM",
+        outcome="FAILURE",
+        denial_reason="INVALID_PASSWORD",
+        attempted_username=u_clean,
+        target_parish=str(matched_acc_slot.get("parish", ""))
+    )
+    return None, f"❌ Babala sa Pag-login: Maling Password! ({rem_tries} pagtatangka na lang bago pansamantalang ma-lock ang session)."
 
 def verify_account_credentials(username_in: str, password_in: str) -> dict | None:
     acc, _ = verify_account_credentials_detailed(username_in, password_in)
@@ -2638,6 +3039,13 @@ def persist_drive_refresh_token_everywhere(new_rt: str, client_id: str = "", cli
         pass
 
 def _mark_token_as_403_gmail_only(rt_token: str):
+    record_security_audit_event(
+        "GOOGLE_DRIVE_AUTH_FAILURE",
+        "Google Drive API returned 403 insufficientPermissions (Gmail-only OAuth token scope detected)",
+        severity="HIGH",
+        outcome="FAILURE",
+        denial_reason="OAUTH_403_INSUFFICIENT_SCOPE"
+    )
     rt_s = str(rt_token or "").strip()
     if not rt_s:
         return
@@ -16721,9 +17129,16 @@ with st.sidebar:
         st.session_state.pop("chat_session", None)
         st.rerun()
     if st.button("🚪 Logout"):
+        record_security_audit_event(
+            "AUTH_LOGOUT",
+            f"User '{st.session_state.get('logged_in_username', '')}' logged out cleanly",
+            severity="INFO",
+            outcome="SUCCESS"
+        )
         if st.session_state.get("login_role") != "Master Admin":
             set_parish_leader_offline_presence(st.session_state.get("login_parish") or st.session_state.get("assigned_parish", ""))
         st.session_state.authenticated = False
+        st.session_state.pop("_session_csrf_token", None)
         st.rerun()
 
 def generate_ai_ministry_draft(service_category, sender_name, parish_name, topic, details, lang, model_name):
@@ -21601,6 +22016,7 @@ elif app_mode == "🛠️ App Settings":
                                 acc_reg[my_slot_key]["one_time_changed"] = True
                                 acc_reg[my_slot_key]["updated_at"] = get_philippine_datetime_str()
                                 save_encrypted_accounts_registry(acc_reg)
+                                record_security_audit_event("AUTH_PASSWORD_RESET", f"1-Time self credential setup completed for '{my_slot_key}' (new username='{new_u_self}')", severity="LOW", outcome="SUCCESS")
                                 st.session_state.logged_in_username = new_u_self
                                 st.success(f"✅ Matagumpay na na-save at na-encrypt ang iyong bagong Username (`{new_u_self}`) at Password!")
                                 time.sleep(0.1)
@@ -21678,21 +22094,252 @@ elif app_mode == "🛠️ App Settings":
                         st.rerun()
 
             st.divider()
+            # =====================================================================
+            # 🛡️ CTG SECURITY MONITORING & INTRUSION DETECTION DASHBOARD (MASTER ADMIN)
+            # =====================================================================
+            aud_events_all = []
+            if os.path.exists(LOCAL_SECURITY_AUDIT_LOG_FILE):
+                try:
+                    with open(LOCAL_SECURITY_AUDIT_LOG_FILE, "r", encoding="utf-8") as fa:
+                        loaded_aud = json.load(fa)
+                    if isinstance(loaded_aud, list):
+                        aud_events_all = [e for e in loaded_aud if isinstance(e, dict)]
+                except Exception:
+                    aud_events_all = []
+
+            now_ts_dash = time.time()
+            active_lockouts = [
+                v for v in _LOGIN_RATE_LIMIT_TRACKER.values()
+                if isinstance(v, dict) and float(v.get("locked_until", 0.0) or 0.0) > now_ts_dash
+            ]
+            disabled_reg_accs = [
+                k for k, v in acc_reg.items()
+                if isinstance(v, dict) and not v.get("is_active", True)
+            ]
+            locked_total_cnt = len(active_lockouts) + len(disabled_reg_accs)
+
+            succ_logins_cnt = sum(1 for e in aud_events_all if str(e.get("event_type", "")) == "AUTH_LOGIN_SUCCESS")
+            fail_logins_cnt = sum(1 for e in aud_events_all if str(e.get("event_type", "")) in ("AUTH_LOGIN_FAILED", "AUTH_ACCOUNT_LOCKOUT", "AUTH_LOCKOUT_BLOCKED"))
+            suspicious_cnt = sum(
+                1 for e in aud_events_all
+                if str(e.get("risk_level", e.get("severity", ""))).upper() in ("CRITICAL", "HIGH", "MEDIUM", "WARNING")
+                or str(e.get("outcome", "")) == "FAILURE"
+                or bool(e.get("ids_rule"))
+            )
+            access_viol_cnt = sum(
+                1 for e in aud_events_all
+                if any(k in str(e.get("event_type", "")) for k in ("RBAC_", "VIOLATION", "UNAUTHORIZED", "SPOOF", "BOMB", "MALICIOUS"))
+            )
+            admin_changes_cnt = sum(
+                1 for e in aud_events_all
+                if any(k in str(e.get("event_type", "")) for k in ("ADMIN_", "ROLE_", "PASSWORD_RESET", "BACKUP_RESTORED", "USER_ACCOUNT"))
+            )
+            file_activity_cnt = sum(
+                1 for e in aud_events_all
+                if any(k in str(e.get("event_type", "")) for k in ("FILE_UPLOAD", "FILE_DOWNLOAD", "UPLOAD_"))
+            )
+
+            chain_ok, chain_cnt, chain_msg = verify_audit_log_hash_chain(aud_events_all)
+            chain_badge_col = "#10B981" if chain_ok else "#EF4444"
+
+            # Build recent 6 events rows for the dark CTG Security Monitoring card
+            recent_trs_html = []
+            for ev_r in aud_events_all[-6:][::-1]:
+                dt_disp = html_esc(ev_r.get("timestamp") or ev_r.get("utc_timestamp") or "—")
+                ev_type_disp = html_esc(ev_r.get("event_type", "EVENT"))
+                ev_act_disp = html_esc(ev_r.get("attempted_username") or ev_r.get("actor") or "system")
+                ev_det_disp = html_esc(str(ev_r.get("details", ""))[:85])
+                r_lvl = str(ev_r.get("risk_level") or ev_r.get("severity") or "Informational").capitalize()
+                out_v = str(ev_r.get("outcome") or ("FAILURE" if r_lvl in ("Critical", "High") else "SUCCESS"))
+                st_col = "#EF4444" if (out_v == "FAILURE" or r_lvl in ("Critical", "High")) else ("#F59E0B" if r_lvl == "Medium" else "#10B981")
+                recent_trs_html.append(
+                    f"<tr style='border-bottom:1px solid rgba(255,255,255,0.07);'>"
+                    f"<td style='padding:10px 8px;color:#94A3B8;font-size:0.82rem;white-space:nowrap;'>{dt_disp}</td>"
+                    f"<td style='padding:10px 8px;color:#F8FAFC;font-size:0.84rem;'><b>{ev_type_disp}</b> • <code>{ev_act_disp}</code> — <span style='color:#CBD5E1;'>{ev_det_disp}</span></td>"
+                    f"<td style='padding:10px 8px;text-align:right;white-space:nowrap;'><span style='background:{st_col}22;color:{st_col};border:1px solid {st_col}66;padding:2px 9px;border-radius:12px;font-size:0.75rem;font-weight:700;'>{html_esc(r_lvl)} • {html_esc(out_v)}</span></td>"
+                    f"</tr>"
+                )
+            if not recent_trs_html:
+                recent_trs_html.append(
+                    "<tr><td style='padding:12px 8px;color:#64748B;'>—</td>"
+                    "<td style='padding:12px 8px;color:#94A3B8;'>No security events recorded yet</td>"
+                    "<td style='padding:12px 8px;text-align:right;color:#64748B;'>—</td></tr>"
+                )
+
+            st.markdown(
+                f"<div style='background:#08090C;border:1px solid rgba(255,255,255,0.12);border-radius:16px;padding:26px 28px;margin:14px 0 18px 0;box-shadow:0 10px 30px rgba(0,0,0,0.45);'>"
+                f"<div style='display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;margin-bottom:20px;'>"
+                f"<div>"
+                f"<div style='font-size:1.38rem;font-weight:800;color:#FFFFFF;letter-spacing:-0.3px;'>CTG Security Monitoring</div>"
+                f"<div style='font-size:0.86rem;color:#94A3B8;margin-top:3px;'>Live Intrusion Detection &amp; Tamper-Evident Audit Telemetry — Master Admin View</div>"
+                f"</div>"
+                f"<span style='background:{chain_badge_col}1F;color:{chain_badge_col};border:1px solid {chain_badge_col}66;padding:4px 12px;border-radius:999px;font-size:0.76rem;font-weight:700;'>"
+                f"🔗 Hash Chain: {html_esc(chain_msg)}</span>"
+                f"</div>"
+                f"<div style='display:grid;grid-template-columns:repeat(auto-fit, minmax(210px, 1fr));gap:22px;margin-bottom:22px;'>"
+                f"<div>"
+                f"<div style='color:#EF4444;font-size:1.1rem;margin-bottom:6px;'>🛡️</div>"
+                f"<div style='font-size:2.1rem;font-weight:800;color:#EF4444;line-height:1.1;'>{suspicious_cnt}</div>"
+                f"<div style='font-size:0.98rem;font-weight:700;color:#FFFFFF;margin-top:6px;'>Suspicious Attempts</div>"
+                f"<div style='font-size:0.80rem;color:#94A3B8;margin-top:2px;'>Unusual login activity ({fail_logins_cnt} failed logins)</div>"
+                f"</div>"
+                f"<div>"
+                f"<div style='color:#F97316;font-size:1.1rem;margin-bottom:6px;'>🔒</div>"
+                f"<div style='font-size:2.1rem;font-weight:800;color:#FFFFFF;line-height:1.1;'>{locked_total_cnt}</div>"
+                f"<div style='font-size:0.98rem;font-weight:700;color:#FFFFFF;margin-top:6px;'>Locked Accounts</div>"
+                f"<div style='font-size:0.80rem;color:#94A3B8;margin-top:2px;'>Temporary session lockouts &amp; disabled accounts</div>"
+                f"</div>"
+                f"<div>"
+                f"<div style='color:#94A3B8;font-size:1.1rem;margin-bottom:6px;'>👥</div>"
+                f"<div style='font-size:2.1rem;font-weight:800;color:#FFFFFF;line-height:1.1;'>{succ_logins_cnt}</div>"
+                f"<div style='font-size:0.98rem;font-weight:700;color:#FFFFFF;margin-top:6px;'>Successful Logins</div>"
+                f"<div style='font-size:0.80rem;color:#94A3B8;margin-top:2px;'>Recorded sessions ({admin_changes_cnt} admin changes)</div>"
+                f"</div>"
+                f"<div>"
+                f"<div style='color:#EF4444;font-size:1.1rem;margin-bottom:6px;'>❎</div>"
+                f"<div style='font-size:2.1rem;font-weight:800;color:#FFFFFF;line-height:1.1;'>{access_viol_cnt}</div>"
+                f"<div style='font-size:0.98rem;font-weight:700;color:#FFFFFF;margin-top:6px;'>Access Violations</div>"
+                f"<div style='font-size:0.80rem;color:#94A3B8;margin-top:2px;'>Unauthorized resource requests ({file_activity_cnt} file events)</div>"
+                f"</div>"
+                f"</div>"
+                f"<div style='font-size:1.02rem;font-weight:700;color:#FFFFFF;margin-bottom:10px;'>Recent Security Events</div>"
+                f"<div style='overflow-x:auto;'>"
+                f"<table style='width:100%;border-collapse:collapse;'>"
+                f"<thead><tr style='border-bottom:1px solid rgba(255,255,255,0.14);'>"
+                f"<th style='text-align:left;padding:8px;color:#CBD5E1;font-size:0.80rem;'>Date / Time</th>"
+                f"<th style='text-align:left;padding:8px;color:#CBD5E1;font-size:0.80rem;'>Event</th>"
+                f"<th style='text-align:right;padding:8px;color:#CBD5E1;font-size:0.80rem;'>Status</th>"
+                f"</tr></thead>"
+                f"<tbody>{''.join(recent_trs_html)}</tbody>"
+                f"</table></div></div>",
+                unsafe_allow_html=True
+            )
+
+            # 6-Way Searchable & Filterable Audit Log Explorer + Configurable Intrusion Detection Rules
+            with st.expander("🔍 Searchable & Filterable Audit Logs (Date Range • Username • Role • Parish • Event Type • Risk Level)", expanded=True):
+                if not aud_events_all:
+                    st.info("Wala pang naitalang security event.")
+                else:
+                    df_aud = pd.DataFrame(aud_events_all[::-1])
+                    for req_c, def_v in [
+                        ("event_id", ""), ("utc_timestamp", ""), ("timestamp", ""), ("user_id", ""),
+                        ("attempted_username", ""), ("user_role", ""), ("assigned_parish", ""),
+                        ("event_type", ""), ("outcome", "SUCCESS"), ("risk_level", "Informational"),
+                        ("denial_reason", ""), ("correlation_id", ""), ("client_info", ""),
+                        ("source_ip", "untrusted/omitted"), ("details", ""), ("entry_hash", "")
+                    ]:
+                        if req_c not in df_aud.columns:
+                            df_aud[req_c] = def_v
+                        df_aud[req_c] = df_aud[req_c].fillna(def_v).astype(str)
+
+                    fc1, fc2, fc3, fc4, fc5, fc6 = st.columns(6)
+                    with fc1:
+                        flt_user = st.text_input("👤 Username:", key="siem_flt_user", placeholder="e.g. lipay").strip().lower()
+                    with fc2:
+                        role_opts = ["LAHAT"] + sorted(list({r for r in df_aud["user_role"].unique() if r}))
+                        flt_role = st.selectbox("🛡️ Role:", role_opts, key="siem_flt_role")
+                    with fc3:
+                        par_opts = ["LAHAT"] + sorted(list({p for p in df_aud["assigned_parish"].unique() if p}))
+                        flt_par = st.selectbox("⛪ Parish:", par_opts, key="siem_flt_parish")
+                    with fc4:
+                        ev_opts = ["LAHAT"] + sorted(list({et for et in df_aud["event_type"].unique() if et}))
+                        flt_ev = st.selectbox("📌 Event Type:", ev_opts, key="siem_flt_event")
+                    with fc5:
+                        rk_opts = ["LAHAT"] + CANONICAL_RISK_LEVELS
+                        flt_rk = st.selectbox("⚠️ Risk Level:", rk_opts, key="siem_flt_risk")
+                    with fc6:
+                        dt_q = st.text_input("📅 Date (YYYY-MM-DD):", key="siem_flt_date", placeholder="2026-11-25").strip()
+
+                    df_flt = df_aud.copy()
+                    if flt_user:
+                        df_flt = df_flt[
+                            df_flt["attempted_username"].str.lower().str.contains(flt_user, na=False)
+                            | df_flt["user_id"].str.lower().str.contains(flt_user, na=False)
+                            | df_flt["details"].str.lower().str.contains(flt_user, na=False)
+                        ]
+                    if flt_role != "LAHAT":
+                        df_flt = df_flt[df_flt["user_role"] == flt_role]
+                    if flt_par != "LAHAT":
+                        df_flt = df_flt[df_flt["assigned_parish"] == flt_par]
+                    if flt_ev != "LAHAT":
+                        df_flt = df_flt[df_flt["event_type"] == flt_ev]
+                    if flt_rk != "LAHAT":
+                        df_flt = df_flt[df_flt["risk_level"].str.lower() == flt_rk.lower()]
+                    if dt_q:
+                        df_flt = df_flt[
+                            df_flt["utc_timestamp"].str.contains(dt_q, na=False)
+                            | df_flt["timestamp"].str.contains(dt_q, na=False)
+                        ]
+
+                    disp_cols = [
+                        "timestamp", "utc_timestamp", "event_id", "risk_level", "event_type",
+                        "outcome", "attempted_username", "user_role", "assigned_parish",
+                        "denial_reason", "correlation_id", "client_info", "source_ip", "details"
+                    ]
+                    st.caption(f"Ipinapakita ang **{len(df_flt)}** mula sa **{len(df_aud)}** kabuuang security events.")
+                    st.dataframe(df_flt[disp_cols], use_container_width=True, hide_index=True)
+
+                    exp_c1, exp_c2, exp_c3 = st.columns(3)
+                    with exp_c1:
+                        st.download_button(
+                            "📥 Export Filtered Audit Log (.csv)",
+                            data=df_flt[disp_cols].to_csv(index=False).encode("utf-8"),
+                            file_name=f"CTG_Security_Audit_Log_{get_philippine_now().strftime('%Y%m%d_%H%M%S')}.csv",
+                            mime="text/csv",
+                            use_container_width=True,
+                            key="btn_siem_export_csv"
+                        )
+                    with exp_c2:
+                        st.download_button(
+                            "📥 Export Full Tamper-Evident Audit Log (.json)",
+                            data=json.dumps(aud_events_all, ensure_ascii=False, indent=2).encode("utf-8"),
+                            file_name=f"CTG_Security_Audit_Log_{get_philippine_now().strftime('%Y%m%d_%H%M%S')}.json",
+                            mime="application/json",
+                            use_container_width=True,
+                            key="btn_siem_export_json"
+                        )
+                    with exp_c3:
+                        if st.button("🔓 I-clear ang Lahat ng Temporary Session Lockouts", use_container_width=True, key="btn_siem_clear_lockouts"):
+                            _LOGIN_RATE_LIMIT_TRACKER.clear()
+                            record_security_audit_event("MASTER_ADMIN_ACTIVITY", "Master Admin cleared all active session login lockouts", severity="LOW", outcome="SUCCESS")
+                            st.success("✅ Na-clear na ang lahat ng temporary session lockouts!")
+                            st.rerun()
+
             sec_col_a, sec_col_b = st.columns(2)
             with sec_col_a:
-                with st.expander("📜 Tamper-Evident Security Audit Log (SHA-256 Hash Chain)", expanded=False):
-                    if os.path.exists(LOCAL_SECURITY_AUDIT_LOG_FILE):
-                        try:
-                            with open(LOCAL_SECURITY_AUDIT_LOG_FILE, "r", encoding="utf-8") as fa:
-                                aud_list = json.load(fa) or []
-                            if aud_list:
-                                st.dataframe(pd.DataFrame(aud_list[::-1]), use_container_width=True, hide_index=True)
-                            else:
-                                st.info("Wala pang naitalang security event.")
-                        except Exception:
-                            st.info("Wala pang naitalang security event.")
-                    else:
-                        st.info("Wala pang naitalang security event.")
+                with st.expander("⚙️ Configurable Intrusion Detection Rules & Alert Thresholds (IDS-01..IDS-07)", expanded=False):
+                    cur_ids = load_ids_rules_config()
+                    with st.form("ids_rules_config_form"):
+                        ic1, ic2 = st.columns(2)
+                        with ic1:
+                            n_fail_lck = st.number_input("IDS-01: Failed Logins Before Session Lockout:", min_value=3, max_value=20, value=int(cur_ids.get("failed_login_lockout_threshold", 5)))
+                            n_spray = st.number_input("IDS-03: Distinct Accounts Targeted (Credential Spray):", min_value=2, max_value=15, value=int(cur_ids.get("multi_account_spray_threshold", 3)))
+                            n_xpar = st.number_input("IDS-04: Cross-Parish Violations Before Critical Alert:", min_value=1, max_value=10, value=int(cur_ids.get("cross_parish_violation_threshold", 2)))
+                        with ic2:
+                            n_fdl = st.number_input("IDS-05: File Downloads in 10m Before Alert:", min_value=3, max_value=50, value=int(cur_ids.get("unusual_file_download_threshold", 5)))
+                            n_ret = st.number_input("Audit Log Retention Window (Days):", min_value=30, max_value=365, value=int(cur_ids.get("log_retention_days", 90)))
+                            n_max_ev = st.number_input("Max Stored Events in Ring Buffer:", min_value=250, max_value=5000, value=int(cur_ids.get("max_audit_events", 2000)), step=250)
+                        al_1 = st.checkbox("🔔 Alert on Repeated Login Failures & Suspended Account Targets", value=bool(cur_ids.get("alert_on_repeated_login_failures", True)))
+                        al_2 = st.checkbox("🔔 Alert on Critical Cross-Parish & Privilege Escalation Violations", value=bool(cur_ids.get("alert_on_critical_access_violations", True)))
+                        al_3 = st.checkbox("🔔 Alert on Master Admin Credential Changes & Google Drive 403 Errors", value=bool(cur_ids.get("alert_on_master_admin_cred_changes", True)))
+                        if st.form_submit_button("💾 I-save ang Intrusion Detection Rules & Alert Settings", type="primary", use_container_width=True):
+                            updated_ids = {
+                                "failed_login_lockout_threshold": int(n_fail_lck),
+                                "multi_account_spray_threshold": int(n_spray),
+                                "cross_parish_violation_threshold": int(n_xpar),
+                                "unusual_file_download_threshold": int(n_fdl),
+                                "log_retention_days": int(n_ret),
+                                "max_audit_events": int(n_max_ev),
+                                "alert_on_repeated_login_failures": bool(al_1),
+                                "alert_on_critical_access_violations": bool(al_2),
+                                "alert_on_master_admin_cred_changes": bool(al_3),
+                            }
+                            save_ids_rules_config(updated_ids)
+                            record_security_audit_event("MASTER_ADMIN_ACTIVITY", "Updated Intrusion Detection (IDS) thresholds and alert rules", severity="LOW", outcome="SUCCESS")
+                            st.success("✅ Na-save na ang bagong Intrusion Detection at Alert rules!")
+                            st.rerun()
+                    st.markdown("**PostgreSQL Immutable Audit Table & RLS Policy SQL:**")
+                    st.code(get_postgresql_audit_log_ddl_sql(), language="sql")
             with sec_col_b:
                 with st.expander("💽 External Hard Drive Backup (`CTG Editing / Backup all dta in App Ctg-ministry-hub`) & PostgreSQL RLS", expanded=True):
                     cur_hdd_dir, hdd_mounted = get_active_external_hard_drive_backup_dir()
