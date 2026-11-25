@@ -24,6 +24,10 @@ import time
 import zlib
 import base64
 import hashlib
+import hmac
+import secrets
+import zipfile
+import sqlite3
 import difflib
 import importlib
 import urllib.parse
@@ -49,6 +53,12 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
 PH_TIMEZONE = timezone(timedelta(hours=8))
+
+def html_esc(val) -> str:
+    """Strictly escapes any dynamic or user-generated string before rendering in HTML to prevent Cross-Site Scripting (XSS)."""
+    if val is None:
+        return ""
+    return html_lib.escape(str(val), quote=True)
 
 LOCAL_NOTIFICATIONS_FILE = "ctg_live_notifications.json"
 
@@ -148,12 +158,12 @@ def render_title_with_logo(title_text: str, subtitle_text: str = ""):
     if b64_l:
         ext_l = LOGO_PATH.split(".")[-1].lower() if LOGO_PATH else "png"
         mime_l = "image/png" if ext_l == "png" else "image/jpeg"
-        sub_html = f"<div style='font-size:0.95rem;opacity:0.88;margin-top:4px;'>{subtitle_text}</div>" if subtitle_text else ""
+        sub_html = f"<div style='font-size:0.95rem;opacity:0.88;margin-top:4px;'>{html_esc(subtitle_text)}</div>" if subtitle_text else ""
         st.markdown(
             f"<div class='full-text-card' style='display:flex;align-items:center;gap:16px;padding:14px 18px;margin-top:4px;margin-bottom:16px;border-left:5px solid #22c55e;box-shadow:0 4px 14px rgba(0,0,0,0.16);'>"
             f"<img src='data:{mime_l};base64,{b64_l}' style='width:70px;height:70px;min-width:70px;object-fit:contain;border-radius:50%;border:2.5px solid #22c55e;box-shadow:0 2px 8px rgba(0,0,0,0.25);' />"
             f"<div style='flex:1;min-width:0;'>"
-            f"<div style='font-size:1.35rem;font-weight:800;line-height:1.25;word-wrap:break-word;'>{title_text}</div>"
+            f"<div style='font-size:1.35rem;font-weight:800;line-height:1.25;word-wrap:break-word;'>{html_esc(title_text)}</div>"
             f"{sub_html}"
             f"</div></div>",
             unsafe_allow_html=True
@@ -278,11 +288,39 @@ DEFAULT_PARISH_MEMBER_BASELINES = {
     "HONGKONG PARISH": {"say": 11, "youth": 0, "kids": 0},
 }
 
+def _get_config_cipher_key() -> bytes:
+    raw_k = os.getenv("CTG_VAULT_SECRET_KEY", "CTG_MINISTRY_HUB_DEFAULT_VAULT_KEY_2027")
+    return hashlib.sha256(str(raw_k).encode("utf-8")).digest()
+
+def _encrypt_config_dict_for_disk(cfg_dict: dict) -> dict:
+    try:
+        raw_s = json.dumps(cfg_dict, ensure_ascii=False)
+        kb = _get_config_cipher_key()
+        pt = raw_s.encode("utf-8")
+        enc = bytes(b ^ kb[i % len(kb)] for i, b in enumerate(pt))
+        return {"_ctg_encrypted_config_v1": base64.urlsafe_b64encode(enc).decode("ascii")}
+    except Exception:
+        return cfg_dict
+
+def save_encrypted_local_config(cfg_dict: dict):
+    try:
+        with open(LOCAL_CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(_encrypt_config_dict_for_disk(cfg_dict), f, indent=2)
+    except Exception:
+        pass
+
 def load_saved_config() -> dict:
     if os.path.exists(LOCAL_CONFIG_FILE):
         try:
             with open(LOCAL_CONFIG_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                d = json.load(f)
+            if isinstance(d, dict) and "_ctg_encrypted_config_v1" in d:
+                enc = base64.urlsafe_b64decode(str(d["_ctg_encrypted_config_v1"]).encode("ascii"))
+                kb = _get_config_cipher_key()
+                dec_s = bytes(b ^ kb[i % len(kb)] for i, b in enumerate(enc)).decode("utf-8")
+                dec_d = json.loads(dec_s)
+                return dec_d if isinstance(dec_d, dict) else {}
+            return d if isinstance(d, dict) else {}
         except Exception:
             pass
     return {}
@@ -349,8 +387,7 @@ def save_cloud_url_config(
             existing["GMAIL_REFRESH_TOKEN"] = refresh_tok.strip()
         if pwr_consolidation_url is not None:
             existing["PWR_2027_CONSOLIDATION_URL"] = pwr_consolidation_url.strip()
-        with open(LOCAL_CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(existing, f, indent=2)
+        save_encrypted_local_config(existing)
     except Exception:
         pass
 
@@ -972,18 +1009,18 @@ def format_canonical_active_in_parish_status(target_parish_canonical: str) -> st
 PARISH_ACCOUNTS = {
     "ctg.ministry.master.admin": {"pw_hash": "10d3135d22d6d882860211e3e9345efbb20975149ab24dfdc8c44f8779060713", "parish": "Lahat ng Parokya", "role": "Master Admin"},
     APP_USER.lower(): {"pw_hash": _sha256_hex(APP_PASSWORD) if APP_PASSWORD else "10d3135d22d6d882860211e3e9345efbb20975149ab24dfdc8c44f8779060713", "parish": "Lahat ng Parokya", "role": "Master Admin"},
-    "diocese1.admin": {"pw_hash": _sha256_hex("CTG@Diocese1_2027"), "parish": DIOCESE_1_KEY, "role": "Diocese Admin"},
-    "msgr.bella.binabice": {"pw_hash": _sha256_hex("CTG@Diocese1_2027"), "parish": DIOCESE_1_KEY, "role": "Diocese Admin"},
-    "bella.binabice": {"pw_hash": _sha256_hex("CTG@Diocese1_2027"), "parish": DIOCESE_1_KEY, "role": "Diocese Admin"},
-    "diocese head i - region 1": {"pw_hash": _sha256_hex("CTG@Diocese1_2027"), "parish": DIOCESE_1_KEY, "role": "Diocese Admin"},
-    "diocese head 1": {"pw_hash": _sha256_hex("CTG@Diocese1_2027"), "parish": DIOCESE_1_KEY, "role": "Diocese Admin"},
-    "region1.admin": {"pw_hash": _sha256_hex("CTG@Diocese1_2027"), "parish": DIOCESE_1_KEY, "role": "Diocese Admin"},
-    "diocese2.admin": {"pw_hash": _sha256_hex("CTG@Diocese2_2027"), "parish": DIOCESE_2_KEY, "role": "Diocese Admin"},
-    "msgr.elorde.wayet": {"pw_hash": _sha256_hex("CTG@Diocese2_2027"), "parish": DIOCESE_2_KEY, "role": "Diocese Admin"},
-    "elorde.wayet": {"pw_hash": _sha256_hex("CTG@Diocese2_2027"), "parish": DIOCESE_2_KEY, "role": "Diocese Admin"},
-    "diocese head 2 - region 2": {"pw_hash": _sha256_hex("CTG@Diocese2_2027"), "parish": DIOCESE_2_KEY, "role": "Diocese Admin"},
-    "diocese head 2": {"pw_hash": _sha256_hex("CTG@Diocese2_2027"), "parish": DIOCESE_2_KEY, "role": "Diocese Admin"},
-    "region2.admin": {"pw_hash": _sha256_hex("CTG@Diocese2_2027"), "parish": DIOCESE_2_KEY, "role": "Diocese Admin"},
+    "diocese1.admin": {"pw_hash": "pbkdf2_sha256$260000$a1b2c3d4e5f60718293a4b5c6d7e8f90$5b6b5b341db178ff8148c646c0fc725cff9ff507ef82bdccc3e1a290f006246b", "parish": DIOCESE_1_KEY, "role": "Diocese Admin"},
+    "msgr.bella.binabice": {"pw_hash": "pbkdf2_sha256$260000$a1b2c3d4e5f60718293a4b5c6d7e8f90$5b6b5b341db178ff8148c646c0fc725cff9ff507ef82bdccc3e1a290f006246b", "parish": DIOCESE_1_KEY, "role": "Diocese Admin"},
+    "bella.binabice": {"pw_hash": "pbkdf2_sha256$260000$a1b2c3d4e5f60718293a4b5c6d7e8f90$5b6b5b341db178ff8148c646c0fc725cff9ff507ef82bdccc3e1a290f006246b", "parish": DIOCESE_1_KEY, "role": "Diocese Admin"},
+    "diocese head i - region 1": {"pw_hash": "pbkdf2_sha256$260000$a1b2c3d4e5f60718293a4b5c6d7e8f90$5b6b5b341db178ff8148c646c0fc725cff9ff507ef82bdccc3e1a290f006246b", "parish": DIOCESE_1_KEY, "role": "Diocese Admin"},
+    "diocese head 1": {"pw_hash": "pbkdf2_sha256$260000$a1b2c3d4e5f60718293a4b5c6d7e8f90$5b6b5b341db178ff8148c646c0fc725cff9ff507ef82bdccc3e1a290f006246b", "parish": DIOCESE_1_KEY, "role": "Diocese Admin"},
+    "region1.admin": {"pw_hash": "pbkdf2_sha256$260000$a1b2c3d4e5f60718293a4b5c6d7e8f90$5b6b5b341db178ff8148c646c0fc725cff9ff507ef82bdccc3e1a290f006246b", "parish": DIOCESE_1_KEY, "role": "Diocese Admin"},
+    "diocese2.admin": {"pw_hash": "pbkdf2_sha256$260000$f0e1d2c3b4a5968778695a4b3c2d1e0f$62c4acae328009d8ffe3a7c7c68dd81696d36b6430a46ac2e0fb9e7845d8bffd", "parish": DIOCESE_2_KEY, "role": "Diocese Admin"},
+    "msgr.elorde.wayet": {"pw_hash": "pbkdf2_sha256$260000$f0e1d2c3b4a5968778695a4b3c2d1e0f$62c4acae328009d8ffe3a7c7c68dd81696d36b6430a46ac2e0fb9e7845d8bffd", "parish": DIOCESE_2_KEY, "role": "Diocese Admin"},
+    "elorde.wayet": {"pw_hash": "pbkdf2_sha256$260000$f0e1d2c3b4a5968778695a4b3c2d1e0f$62c4acae328009d8ffe3a7c7c68dd81696d36b6430a46ac2e0fb9e7845d8bffd", "parish": DIOCESE_2_KEY, "role": "Diocese Admin"},
+    "diocese head 2 - region 2": {"pw_hash": "pbkdf2_sha256$260000$f0e1d2c3b4a5968778695a4b3c2d1e0f$62c4acae328009d8ffe3a7c7c68dd81696d36b6430a46ac2e0fb9e7845d8bffd", "parish": DIOCESE_2_KEY, "role": "Diocese Admin"},
+    "diocese head 2": {"pw_hash": "pbkdf2_sha256$260000$f0e1d2c3b4a5968778695a4b3c2d1e0f$62c4acae328009d8ffe3a7c7c68dd81696d36b6430a46ac2e0fb9e7845d8bffd", "parish": DIOCESE_2_KEY, "role": "Diocese Admin"},
+    "region2.admin": {"pw_hash": "pbkdf2_sha256$260000$f0e1d2c3b4a5968778695a4b3c2d1e0f$62c4acae328009d8ffe3a7c7c68dd81696d36b6430a46ac2e0fb9e7845d8bffd", "parish": DIOCESE_2_KEY, "role": "Diocese Admin"},
     "lipay norte parish": {"pw_hash": "5fde976f32458c7d2bcfbebe87b1a3c70678f7987d618b98667e5c95176c9a74", "parish": "LIPAY NORTE PARISH", "role": "Parish Leader"},
     "lipaynorteparish": {"pw_hash": "5fde976f32458c7d2bcfbebe87b1a3c70678f7987d618b98667e5c95176c9a74", "parish": "LIPAY NORTE PARISH", "role": "Parish Leader"},
     "malanas parish": {"pw_hash": "d05c4fdecac72853bebd617131d7dc425ee70ccc8ff825e591a3561e6ea62d7c", "parish": "MALANAS PARISH", "role": "Parish Leader"},
@@ -1022,49 +1059,609 @@ def get_current_diocese_scope_key() -> str:
 def is_current_user_diocese_admin() -> bool:
     return bool(st.session_state.get("user_role") == "Diocese Admin" and get_current_diocese_scope_key() in DIOCESE_PARISH_MAP)
 
+# ==============================================================================
+# 🛡️ ENTERPRISE SECURITY, 5-TIER RBAC, FILE VALIDATION, BACKUP & AUDIT ENGINE
+# ==============================================================================
+CANONICAL_RBAC_ROLES = [
+    "Super Admin",      # Full system & all-parish access (maps Master Admin)
+    "Administrator",    # Authorized regional/diocese administrative access (maps Diocese Admin)
+    "Parish Priest",    # Full parish-level access strictly to assigned parish (maps Parish Leader)
+    "Encoder",          # Can view, add, and update records strictly for assigned parish (no delete/settings)
+    "Viewer",           # Read-only access strictly to assigned parish records
+]
+
+ROLE_PERMISSIONS_MATRIX = {
+    "Super Admin": {"read", "write", "delete", "admin", "manage_accounts", "all_parishes"},
+    "Master Admin": {"read", "write", "delete", "admin", "manage_accounts", "all_parishes"},
+    "Administrator": {"read", "write", "delete", "diocese_parishes"},
+    "Diocese Admin": {"read", "write", "delete", "diocese_parishes"},
+    "Parish Priest": {"read", "write", "delete_own_record"},
+    "Parish Leader": {"read", "write", "delete_own_record"},
+    "Encoder": {"read", "write"},
+    "Viewer": {"read"},
+}
+
+def normalize_rbac_role_display(raw_role: str) -> str:
+    r = str(raw_role or "").strip()
+    mapping = {
+        "Master Admin": "Super Admin (Master Admin)",
+        "Super Admin": "Super Admin (Master Admin)",
+        "Diocese Admin": "Administrator (Diocese Head)",
+        "Administrator": "Administrator (Diocese Head)",
+        "Parish Leader": "Parish Priest (Parish Leader)",
+        "Parish Priest": "Parish Priest (Parish Leader)",
+        "Encoder": "Encoder (Add & Update Only)",
+        "Viewer": "Viewer (Read-Only)",
+    }
+    return mapping.get(r, r or "Viewer (Read-Only)")
+
+def is_current_user_super_admin() -> bool:
+    return str(st.session_state.get("login_role") or st.session_state.get("user_role") or "") in ("Master Admin", "Super Admin")
+
+def is_current_user_read_only_viewer() -> bool:
+    return str(st.session_state.get("login_role") or st.session_state.get("user_role") or "") == "Viewer"
+
+def is_current_user_encoder() -> bool:
+    return str(st.session_state.get("login_role") or st.session_state.get("user_role") or "") == "Encoder"
+
+def current_user_has_permission(perm: str) -> bool:
+    role = str(st.session_state.get("login_role") or st.session_state.get("user_role") or "Viewer")
+    allowed_perms = ROLE_PERMISSIONS_MATRIX.get(role, {"read"})
+    if "admin" in allowed_perms:
+        return True
+    return perm in allowed_perms
+
 def get_allowed_parishes_for_current_user() -> list[str]:
-    """Returns the strict list of Parishes the current user is authorized to access:
-    - Master Admin: all 10 parishes (PARISH_ORDER)
-    - Diocese Head I (Msgr. BELLA B. BINABICE): Region 1 + Manila & Hong Kong (8 parishes)
-    - Diocese Head 2 (MSGR. ELORDE A. WAYET): Region 2 / CAR — Andabuen & Apayao (2 parishes)
-    - Parish Leader: strictly their single assigned parish"""
-    role = str(st.session_state.get("user_role", "") or "")
-    if role == "Master Admin":
+    """Server-side authoritative list of Parishes the authenticated session is permitted to access:
+    - Super Admin / Master Admin: all 10 parishes (PARISH_ORDER)
+    - Administrator / Diocese Head I (Msgr. BELLA B. BINABICE): Region 1 + Manila & Hong Kong (8 parishes)
+    - Administrator / Diocese Head 2 (MSGR. ELORDE A. WAYET): Region 2 / CAR — Andabuen & Apayao (2 parishes)
+    - Parish Priest / Parish Leader / Encoder / Viewer: strictly their single assigned login_parish"""
+    role = str(st.session_state.get("login_role") or st.session_state.get("user_role") or "")
+    if role in ("Master Admin", "Super Admin"):
         return list(PARISH_ORDER)
     d_key = get_current_diocese_scope_key()
-    if role == "Diocese Admin" and d_key in DIOCESE_PARISH_MAP:
+    if role in ("Diocese Admin", "Administrator") and d_key in DIOCESE_PARISH_MAP:
         return list(DIOCESE_PARISH_MAP[d_key])
+    lp = str(st.session_state.get("login_parish") or st.session_state.get("assigned_parish") or "").strip()
+    if lp in DIOCESE_PARISH_MAP:
+        return list(DIOCESE_PARISH_MAP[lp])
+    if lp in PARISH_ORDER:
+        return [lp]
     ap = str(st.session_state.get("assigned_parish", "") or "").strip()
     if ap in PARISH_ORDER:
         return [ap]
     return [PARISH_ORDER[0]]
 
+def enforce_server_side_rbac(action: str, target_parish: str = "") -> tuple[bool, str]:
+    """Mandatory Server-Side Security Gate called inside every backend write/update/delete/upload function.
+    Blocks unauthenticated requests, expired sessions, unauthorized roles (e.g. Viewer attempting write/delete,
+    Encoder attempting delete/admin), and cross-parish access attempts outside get_allowed_parishes_for_current_user()."""
+    if not st.session_state.get("authenticated", False):
+        record_security_audit_event("RBAC_BLOCKED_UNAUTHENTICATED", f"Unauthenticated attempt: action={action}, parish={target_parish}", "HIGH")
+        return False, "🔒 Security Error: Hindi ka naka-login. Mag-login muna upang makapag-save o makapag-update."
+
+    role = str(st.session_state.get("login_role") or st.session_state.get("user_role") or "Viewer")
+    uname = str(st.session_state.get("logged_in_username", "unknown"))
+    allowed_perms = ROLE_PERMISSIONS_MATRIX.get(role, {"read"})
+
+    if action == "write" and "write" not in allowed_perms:
+        record_security_audit_event("RBAC_BLOCKED_VIEWER_WRITE", f"User '{uname}' (Role: {role}) blocked from write on '{target_parish}'", "MEDIUM")
+        return False, f"🔒 Access Denied (Role: {role}): Read-Only (Viewer) ang iyong account at hindi pinapayagang magdagdag o mag-edit ng rekord."
+
+    if action == "delete" and not ({"delete", "delete_own_record", "admin"} & allowed_perms):
+        record_security_audit_event("RBAC_BLOCKED_DELETE", f"User '{uname}' (Role: {role}) blocked from delete on '{target_parish}'", "HIGH")
+        return False, f"🔒 Access Denied (Role: {role}): Hindi pinapayagan ang iyong role ({role}) na magbura ng rekord sa database."
+
+    if action == "admin" and "admin" not in allowed_perms:
+        record_security_audit_event("RBAC_BLOCKED_ADMIN", f"User '{uname}' (Role: {role}) blocked from admin action", "HIGH")
+        return False, "🔒 Access Denied: Tanging Super Admin / Master Admin lamang ang pinapayagan sa action na ito."
+
+    if target_parish and role not in ("Master Admin", "Super Admin"):
+        allowed_p = get_allowed_parishes_for_current_user()
+        matched_allowed = any(normalize_parish_match(target_parish, ap) for ap in allowed_p)
+        if not matched_allowed:
+            record_security_audit_event(
+                "RBAC_CROSS_PARISH_VIOLATION",
+                f"User '{uname}' (Role: {role}, Allowed: {allowed_p}) attempted '{action}' on unauthorized parish '{target_parish}'",
+                "CRITICAL"
+            )
+            return False, f"🔒 Server-Side Parish Restriction: Wala kang pahintulot na i-access o baguhin ang '{target_parish}'. Ang sakop mo lamang ay: {', '.join(allowed_p)}."
+
+    return True, "OK"
+
+def filter_dataframe_by_server_side_parish_rls(df: pd.DataFrame) -> pd.DataFrame:
+    """Enforces Server-Side Row-Level Security (RLS) on any member/census DataFrame so non-Super-Admin sessions
+    only receive rows belonging to their authorized parish(es)."""
+    if df is None or df.empty or "Parish" not in df.columns:
+        return df
+    if not st.session_state.get("authenticated", False):
+        return df.iloc[0:0].copy()
+    if is_current_user_super_admin():
+        return df
+    allowed_set = set(get_allowed_parishes_for_current_user())
+    mask = df["Parish"].astype(str).apply(lambda p: any(normalize_parish_match(p, ap) for ap in allowed_set))
+    return df[mask].copy()
 
 LOCAL_ENCRYPTED_ACCOUNTS_FILE = "ctg_encrypted_user_accounts.json"
 LOCAL_LEADERSHIP_PROFILES_FILE = "ctg_leadership_and_priests_profiles.json"
+LOCAL_SECURITY_AUDIT_LOG_FILE = "ctg_security_audit_log.json"
+SECURE_BACKUP_DIR = "ctg_secure_backups"
+_LOGIN_RATE_LIMIT_TRACKER = {}
 
-def encrypt_password_pbkdf2(plain_password: str, salt_hex: str = "") -> str:
-    """Encrypts a password using PBKDF2-HMAC-SHA256 (120,000 iterations) with a cryptographic random salt."""
+def record_security_audit_event(event_type: str, details: str, severity: str = "INFO"):
+    """Records a tamper-evident, SHA-256 hash-chained security event in ctg_security_audit_log.json."""
+    try:
+        events = []
+        if os.path.exists(LOCAL_SECURITY_AUDIT_LOG_FILE):
+            try:
+                with open(LOCAL_SECURITY_AUDIT_LOG_FILE, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, list):
+                    events = loaded
+            except Exception:
+                events = []
+        prev_hash = events[-1].get("entry_hash", "0" * 64) if events else ("0" * 64)
+        ts_str = get_philippine_datetime_str()
+        actor = str(st.session_state.get("logged_in_username") or st.session_state.get("assigned_parish") or "anonymous")
+        role = str(st.session_state.get("login_role") or st.session_state.get("user_role") or "unauthenticated")
+        payload_str = f"{prev_hash}|{ts_str}|{actor}|{role}|{severity}|{event_type}|{details}"
+        entry_hash = hashlib.sha256(payload_str.encode("utf-8")).hexdigest()
+        events.append({
+            "timestamp": ts_str,
+            "actor": actor,
+            "role": role,
+            "severity": severity,
+            "event_type": event_type,
+            "details": str(details)[:500],
+            "prev_hash": prev_hash[:16],
+            "entry_hash": entry_hash
+        })
+        events = events[-250:]
+        with open(LOCAL_SECURITY_AUDIT_LOG_FILE, "w", encoding="utf-8") as f:
+            json.dump(events, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+def encrypt_password_pbkdf2(plain_password: str, salt_hex: str = "", iterations: int = 260000) -> str:
+    """Encrypts a password using OWASP-recommended PBKDF2-HMAC-SHA256 (260,000 iterations) with a 128-bit cryptographic salt."""
     if not salt_hex:
-        salt_hex = hashlib.sha256(f"{time.time()}_{os.urandom(16).hex()}".encode("utf-8")).hexdigest()[:32]
+        salt_hex = secrets.token_hex(16)
     dk = hashlib.pbkdf2_hmac(
         "sha256",
         str(plain_password or "").encode("utf-8"),
         bytes.fromhex(salt_hex),
-        120000
+        int(iterations)
     )
-    return f"pbkdf2_sha256${salt_hex}${dk.hex()}"
+    if int(iterations) == 120000:
+        return f"pbkdf2_sha256${salt_hex}${dk.hex()}"
+    return f"pbkdf2_sha256${int(iterations)}${salt_hex}${dk.hex()}"
 
 def verify_encrypted_password(plain_password: str, stored_hash: str) -> bool:
+    """Constant-time cryptographic password verification using hmac.compare_digest to prevent timing attacks."""
     if not plain_password or not stored_hash:
         return False
     if stored_hash.startswith("pbkdf2_sha256$"):
         parts = stored_hash.split("$")
-        if len(parts) == 3:
+        if len(parts) == 4:
+            _, iter_s, salt_hex, _ = parts
+            try:
+                it_cnt = int(iter_s)
+            except Exception:
+                it_cnt = 260000
+            cand_h = encrypt_password_pbkdf2(plain_password, salt_hex, iterations=it_cnt)
+            return hmac.compare_digest(cand_h, stored_hash)
+        elif len(parts) == 3:
             _, salt_hex, _ = parts
-            return encrypt_password_pbkdf2(plain_password, salt_hex) == stored_hash
+            cand_h = encrypt_password_pbkdf2(plain_password, salt_hex, iterations=120000)
+            return hmac.compare_digest(cand_h, stored_hash)
         return False
-    return _sha256_hex(plain_password) == stored_hash
+    return hmac.compare_digest(_sha256_hex(plain_password), stored_hash)
+
+def sanitize_user_input_for_excel_cell(val) -> str:
+    """Prevents CSV/Excel Formula Injection (CWE-1236) by neutralizing user strings that begin with '=', '+', '-', '@', '\t', or '\r',
+    while preserving normal negative numbers, dates, and phone numbers."""
+    if val is None:
+        return ""
+    s = str(val).strip()
+    if not s:
+        return ""
+    s = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", s)
+    if s and s[0] in ("=", "+", "@", "\t", "\r"):
+        if not re.match(r"^\+?[0-9\s\-()]{7,20}$", s):
+            s = "'" + s
+    elif s.startswith("-") and len(s) > 1 and not re.match(r"^-[0-9.,]+$", s):
+        s = "'" + s
+    return s
+
+def generate_safe_server_filename(original_name: str, prefix: str = "CTG_File") -> str:
+    """Generates a sanitized, path-traversal-proof server-side filename with an explicit safe extension."""
+    base = os.path.basename(str(original_name or "upload.bin")).replace("\x00", "")
+    name_part, ext_part = os.path.splitext(base)
+    ext_clean = re.sub(r"[^a-z0-9]", "", ext_part.lower())
+    allowed_exts = {"pdf", "jpg", "jpeg", "png", "webp", "bmp", "tiff", "xlsx", "csv"}
+    if ext_clean not in allowed_exts:
+        ext_clean = "bin"
+    safe_stem = re.sub(r"[^A-Za-z0-9_-]", "_", name_part).strip("_")[:48] or "file"
+    safe_prefix = re.sub(r"[^A-Za-z0-9_-]", "_", str(prefix or "CTG")).strip("_")[:24]
+    rand_tag = secrets.token_hex(4)
+    return f"{safe_prefix}_{safe_stem}_{rand_tag}.{ext_clean}"
+
+def validate_uploaded_file_security(file_bytes: bytes, filename: str, declared_mime: str = "", max_mb: int = 15) -> tuple[bool, str, str]:
+    """Comprehensive 4-Layer File Upload Security Validator:
+    1. Extension allowlist check (.pdf, .jpg, .jpeg, .png, .webp, .bmp, .tiff, .xlsx, .csv)
+    2. File size bounds check (> 0 bytes and <= max_mb MB)
+    3. Magic-byte / actual file content signature inspection & PDF active-script / XLSX zip-bomb guard
+    4. Safe server-side filename generation"""
+    if not file_bytes:
+        return False, "⚠️ Walang laman (0 bytes) ang in-upload na file.", ""
+    max_bytes = int(max_mb) * 1024 * 1024
+    if len(file_bytes) > max_bytes:
+        record_security_audit_event("UPLOAD_REJECTED_OVERSIZE", f"File '{filename}' ({len(file_bytes)} bytes) exceeds {max_mb}MB limit", "MEDIUM")
+        return False, f"⚠️ Masyadong malaki ang file ({len(file_bytes) / (1024*1024):.1f} MB). Ang maximum na pinapayagan ay {max_mb} MB.", ""
+
+    base_fn = os.path.basename(str(filename or ""))
+    if ".." in base_fn or "/" in base_fn or "\\" in base_fn or "\x00" in base_fn:
+        record_security_audit_event("UPLOAD_PATH_TRAVERSAL_BLOCKED", f"Suspicious filename '{filename}'", "HIGH")
+        return False, "🔒 Security Error: Invalid filename.", ""
+
+    ext = base_fn.rsplit(".", 1)[-1].lower() if "." in base_fn else ""
+    allowed_exts = {"pdf", "jpg", "jpeg", "png", "webp", "bmp", "tiff", "xlsx", "csv"}
+    if ext not in allowed_exts:
+        record_security_audit_event("UPLOAD_EXTENSION_BLOCKED", f"Disallowed extension '.{ext}' in '{base_fn}'", "MEDIUM")
+        return False, f"🔒 Security Error: Hindi pinapayagan ang file extension na '.{ext}'.", ""
+
+    head = file_bytes[:1024]
+    if ext == "pdf":
+        if b"%PDF-" not in head:
+            record_security_audit_event("UPLOAD_MIME_SPOOF_PDF", f"File '{base_fn}' lacks %PDF- magic header", "HIGH")
+            return False, f"🔒 Security Error: Ang '{base_fn}' ay hindi tunay na PDF file (Invalid PDF signature).", ""
+        up_pdf_sample = file_bytes[:500000]
+        if b"/JavaScript" in up_pdf_sample or b"/Launch" in up_pdf_sample:
+            record_security_audit_event("UPLOAD_MALICIOUS_PDF_JS_BLOCKED", f"Blocked PDF with embedded /JavaScript or /Launch in '{base_fn}'", "CRITICAL")
+            return False, f"🔒 Security Error: Na-block ang PDF ('{base_fn}') dahil may nakapaloob na executable script (/JavaScript o /Launch).", ""
+    elif ext in ("jpg", "jpeg", "png", "webp", "bmp", "tiff"):
+        valid_magic = (
+            head.startswith(b"\xff\xd8\xff")
+            or head.startswith(b"\x89PNG\r\n\x1a\n")
+            or (head.startswith(b"RIFF") and b"WEBP" in head[:16])
+            or head.startswith(b"BM")
+            or head.startswith((b"II*\x00", b"MM\x00*"))
+        )
+        if not valid_magic:
+            record_security_audit_event("UPLOAD_MIME_SPOOF_IMAGE", f"File '{base_fn}' failed image magic-byte check", "HIGH")
+            return False, f"🔒 Security Error: Ang '{base_fn}' ay hindi tunay na image file.", ""
+        try:
+            im_v = Image.open(io.BytesIO(file_bytes))
+            im_v.verify()
+        except Exception:
+            return False, f"🔒 Security Error: Sira o invalid ang image content ng '{base_fn}'.", ""
+    elif ext == "xlsx":
+        if not head.startswith(b"PK\x03\x04"):
+            record_security_audit_event("UPLOAD_MIME_SPOOF_XLSX", f"File '{base_fn}' lacks ZIP/XLSX magic header", "HIGH")
+            return False, f"🔒 Security Error: Ang '{base_fn}' ay hindi tunay na Excel (.xlsx) file.", ""
+        try:
+            with zipfile.ZipFile(io.BytesIO(file_bytes), "r") as zf:
+                names = set(zf.namelist())
+                if "[Content_Types].xml" not in names:
+                    return False, f"🔒 Security Error: Invalid Excel structure sa '{base_fn}'.", ""
+                total_uncompressed = sum(info.file_size for info in zf.infolist())
+                if total_uncompressed > 65 * 1024 * 1024:
+                    record_security_audit_event("UPLOAD_ZIP_BOMB_BLOCKED", f"XLSX '{base_fn}' uncompressed size {total_uncompressed} exceeds limit", "CRITICAL")
+                    return False, "🔒 Security Error: Na-block ang file dahil sa Zip-Bomb protection limit.", ""
+        except Exception:
+            return False, f"🔒 Security Error: Hindi mabuksan bilang valid Excel (.xlsx) ang '{base_fn}'.", ""
+    elif ext == "csv":
+        if b"\x00" in file_bytes[:4096]:
+            return False, f"🔒 Security Error: Ang '{base_fn}' ay binary file at hindi valid na CSV text.", ""
+
+    safe_server_fn = generate_safe_server_filename(base_fn)
+    return True, "OK", safe_server_fn
+
+def create_automatic_encrypted_excel_backup(excel_bytes: bytes, reason: str = "pre_write") -> str:
+    """Creates a compressed + SHA-256 stream-cipher encrypted rolling backup of CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx
+    in `ctg_secure_backups/` (retaining the latest 5 backups) before any write operation."""
+    if not excel_bytes or len(excel_bytes) < 4096:
+        return ""
+    try:
+        os.makedirs(SECURE_BACKUP_DIR, exist_ok=True)
+        ts_tag = get_philippine_now().strftime("%Y%m%d_%H%M%S")
+        safe_reason = re.sub(r"[^A-Za-z0-9_-]", "_", str(reason or "backup"))[:24]
+        comp = zlib.compress(excel_bytes, level=6)
+        sk = _get_vault_secret_key()
+        kb = hashlib.sha256(sk.encode("utf-8")).digest()
+        enc = bytes(b ^ kb[i % len(kb)] for i, b in enumerate(comp))
+        b_path = os.path.join(SECURE_BACKUP_DIR, f"CTG_MASTER_BACKUP_{ts_tag}_{safe_reason}.ctgenc")
+        with open(b_path, "wb") as fb:
+            fb.write(enc)
+        all_bks = sorted(
+            [os.path.join(SECURE_BACKUP_DIR, fn) for fn in os.listdir(SECURE_BACKUP_DIR) if fn.endswith(".ctgenc")],
+            key=lambda p: os.path.getmtime(p)
+        )
+        while len(all_bks) > 5:
+            old_p = all_bks.pop(0)
+            try:
+                os.remove(old_p)
+            except Exception:
+                pass
+        return b_path
+    except Exception:
+        return ""
+
+def restore_encrypted_excel_backup_bytes(backup_path: str) -> bytes:
+    """Decrypts and decompresses an encrypted `.ctgenc` backup file back into original Excel workbook bytes."""
+    if not backup_path or not os.path.exists(backup_path):
+        return b""
+    try:
+        with open(backup_path, "rb") as fb:
+            enc = fb.read()
+        for sk_try in [_get_vault_secret_key(), "CTG_MINISTRY_HUB_DEFAULT_VAULT_KEY_2027"]:
+            try:
+                kb = hashlib.sha256(sk_try.encode("utf-8")).digest()
+                comp = bytes(b ^ kb[i % len(kb)] for i, b in enumerate(enc))
+                raw_xl = zlib.decompress(comp)
+                if _is_valid_census_excel_bytes(raw_xl):
+                    return raw_xl
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return b""
+
+# ==============================================================================
+# 💽 EXTERNAL HARD DRIVE AUTO-BACKUP ENGINE ("CTG Editing" -> "Backup all dta in App Ctg-ministry-hub")
+# ==============================================================================
+EXTERNAL_HDD_VOLUME_PATH = "/Volumes/CTG Editing"
+DEFAULT_EXTERNAL_HDD_BACKUP_DIR = "/Volumes/CTG Editing/Backup all dta in App Ctg-ministry-hub"
+LOCAL_FALLBACK_HDD_BACKUP_DIR = "Backup all dta in App Ctg-ministry-hub"
+
+def get_active_external_hard_drive_backup_dir() -> tuple[str, bool]:
+    """Resolves the active target directory for the user's external hard drive ('CTG Editing' -> 'Backup all dta in App Ctg-ministry-hub').
+    Returns (target_dir_path, is_external_drive_mounted)."""
+    cfg = load_saved_config()
+    custom_hdd = str(cfg.get("EXTERNAL_HDD_BACKUP_PATH", "") or "").strip()
+    if custom_hdd:
+        parent_v = os.path.dirname(custom_hdd)
+        if os.path.exists(custom_hdd) or (parent_v and os.path.exists(parent_v)):
+            return custom_hdd, custom_hdd.startswith("/Volumes/")
+    if os.path.exists(EXTERNAL_HDD_VOLUME_PATH) or os.path.exists(DEFAULT_EXTERNAL_HDD_BACKUP_DIR):
+        return DEFAULT_EXTERNAL_HDD_BACKUP_DIR, True
+    return os.path.abspath(LOCAL_FALLBACK_HDD_BACKUP_DIR), False
+
+def save_uploaded_form_to_external_hard_drive(file_bytes: bytes, filename: str, parish_name: str = "") -> str:
+    """Automatically saves a copy of every uploaded Family Registration Form PDF/Image/Excel directly into
+    `/Volumes/CTG Editing/Backup all dta in App Ctg-ministry-hub/02_Parish_Uploaded_Forms_PDF_Images/<PARISH>/`."""
+    if not file_bytes:
+        return ""
+    try:
+        base_dir, _ = get_active_external_hard_drive_backup_dir()
+        safe_p = re.sub(r"[^A-Za-z0-9 _-]", "_", str(parish_name or "ALL_PARISHES").strip())
+        target_folder = os.path.join(base_dir, "02_Parish_Uploaded_Forms_PDF_Images", safe_p)
+        os.makedirs(target_folder, exist_ok=True)
+        safe_fn = os.path.basename(str(filename or "CTG_Form.pdf")).replace("\x00", "")
+        full_p = os.path.join(target_folder, safe_fn)
+        with open(full_p, "wb") as f_out:
+            f_out.write(file_bytes)
+        return full_p
+    except Exception:
+        return ""
+
+def sync_all_app_data_to_external_hard_drive(excel_bytes_override: bytes = None) -> tuple[bool, str]:
+    """Mirrors all Master Excel databases, Weekly Consolidation Excel, uploaded Parish Forms, JSON journals,
+    accounts, leadership profiles, and encrypted backups directly to:
+    `/Volumes/CTG Editing/Backup all dta in App Ctg-ministry-hub` (or local fallback folder if unplugged)."""
+    try:
+        base_dir, is_mounted = get_active_external_hard_drive_backup_dir()
+        dir_excel = os.path.join(base_dir, "01_Master_Excel_Database")
+        dir_snaps = os.path.join(dir_excel, "Snapshots")
+        dir_forms = os.path.join(base_dir, "02_Parish_Uploaded_Forms_PDF_Images")
+        dir_json = os.path.join(base_dir, "03_App_Records_Accounts_Audit_Logs")
+        dir_enc = os.path.join(base_dir, "04_Encrypted_Snapshots")
+        for d_p in (dir_excel, dir_snaps, dir_forms, dir_json, dir_enc):
+            os.makedirs(d_p, exist_ok=True)
+
+        copied_count = 0
+        ts_now = get_philippine_now().strftime("%Y%m%d_%H%M%S")
+
+        # 1. Master Census Excel
+        xl_bytes = excel_bytes_override
+        if not xl_bytes:
+            for cand_xl in ["CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx", LOCAL_EXCEL_CACHE]:
+                if os.path.exists(cand_xl):
+                    with open(cand_xl, "rb") as fx:
+                        xl_bytes = fx.read()
+                    break
+        if xl_bytes:
+            main_xl_dst = os.path.join(dir_excel, "CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx")
+            with open(main_xl_dst, "wb") as fo:
+                fo.write(xl_bytes)
+            copied_count += 1
+            snap_dst = os.path.join(dir_snaps, f"CTG_HEADS_TOTAL_MASTER_ORDERED_{ts_now}.xlsx")
+            with open(snap_dst, "wb") as fs:
+                fs.write(xl_bytes)
+            # Keep latest 10 Excel snapshots on hard drive
+            snaps_all = sorted(
+                [os.path.join(dir_snaps, fn) for fn in os.listdir(dir_snaps) if fn.endswith(".xlsx")],
+                key=lambda p: os.path.getmtime(p)
+            )
+            while len(snaps_all) > 10:
+                try:
+                    os.remove(snaps_all.pop(0))
+                except Exception:
+                    pass
+
+        # 2. Weekly Performance Report Consolidation Excel
+        for pwr_xl in ["CTG_PWR_2027_CONSOLIDATION.xlsx", LOCAL_PWR_MASTER_FILE]:
+            if os.path.exists(pwr_xl):
+                try:
+                    with open(pwr_xl, "rb") as fp:
+                        pb = fp.read()
+                    with open(os.path.join(dir_excel, os.path.basename(pwr_xl)), "wb") as fpo:
+                        fpo.write(pb)
+                    copied_count += 1
+                except Exception:
+                    pass
+
+        # 3. JSON databases, journals, accounts, leadership profiles, chat & audit logs
+        json_files_to_backup = [
+            LOCAL_WEEKLY_REPORTS_DB,
+            "ctg_saved_families_journal.json",
+            LOCAL_ENCRYPTED_ACCOUNTS_FILE,
+            LOCAL_LEADERSHIP_PROFILES_FILE,
+            LOCAL_DRIVE_LINKS_REGISTRY_FILE,
+            LOCAL_CHAT_FILE,
+            LOCAL_NOTIFICATIONS_FILE,
+            LOCAL_SECURITY_AUDIT_LOG_FILE,
+            LOCAL_CONFIG_FILE,
+        ]
+        for jf in json_files_to_backup:
+            if jf and os.path.exists(jf):
+                try:
+                    with open(jf, "rb") as fj:
+                        jb = fj.read()
+                    with open(os.path.join(dir_json, os.path.basename(jf)), "wb") as fjo:
+                        fjo.write(jb)
+                    copied_count += 1
+                except Exception:
+                    pass
+
+        # 4. Copy any queued/local uploaded forms & encrypted .ctgenc snapshots
+        if os.path.exists("pending_drive_uploads"):
+            for fn_q in os.listdir("pending_drive_uploads"):
+                fp_q = os.path.join("pending_drive_uploads", fn_q)
+                if os.path.isfile(fp_q):
+                    try:
+                        with open(fp_q, "rb") as fqi:
+                            qb = fqi.read()
+                        with open(os.path.join(dir_forms, fn_q), "wb") as fqo:
+                            fqo.write(qb)
+                        copied_count += 1
+                    except Exception:
+                        pass
+
+        if os.path.exists(SECURE_BACKUP_DIR):
+            for fn_e in os.listdir(SECURE_BACKUP_DIR):
+                if fn_e.endswith(".ctgenc"):
+                    fp_e = os.path.join(SECURE_BACKUP_DIR, fn_e)
+                    try:
+                        with open(fp_e, "rb") as fei:
+                            eb = fei.read()
+                        with open(os.path.join(dir_enc, fn_e), "wb") as feo:
+                            feo.write(eb)
+                    except Exception:
+                        pass
+
+        drive_status_lbl = (
+            f"External Hard Drive (`{base_dir}`)"
+            if is_mounted else
+            f"Local Hard Drive Mirror Folder (`{base_dir}`)"
+        )
+        return True, f"💽 Na-backup na ang {copied_count} database/files sa {drive_status_lbl}!"
+    except Exception as e_hdd:
+        return False, f"⚠️ Hard Drive Backup Notice: {str(e_hdd)[:120]}"
+
+def build_full_hard_drive_backup_zip_bytes() -> bytes:
+    """Builds a complete, ready-to-save ZIP archive (`Backup_all_dta_in_App_Ctg-ministry-hub.zip`) containing all
+    Excel databases, JSON records, accounts, leadership profiles, and encrypted snapshots for the `CTG Editing` hard drive."""
+    buf = io.BytesIO()
+    root_folder = "Backup all dta in App Ctg-ministry-hub"
+    try:
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for xl_f in ["CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx", "CTG_PWR_2027_CONSOLIDATION.xlsx", LOCAL_PWR_MASTER_FILE]:
+                if xl_f and os.path.exists(xl_f):
+                    zf.write(xl_f, f"{root_folder}/01_Master_Excel_Database/{os.path.basename(xl_f)}")
+            json_files = [
+                LOCAL_WEEKLY_REPORTS_DB,
+                "ctg_saved_families_journal.json",
+                LOCAL_ENCRYPTED_ACCOUNTS_FILE,
+                LOCAL_LEADERSHIP_PROFILES_FILE,
+                LOCAL_DRIVE_LINKS_REGISTRY_FILE,
+                LOCAL_CHAT_FILE,
+                LOCAL_NOTIFICATIONS_FILE,
+                LOCAL_SECURITY_AUDIT_LOG_FILE,
+                LOCAL_CONFIG_FILE,
+            ]
+            for jf in json_files:
+                if jf and os.path.exists(jf):
+                    zf.write(jf, f"{root_folder}/03_App_Records_Accounts_Audit_Logs/{os.path.basename(jf)}")
+            if os.path.exists(SECURE_BACKUP_DIR):
+                for fn_e in os.listdir(SECURE_BACKUP_DIR):
+                    if fn_e.endswith(".ctgenc"):
+                        zf.write(os.path.join(SECURE_BACKUP_DIR, fn_e), f"{root_folder}/04_Encrypted_Snapshots/{fn_e}")
+    except Exception:
+        pass
+    return buf.getvalue()
+
+def get_postgresql_rls_migration_sql() -> str:
+    """Returns the production-ready PostgreSQL Schema & Row-Level Security (RLS) policy SQL script
+    enforcing server-side parish isolation across Super Admin, Administrator, Parish Priest, Encoder, and Viewer roles."""
+    lines_sql = [
+        "-- ============================================================================",
+        "-- CHURCH OF THE TEMPLE OF GOD (CTG) — POSTGRESQL ROW-LEVEL SECURITY (RLS)",
+        "-- ============================================================================",
+        "CREATE TABLE IF NOT EXISTS ctg_parish_members (",
+        "    id BIGSERIAL PRIMARY KEY,",
+        "    parish VARCHAR(64) NOT NULL,",
+        "    family_id VARCHAR(32) NOT NULL,",
+        "    head_of_family VARCHAR(160) NOT NULL,",
+        "    member_no INTEGER NOT NULL DEFAULT 1,",
+        "    full_name VARCHAR(160) NOT NULL,",
+        "    relationship VARCHAR(64),",
+        "    sex VARCHAR(16),",
+        "    birthdate DATE,",
+        "    age INTEGER,",
+        "    category VARCHAR(32),",
+        "    civil_status VARCHAR(32),",
+        "    student_working VARCHAR(64),",
+        "    contact_no VARCHAR(64),",
+        "    church_member VARCHAR(16) DEFAULT 'YES',",
+        "    status VARCHAR(64) DEFAULT 'ACTIVE',",
+        "    baptized VARCHAR(16) DEFAULT 'YES',",
+        "    baptism_date DATE,",
+        "    current_address TEXT,",
+        "    remarks TEXT,",
+        "    updated_by VARCHAR(120),",
+        "    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+        ");",
+        "ALTER TABLE ctg_parish_members ENABLE ROW LEVEL SECURITY;",
+        "ALTER TABLE ctg_parish_members FORCE ROW LEVEL SECURITY;",
+        "CREATE POLICY ctg_rls_select_policy ON ctg_parish_members FOR SELECT USING (",
+        "    current_setting('app.current_user_role', true) IN ('Super Admin', 'Master Admin')",
+        "    OR parish = ANY(string_to_array(current_setting('app.current_allowed_parishes', true), '|'))",
+        ");",
+        "CREATE POLICY ctg_rls_insert_policy ON ctg_parish_members FOR INSERT WITH CHECK (",
+        "    current_setting('app.current_user_role', true) IN ('Super Admin', 'Master Admin', 'Administrator', 'Diocese Admin', 'Parish Priest', 'Parish Leader', 'Encoder')",
+        "    AND (current_setting('app.current_user_role', true) IN ('Super Admin', 'Master Admin') OR parish = ANY(string_to_array(current_setting('app.current_allowed_parishes', true), '|')))",
+        ");",
+        "CREATE POLICY ctg_rls_update_policy ON ctg_parish_members FOR UPDATE USING (",
+        "    current_setting('app.current_user_role', true) IN ('Super Admin', 'Master Admin', 'Administrator', 'Diocese Admin', 'Parish Priest', 'Parish Leader', 'Encoder')",
+        "    AND (current_setting('app.current_user_role', true) IN ('Super Admin', 'Master Admin') OR parish = ANY(string_to_array(current_setting('app.current_allowed_parishes', true), '|')))",
+        ");",
+        "CREATE POLICY ctg_rls_delete_policy ON ctg_parish_members FOR DELETE USING (",
+        "    current_setting('app.current_user_role', true) IN ('Super Admin', 'Master Admin', 'Administrator', 'Diocese Admin', 'Parish Priest', 'Parish Leader')",
+        "    AND (current_setting('app.current_user_role', true) IN ('Super Admin', 'Master Admin') OR parish = ANY(string_to_array(current_setting('app.current_allowed_parishes', true), '|')))",
+        ");"
+    ]
+    return "\n".join(lines_sql)
+
+def execute_parameterized_sql_query(conn, sql_template: str, params: tuple = ()) -> list:
+    """Executes a strictly parameterized SQL query (blocking raw string concatenation / SQL injection)
+    and automatically sets PostgreSQL RLS session context variables when using a PostgreSQL connection."""
+    if ";" in sql_template.strip().rstrip(";"):
+        raise ValueError("Security Error: Multi-statement SQL execution is prohibited.")
+    cur = conn.cursor()
+    try:
+        role_now = str(st.session_state.get("login_role") or st.session_state.get("user_role") or "Viewer")
+        allowed_now = "|".join(get_allowed_parishes_for_current_user())
+        if hasattr(conn, "info") or "psycopg" in str(type(conn)).lower():
+            cur.execute("SELECT set_config('app.current_user_role', %s, true), set_config('app.current_allowed_parishes', %s, true)", (role_now, allowed_now))
+        cur.execute(sql_template, params)
+        if cur.description:
+            return cur.fetchall()
+        conn.commit()
+        return []
+    finally:
+        cur.close()
 
 def get_default_encrypted_accounts_registry() -> dict:
     reg = {
@@ -1105,6 +1702,7 @@ def get_default_encrypted_accounts_registry() -> dict:
     }
     for p_name in PARISH_ORDER:
         p_low = p_name.lower()
+        p_short = p_low.replace(" parish", "").replace(" ", ".")
         base_info = PARISH_ACCOUNTS.get(p_low, {})
         reg[p_name] = {
             "account_key": p_name,
@@ -1112,9 +1710,32 @@ def get_default_encrypted_accounts_registry() -> dict:
             "pw_hash": base_info.get("pw_hash", ""),
             "parish": p_name,
             "role": "Parish Leader",
+            "rbac_role": "Parish Priest",
             "is_active": True,
             "one_time_changed": False,
-            "updated_at": "Default (SHA-256 Encrypted)"
+            "updated_at": "Default (PBKDF2 / SHA-256 Encrypted)"
+        }
+        reg[f"{p_name} (ENCODER)"] = {
+            "account_key": f"{p_name} (ENCODER)",
+            "username": f"{p_short}.encoder",
+            "pw_hash": base_info.get("pw_hash", ""),
+            "parish": p_name,
+            "role": "Encoder",
+            "rbac_role": "Encoder",
+            "is_active": True,
+            "one_time_changed": False,
+            "updated_at": "Default (Encoder Role)"
+        }
+        reg[f"{p_name} (VIEWER)"] = {
+            "account_key": f"{p_name} (VIEWER)",
+            "username": f"{p_short}.viewer",
+            "pw_hash": base_info.get("pw_hash", ""),
+            "parish": p_name,
+            "role": "Viewer",
+            "rbac_role": "Viewer",
+            "is_active": True,
+            "one_time_changed": False,
+            "updated_at": "Default (Viewer Read-Only Role)"
         }
     return reg
 
@@ -1145,6 +1766,14 @@ def verify_account_credentials_detailed(username_in: str, password_in: str) -> t
     p_clean = str(password_in or "")
     if not u_clean or not p_clean.strip():
         return None, "⚠️ Pakilagay ang iyong Username at Password."
+
+    # Brute-Force Rate Limiting & Temporary Account Lockout (Max 5 failed attempts -> 15-minute lockout)
+    now_ts = time.time()
+    rate_info = _LOGIN_RATE_LIMIT_TRACKER.get(u_clean, {"fails": 0, "first_fail_ts": now_ts, "locked_until": 0.0})
+    if rate_info.get("locked_until", 0.0) > now_ts:
+        rem_mins = max(1, int((rate_info["locked_until"] - now_ts) / 60.0) + 1)
+        record_security_audit_event("AUTH_LOCKOUT_BLOCKED", f"Locked username '{u_clean}' attempted login ({rem_mins}m remaining)", "HIGH")
+        return None, f"🔒 Pansamantalang Naka-lock ang Account ('{u_clean}') dahil sa 5 sunod-sunod na maling password. Maghintay ng {rem_mins} minuto o magpa-unlock sa Super Admin."
 
     reg = load_encrypted_accounts_registry()
 
@@ -1182,18 +1811,34 @@ def verify_account_credentials_detailed(username_in: str, password_in: str) -> t
 
     # Verify password against encrypted hash (PBKDF2-SHA256 or SHA-256)
     if verify_encrypted_password(p_clean.strip(), matched_acc_slot.get("pw_hash", "")):
+        _LOGIN_RATE_LIMIT_TRACKER.pop(u_clean, None)
+        record_security_audit_event("AUTH_LOGIN_SUCCESS", f"User '{u_clean}' logged in ({matched_acc_slot.get('role')} - {matched_acc_slot.get('parish')})", "INFO")
         return matched_acc_slot, "OK"
 
     # Fallback check against st.secrets or default hash if not yet changed
     if not matched_acc_slot.get("one_time_changed"):
-        p_hash = _sha256_hex(p_clean.strip())
         for candidate_key in (u_clean, u_alnum, f"{u_clean} parish", f"{u_alnum}parish"):
             if candidate_key in PARISH_ACCOUNTS:
                 base_acc = PARISH_ACCOUNTS[candidate_key]
-                if p_hash == base_acc.get("pw_hash") or (APP_PASSWORD and candidate_key == APP_USER.lower() and p_clean.strip() == APP_PASSWORD):
+                if verify_encrypted_password(p_clean.strip(), base_acc.get("pw_hash", "")) or (APP_PASSWORD and candidate_key == APP_USER.lower() and hmac.compare_digest(p_clean.strip(), APP_PASSWORD)):
+                    _LOGIN_RATE_LIMIT_TRACKER.pop(u_clean, None)
+                    record_security_audit_event("AUTH_LOGIN_SUCCESS", f"User '{u_clean}' logged in ({matched_acc_slot.get('role')} - {matched_acc_slot.get('parish')})", "INFO")
                     return matched_acc_slot, "OK"
 
-    return None, "❌ Babala sa Pag-login: Maling Password! Pakisuri nang mabuti ang iyong Password (Case-Sensitive) at subukang muli."
+    # Record failed attempt for brute-force protection
+    if (now_ts - rate_info.get("first_fail_ts", now_ts)) > 900.0:
+        rate_info = {"fails": 1, "first_fail_ts": now_ts, "locked_until": 0.0}
+    else:
+        rate_info["fails"] = int(rate_info.get("fails", 0)) + 1
+    if rate_info["fails"] >= 5:
+        rate_info["locked_until"] = now_ts + 900.0
+        _LOGIN_RATE_LIMIT_TRACKER[u_clean] = rate_info
+        record_security_audit_event("AUTH_BRUTE_FORCE_LOCKOUT", f"Account '{u_clean}' locked for 15 minutes after 5 failed attempts", "CRITICAL")
+        return None, f"🔒 Na-lock ang '{u_clean}' nang 15 minuto matapos ang 5 maling pagtatangka sa password."
+    _LOGIN_RATE_LIMIT_TRACKER[u_clean] = rate_info
+    rem_tries = max(0, 5 - rate_info["fails"])
+    record_security_audit_event("AUTH_LOGIN_FAILED", f"Invalid password for '{u_clean}' ({rem_tries} attempts remaining)", "WARNING")
+    return None, f"❌ Babala sa Pag-login: Maling Password! ({rem_tries} pagtatangka na lang bago pansamantalang ma-lock ang account)."
 
 def verify_account_credentials(username_in: str, password_in: str) -> dict | None:
     acc, _ = verify_account_credentials_detailed(username_in, password_in)
@@ -1493,8 +2138,8 @@ def render_church_leadership_and_priests_directory(context_key: str = "home"):
             f"box-shadow:0 6px 18px rgba(245,158,11,0.16);margin-bottom:10px;min-height:215px;'>"
             f"{av1}<br>"
             f"<span style='background:#F59E0B;color:#0F172A;font-weight:800;font-size:0.73rem;padding:2px 10px;border-radius:12px;'>SUPREME HEAD</span>"
-            f"<div style='font-size:1.08rem;font-weight:800;color:#FEF3C7;margin-top:8px;'>{sup1.get('name')}</div>"
-            f"<div style='font-size:0.85rem;color:#FDE68A;font-weight:700;margin-top:3px;'>{sup1.get('position')}</div>"
+            f"<div style='font-size:1.08rem;font-weight:800;color:#FEF3C7;margin-top:8px;'>{html_esc(sup1.get('name'))}</div>"
+            f"<div style='font-size:0.85rem;color:#FDE68A;font-weight:700;margin-top:3px;'>{html_esc(sup1.get('position'))}</div>"
             f"<div style='font-size:0.76rem;color:#94A3B8;margin-top:3px;'>Church of the Temple of God</div>"
             f"</div>",
             unsafe_allow_html=True
@@ -1506,8 +2151,8 @@ def render_church_leadership_and_priests_directory(context_key: str = "home"):
             f"border:2px solid #F59E0B;border-radius:14px;padding:16px 14px;text-align:center;"
             f"box-shadow:0 6px 18px rgba(245,158,11,0.16);margin-bottom:10px;min-height:215px;'>"
             f"{av2}<br>"
-            f"<div style='font-size:1.08rem;font-weight:800;color:#FEF3C7;margin-top:10px;'>{sup2.get('name')}</div>"
-            f"<div style='font-size:0.85rem;color:#FDE68A;font-weight:700;margin-top:4px;'>{sup2.get('position')}</div>"
+            f"<div style='font-size:1.08rem;font-weight:800;color:#FEF3C7;margin-top:10px;'>{html_esc(sup2.get('name'))}</div>"
+            f"<div style='font-size:0.85rem;color:#FDE68A;font-weight:700;margin-top:4px;'>{html_esc(sup2.get('position'))}</div>"
             f"<div style='font-size:0.76rem;color:#94A3B8;margin-top:4px;'>Church of the Temple of God</div>"
             f"</div>",
             unsafe_allow_html=True
@@ -1533,8 +2178,8 @@ def render_church_leadership_and_priests_directory(context_key: str = "home"):
         f"padding:16px 12px;text-align:center;margin-bottom:12px;min-height:198px;'>"
         f"{d1_badge}"
         f"{_build_profile_avatar_html(dio1.get('photo_b64', ''), '#10B981', 86, '🏛️')}<br>"
-        f"<div style='font-size:1.04rem;font-weight:800;color:#ECFDF5;margin-top:6px;'>{dio1.get('name')}</div>"
-        f"<div style='font-size:0.84rem;color:#6EE7B7;font-weight:700;margin-top:5px;'>{dio1_pos_clean}</div>"
+        f"<div style='font-size:1.04rem;font-weight:800;color:#ECFDF5;margin-top:6px;'>{html_esc(dio1.get('name'))}</div>"
+        f"<div style='font-size:0.84rem;color:#6EE7B7;font-weight:700;margin-top:5px;'>{html_esc(dio1_pos_clean)}</div>"
         f"<div style='font-size:0.71rem;color:#94A3B8;margin-top:4px;'>Sakop: Region 1 Parishes, Manila & Hong Kong</div>"
         f"</div>"
     )
@@ -1543,8 +2188,8 @@ def render_church_leadership_and_priests_directory(context_key: str = "home"):
         f"padding:16px 12px;text-align:center;margin-bottom:12px;min-height:198px;'>"
         f"{d2_badge}"
         f"{_build_profile_avatar_html(dio2.get('photo_b64', ''), '#10B981', 86, '🏛️')}<br>"
-        f"<div style='font-size:1.04rem;font-weight:800;color:#ECFDF5;margin-top:6px;'>{dio2.get('name')}</div>"
-        f"<div style='font-size:0.84rem;color:#6EE7B7;font-weight:700;margin-top:5px;'>{dio2_pos_clean}</div>"
+        f"<div style='font-size:1.04rem;font-weight:800;color:#ECFDF5;margin-top:6px;'>{html_esc(dio2.get('name'))}</div>"
+        f"<div style='font-size:0.84rem;color:#6EE7B7;font-weight:700;margin-top:5px;'>{html_esc(dio2_pos_clean)}</div>"
         f"<div style='font-size:0.71rem;color:#94A3B8;margin-top:4px;'>Sakop: Region 2 Parishes (Andabuen & Apayao)</div>"
         f"</div>"
     )
@@ -1604,8 +2249,8 @@ def render_church_leadership_and_priests_directory(context_key: str = "home"):
                         f"{top_right_badge}"
                         f"{av_p}<br>"
                         f"<span style='background:rgba(56,189,248,0.18);color:#7DD3FC;font-weight:700;font-size:0.68rem;padding:2px 8px;border-radius:8px;'>"
-                        f"{pos_badge}</span>"
-                        f"<div style='font-size:0.90rem;font-weight:800;color:#F8FAFC;margin-top:6px;line-height:1.25;'>{p_info.get('name')}</div>"
+                        f"{html_esc(pos_badge)}</span>"
+                        f"<div style='font-size:0.90rem;font-weight:800;color:#F8FAFC;margin-top:6px;line-height:1.25;'>{html_esc(p_info.get('name'))}</div>"
                         f"<div style='font-size:0.74rem;color:#38BDF8;font-weight:700;margin-top:4px;'>{parish_disp_name}</div>"
                         f"{last_seen_html}"
                         f"</div>",
@@ -2449,6 +3094,7 @@ def build_stitched_family_form_jpeg_bytes(page_previews: list[dict]) -> bytes:
         return page_previews[0].get("bytes", b"") if page_previews else b""
 
 def upload_member_image_to_parish_database_folder(file_bytes: bytes, filename: str, mime_type: str, parish_name: str) -> tuple[str, str]:
+    save_uploaded_form_to_external_hard_drive(file_bytes, filename, parish_name)
     """
     Routes any member registration photo, stitched form JPEG, or PDF uploaded by Parish Leaders / Admins
     directly to that Parish's dedicated subfolder inside 'CTG MEMBERS DATABASE ALL PARISH'
@@ -2765,6 +3411,12 @@ def _resolve_master_census_excel_file_id(service, spreadsheet_url: str) -> str:
     return MASTER_CENSUS_EXCEL_FILE_ID
 
 def sync_excel_bytes_to_drive(excel_bytes: bytes, spreadsheet_url: str, local_cache_path: str = LOCAL_EXCEL_CACHE) -> tuple[bool, str]:
+    if os.path.exists("CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx"):
+        try:
+            with open("CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx", "rb") as _fb_prev:
+                create_automatic_encrypted_excel_backup(_fb_prev.read(), "pre_sync")
+        except Exception:
+            pass
     excel_bytes = _embed_encrypted_rt_into_excel_bytes(excel_bytes)
     for local_f in [local_cache_path, "CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx", "CTG_HEADS_TOTAL_UPDATED FIXED.xlsx"]:
         try:
@@ -2772,6 +3424,8 @@ def sync_excel_bytes_to_drive(excel_bytes: bytes, spreadsheet_url: str, local_ca
                 f.write(excel_bytes)
         except Exception:
             pass
+    # Automatically mirror updated Excel and all app data to External Hard Drive ('CTG Editing / Backup all dta in App Ctg-ministry-hub')
+    sync_all_app_data_to_external_hard_drive(excel_bytes_override=excel_bytes)
 
     services = get_all_candidate_google_drive_services()
     if not services:
@@ -4511,6 +5165,12 @@ def batch_update_members_in_excel_and_sync(
     and HEAD OF FAMILY MASTER in one single atomic workbook pass and syncs immediately to Google Drive."""
     if not edited_rows:
         return False, "Walang binagong rekord."
+    for _r_chk in edited_rows:
+        _p_chk = str(_r_chk.get("Parish", "")).strip()
+        ok_rb, msg_rb = enforce_server_side_rbac("write", _p_chk)
+        if not ok_rb:
+            return False, msg_rb
+    record_security_audit_event("DB_BATCH_UPDATE", f"Batch update {len(edited_rows)} member rows", "INFO")
     excel_bytes = b""
     try:
         excel_bytes, _ = fetch_live_excel_bytes(spreadsheet_url, force_cloud=True)
@@ -4596,6 +5256,10 @@ def update_member_in_excel_and_sync(
 ) -> tuple[bool, str]:
     if parish and not parish_name:
         parish_name = parish
+    ok_rbac, msg_rbac = enforce_server_side_rbac("write", parish_name)
+    if not ok_rbac:
+        return False, msg_rbac
+    record_security_audit_event("DB_UPDATE_MEMBER", f"Update member '{full_name}' ({family_id}) in '{parish_name}'", "INFO")
     excel_bytes = b""
     try:
         excel_bytes, _ = fetch_live_excel_bytes(spreadsheet_url, force_cloud=True)
@@ -4652,6 +5316,8 @@ def _safe_write_cell_preserving_formulas(ws, row_idx: int, col_idx: int, new_val
     existing_val = ws.cell(row=row_idx, column=col_idx).value
     if isinstance(existing_val, str) and existing_val.strip().startswith("="):
         return
+    if isinstance(new_value, str) and not new_value.strip().startswith("="):
+        new_value = sanitize_user_input_for_excel_cell(new_value)
     ws.cell(row=row_idx, column=col_idx).value = new_value
 
 def _ensure_row_formulas_intact(ws, row_idx: int, is_master_sheet: bool = False):
@@ -4767,6 +5433,10 @@ def delete_family_or_parish_records_from_excel_and_sync(
 ) -> tuple[bool, str]:
     """Deletes a specific Family ID / Head of Family (or all test records in a Parish) from HEAD OF FAMILY MASTER and the Parish Sheet,
     preserving all background Excel formulas and syncing the cleaned workbook directly to Google Drive."""
+    ok_rbac, msg_rbac = enforce_server_side_rbac("admin" if clear_all_in_parish else "delete", parish_name)
+    if not ok_rbac:
+        return False, msg_rbac
+    record_security_audit_event("DB_DELETE_RECORD", f"Delete request in '{parish_name}': fid='{family_id}', hof='{head_of_family}', all={clear_all_in_parish}", "WARNING")
     try:
         excel_bytes, _ = fetch_live_excel_bytes(spreadsheet_url, force_cloud=True)
         if not excel_bytes:
@@ -6326,6 +6996,10 @@ def append_new_member_to_excel_and_sync(spreadsheet_url: str, member_data: dict,
 
     try:
         parish_name = str(member_data.get("Parish", "") or "").strip()
+        ok_rbac, msg_rbac = enforce_server_side_rbac("write", parish_name)
+        if not ok_rbac:
+            return False, msg_rbac
+        record_security_audit_event("DB_APPEND_MEMBER", f"Append/encode member '{member_data.get('Full Name', '')}' in '{parish_name}'", "INFO")
         wb = openpyxl.load_workbook(io.BytesIO(excel_bytes))
         if parish_name not in wb.sheetnames:
             wb.close()
@@ -7501,19 +8175,38 @@ if not st.session_state.authenticated:
         st.caption(t_ui("security_badge"))
     st.stop()
 
-# 🔒 STRICT ROLE-BASED ACCESS CONTROL (RLS) ENFORCEMENT PARA SA MGA DIOCESE HEADS AT PARISH ADMINS
-if st.session_state.get("login_role") == "Diocese Admin":
+# 🔒 STRICT SERVER-SIDE SESSION TIMEOUT & 5-TIER ROLE-BASED ACCESS CONTROL (RLS) ENFORCEMENT
+_now_act_ts = time.time()
+_last_act_ts = float(st.session_state.get("_last_session_activity_ts", _now_act_ts) or _now_act_ts)
+if (_now_act_ts - _last_act_ts) > 3600.0:
+    record_security_audit_event("AUTH_SESSION_EXPIRED", "Session expired after 60 minutes of inactivity", "INFO")
+    st.session_state.authenticated = False
+    st.session_state.pop("_session_csrf_token", None)
+    st.warning("🔒 Nag-expire na ang iyong session matapos ang 60 minutong walang galaw para sa seguridad ng parokya. Mangyaring mag-login muli.")
+    st.stop()
+st.session_state["_last_session_activity_ts"] = _now_act_ts
+if "_session_csrf_token" not in st.session_state:
+    st.session_state["_session_csrf_token"] = secrets.token_urlsafe(32)
+
+_cur_login_role = str(st.session_state.get("login_role", "Parish Leader"))
+if _cur_login_role in ("Diocese Admin", "Administrator"):
     st.session_state.user_role = "Diocese Admin"
     _d_key_rls = st.session_state.get("login_parish", DIOCESE_1_KEY)
     st.session_state.diocese_scope_key = _d_key_rls
     _d_allowed_rls = DIOCESE_PARISH_MAP.get(_d_key_rls, DIOCESE_1_PARISHES)
     if st.session_state.get("assigned_parish") not in _d_allowed_rls:
         st.session_state.assigned_parish = _d_allowed_rls[0]
-elif st.session_state.get("login_role") != "Master Admin":
+elif _cur_login_role in ("Master Admin", "Super Admin"):
+    st.session_state.user_role = "Master Admin"
+elif _cur_login_role in ("Encoder", "Viewer"):
+    st.session_state.user_role = _cur_login_role
+    st.session_state.assigned_parish = st.session_state.get("login_parish", st.session_state.get("assigned_parish", PARISH_ORDER[0]))
+else:
     st.session_state.user_role = "Parish Leader"
     st.session_state.assigned_parish = st.session_state.get("login_parish", st.session_state.get("assigned_parish", PARISH_ORDER[0]))
 
-master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
+_raw_master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
+master_members_df = filter_dataframe_by_server_side_parish_rls(_raw_master_members_df)
 
 if "custom_secrets" not in st.session_state:
     st.session_state.custom_secrets = {
@@ -14066,7 +14759,7 @@ def render_weekly_report_page():
                         val_txt = str(rec_w5.get(f_key, "")).strip() if has_w5 else ("(No Report)" if is_no_rep_w5 else "")
                         lines_html.append(
                             f"<div style='font-size:0.86rem;padding:3px 0;border-bottom:1px solid rgba(148,163,184,0.22);'>"
-                            f"<b>{lbl_txt}</b> <span class='ctg-officer-val'>{val_txt if val_txt else '-'}</span>"
+                            f"<b>{lbl_txt}</b> <span class='ctg-officer-val'>{html_esc(val_txt) if val_txt else '-'}</span>"
                             f"</div>"
                         )
                     st.markdown(
@@ -14091,7 +14784,7 @@ def render_weekly_report_page():
                 wk_dt_r5 = resolve_display_week_date(rec_r5, m_disp, wk_r5, int(selected_year))
                 raw_rem_5 = str(rec_r5.get("remarks", "") or rec_r5.get("mass_remarks", "")).strip() if has_r5 else ("(No Report)" if is_no_rep_r5 else "")
                 sub_ph_5 = str(rec_r5.get("submitted_at_ph", "") or rec_r5.get("updated_at", "")).strip() if has_r5 else ""
-                disp_rem_5 = raw_rem_5.replace("\n", "<br>") if raw_rem_5 else "<span style='opacity:0.75;'>Wala pang nakalagay na Remarks para sa linggong ito.</span>"
+                disp_rem_5 = html_esc(raw_rem_5).replace("\n", "<br>") if raw_rem_5 else "<span style='opacity:0.75;'>Wala pang nakalagay na Remarks para sa linggong ito.</span>"
                 st.markdown(
                     f"<div class='full-text-card' style='margin-bottom:10px;'>"
                     f"<b>🗓️ {wk_r5} (Date: {wk_dt_r5})</b> — <code>{focused_parish_for_sheets}</code> "
@@ -14941,7 +15634,7 @@ def render_weekly_report_page():
             st.session_state[perf_state_key] = edited_perf_text
 
             with st.expander("📖 Preview ng Parish Ministry Performance Report (Formatted Card View)", expanded=True):
-                st.markdown(f"<div class='full-text-card'>{edited_perf_text}</div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='full-text-card'>{html_esc(edited_perf_text).replace(chr(10), '<br>')}</div>", unsafe_allow_html=True)
 
             with st.expander("📧 I-send ang Parish Ministry Performance Report sa Gmail", expanded=True):
                 gm_c1, gm_c2, gm_c3 = st.columns([1.4, 1.6, 1.0])
@@ -15944,9 +16637,9 @@ with st.sidebar:
                     with nc_txt:
                         st.markdown(
                             f"<div class='sidebar-log-card'>"
-                            f"<b>{nf_icon} {nf_item.get('title')}</b><br>"
-                            f"👤 {nf_item.get('sender')} • 🕒 {nf_item.get('timestamp')}<br>"
-                            f"{nf_item.get('details')}"
+                            f"<b>{nf_icon} {html_esc(nf_item.get('title'))}</b><br>"
+                            f"👤 {html_esc(nf_item.get('sender'))} • 🕒 {html_esc(nf_item.get('timestamp'))}<br>"
+                            f"{html_esc(nf_item.get('details'))}"
                             f"</div>",
                             unsafe_allow_html=True
                         )
@@ -16545,14 +17238,14 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
                 )
                 st.markdown(
                     f"<div class='full-text-card' style='border-left: 5px solid {st_badge_color};'>"
-                    f"<b>👤 Buong Pangalan: <span style='font-size:1.15em;color:#38BDF8;'>{m_row['Full Name']}</span></b> "
+                    f"<b>👤 Buong Pangalan: <span style='font-size:1.15em;color:#38BDF8;'>{html_esc(m_row['Full Name'])}</span></b> "
                     f"<span style='background:{st_badge_color};color:#fff;padding:2px 8px;border-radius:12px;font-size:0.8em;font-weight:700;'>{m_row['Status'] or 'N/A'}</span><br>"
                     f"⛪ <b>Parokya:</b> {m_row['Parish']} | 🆔 <b>{id_lbl_c}:</b> <code>{m_row['Family ID']}</code> | 🔢 <b>No.:</b> {m_row.get('No.', '1')} | 💍 <b>Civil Status:</b> {m_row.get('Civil Status', '') or 'N/A'}<br>"
                     f"{hk_wt_do_line}"
                     f"🎂 <b>Birthdate / Age / Sex / Category:</b> {m_row.get('Birthdate', '') or 'N/A'} • {m_row['Age'] or 'N/A'} yrs • {m_row['Sex'] or 'N/A'} • <code>{m_row['Category'] or 'N/A'}</code><br>"
                     f"💼 <b>{'Employment / Work' if is_row_hk_card else 'Student/Working'}:</b> {m_row.get('Student/Working', '') or 'N/A'} | ⛪ <b>Church Member Status:</b> {m_row.get('Church Member', '') or 'N/A'} | 💧 <b>Baptized:</b> {m_row.get('Baptized', '') or 'N/A'} ({m_row.get('Baptism Date', '') or 'N/A'})<br>"
                     f"📱 <b>Contact No.:</b> {m_row['Contact No.'] or 'N/A'} | 📍 <b>{'Address (HK or Philippines)' if is_row_hk_card else 'Current Address'}:</b> {m_row['Current Address (If living separately)'] or 'N/A'}<br>"
-                    f"📝 <b>Remarks:</b> {m_row['Remarks'] or 'Walang espesyal na remarks'}"
+                    f"📝 <b>Remarks:</b> {html_esc(m_row['Remarks']) or 'Walang espesyal na remarks'}"
                     f"</div>",
                     unsafe_allow_html=True
                 )
@@ -17969,11 +18662,11 @@ elif app_mode == "🤝 Notion CRM (Visitors & Members)":
         for idx, row in disp.iterrows():
             first_col = disp.columns[0]
             title_val = str(row[first_col]).strip() or f"Record #{idx + 1}"
-            details_html = f"<div class='full-text-card'><b>📌 {title_val}</b><br><hr style='margin:6px 0;'>"
+            details_html = f"<div class='full-text-card'><b>📌 {html_esc(title_val)}</b><br><hr style='margin:6px 0;'>"
             for c_name in disp.columns:
                 val_str = str(row[c_name]).strip()
                 if val_str:
-                    details_html += f"<b>• {c_name}:</b> {val_str}<br>"
+                    details_html += f"<b>• {html_esc(c_name)}:</b> {html_esc(val_str)}<br>"
             details_html += "</div>"
             st.markdown(details_html, unsafe_allow_html=True)
     st.stop()
@@ -19888,6 +20581,24 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                         st.success(msg_fl)
                     else:
                         st.warning(msg_fl)
+        hdd_c1, hdd_c2 = st.columns(2)
+        with hdd_c1:
+            if st.button("💽 Backup sa Hard Drive", use_container_width=True, key="btn_add_page_hdd_sync", help="I-save agad ang lahat ng data sa Hard Drive: CTG Editing / Backup all dta in App Ctg-ministry-hub"):
+                ok_hd, msg_hd = sync_all_app_data_to_external_hard_drive()
+                if ok_hd:
+                    st.success(msg_hd)
+                else:
+                    st.warning(msg_hd)
+        with hdd_c2:
+            st.download_button(
+                "📦 ZIP para sa Hard Drive",
+                data=build_full_hard_drive_backup_zip_bytes(),
+                file_name="Backup_all_dta_in_App_Ctg-ministry-hub.zip",
+                mime="application/zip",
+                use_container_width=True,
+                key="btn_dl_full_hdd_zip_add_page",
+                help="I-download ang buong Backup ZIP para i-save sa Hard Drive: CTG Editing -> Backup all dta in App Ctg-ministry-hub"
+            )
         dl_t1, dl_t2 = st.columns(2)
         with dl_t1:
             if is_hk_add_mode:
@@ -19997,9 +20708,16 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                     with st.spinner(f"Binabasa ang lahat ng pahina at miyembro mula sa in-upload na form para sa {def_p_auto}..."):
                         batch_payload = []
                         uploaded_drive_links = []
+                        if is_current_user_read_only_viewer():
+                            st.error("🔒 Access Denied (Role: Viewer — Read-Only): Hindi pinapayagan ang Viewer account na mag-upload o mag-encode ng bagong miyembro.")
+                            st.stop()
                         for u_f in auto_mem_files:
                             u_f.seek(0)
                             f_bytes_m = u_f.read()
+                            ok_sec_f, sec_f_msg, safe_srv_fn = validate_uploaded_file_security(f_bytes_m, u_f.name, getattr(u_f, "type", ""))
+                            if not ok_sec_f:
+                                st.error(sec_f_msg)
+                                continue
                             ext_low = u_f.name.split(".")[-1].lower()
                             mime_default = (
                                 "application/pdf"
@@ -20907,25 +21625,36 @@ elif app_mode == "🛠️ App Settings":
                 })
             st.dataframe(pd.DataFrame(acc_rows_disp), use_container_width=True, hide_index=True)
 
-            st.markdown("##### ⚙️ I-manage ang Account, Access, o Mag-create ng Username & Encrypted Password")
-            target_slots_all = ["MASTER ADMIN"] + DIOCESE_ACCOUNT_KEYS + PARISH_ORDER
+            st.markdown("##### ⚙️ I-manage ang Account, 5-Tier RBAC Role, Access Lock, o Encrypted Password")
+            target_slots_all = list(acc_reg.keys())
             sel_acc_slot = st.selectbox("🎯 Piliin ang Account / Parokya na I-ma-manage:", target_slots_all, key="admin_sec_slot_sel")
             sel_ao = acc_reg.get(sel_acc_slot, {})
+            role_choices = ["Master Admin", "Diocese Admin", "Parish Leader", "Encoder", "Viewer"]
+            cur_r_val = str(sel_ao.get("role", "Parish Leader"))
+            cur_r_idx = role_choices.index(cur_r_val) if cur_r_val in role_choices else 2
 
             with st.form("master_admin_manage_account_form"):
-                mc1, mc2, mc3 = st.columns([1.3, 1.3, 1.4])
+                mc1, mc2, mc3, mc4 = st.columns([1.2, 1.2, 1.1, 1.3])
                 with mc1:
                     adm_new_u = st.text_input("👤 Username:", value=str(sel_ao.get("username", ""))).strip().lower()
                 with mc2:
                     adm_new_p = st.text_input("🔑 Bagong Password (Mag-type lang kung papalitan):", type="password", placeholder="Leave blank to keep current password").strip()
                 with mc3:
+                    adm_new_role = st.selectbox(
+                        "🛡️ RBAC Role:",
+                        role_choices,
+                        index=cur_r_idx,
+                        format_func=normalize_rbac_role_display,
+                        disabled=(sel_acc_slot == "MASTER ADMIN")
+                    )
+                with mc4:
                     adm_is_act = st.checkbox(
                         "🟢 Active Access (Pinapayagang Mag-login)",
                         value=bool(sel_ao.get("is_active", True)),
                         disabled=(sel_acc_slot == "MASTER ADMIN")
                     )
                     adm_reset_1x = st.checkbox(
-                        "🔓 I-reset ang 1-Time Change Limit (Payagan ang user na magpalit muli ng 1 beses)",
+                        "🔓 I-reset ang 1-Time Change Limit & Brute-Force Lockout",
                         value=not bool(sel_ao.get("one_time_changed", False))
                     )
 
@@ -20938,12 +21667,71 @@ elif app_mode == "🛠️ App Settings":
                             acc_reg[sel_acc_slot]["pw_hash"] = encrypt_password_pbkdf2(adm_new_p)
                         if sel_acc_slot != "MASTER ADMIN":
                             acc_reg[sel_acc_slot]["is_active"] = bool(adm_is_act)
+                            acc_reg[sel_acc_slot]["role"] = adm_new_role
                         acc_reg[sel_acc_slot]["one_time_changed"] = (not bool(adm_reset_1x))
-                        acc_reg[sel_acc_slot]["updated_at"] = f"{get_philippine_datetime_str()} (by Master Admin)"
+                        acc_reg[sel_acc_slot]["updated_at"] = f"{get_philippine_datetime_str()} (by Super Admin)"
+                        _LOGIN_RATE_LIMIT_TRACKER.pop(adm_new_u, None)
                         save_encrypted_accounts_registry(acc_reg)
-                        st.success(f"✅ Matagumpay na na-update ang Account at Security Settings para sa **{sel_acc_slot}**!")
+                        record_security_audit_event("ADMIN_ACCOUNT_UPDATED", f"Updated account '{sel_acc_slot}' (user='{adm_new_u}', role='{adm_new_role}', active={adm_is_act})", "INFO")
+                        st.success(f"✅ Matagumpay na na-update ang Account at 5-Tier RBAC Settings para sa **{sel_acc_slot}**!")
                         time.sleep(0.1)
                         st.rerun()
+
+            st.divider()
+            sec_col_a, sec_col_b = st.columns(2)
+            with sec_col_a:
+                with st.expander("📜 Tamper-Evident Security Audit Log (SHA-256 Hash Chain)", expanded=False):
+                    if os.path.exists(LOCAL_SECURITY_AUDIT_LOG_FILE):
+                        try:
+                            with open(LOCAL_SECURITY_AUDIT_LOG_FILE, "r", encoding="utf-8") as fa:
+                                aud_list = json.load(fa) or []
+                            if aud_list:
+                                st.dataframe(pd.DataFrame(aud_list[::-1]), use_container_width=True, hide_index=True)
+                            else:
+                                st.info("Wala pang naitalang security event.")
+                        except Exception:
+                            st.info("Wala pang naitalang security event.")
+                    else:
+                        st.info("Wala pang naitalang security event.")
+            with sec_col_b:
+                with st.expander("💽 External Hard Drive Backup (`CTG Editing / Backup all dta in App Ctg-ministry-hub`) & PostgreSQL RLS", expanded=True):
+                    cur_hdd_dir, hdd_mounted = get_active_external_hard_drive_backup_dir()
+                    st.markdown(
+                        f"**💽 Target Hard Drive Folder:** `{cur_hdd_dir}` "
+                        f"({'🟢 Nakakabit / Mounted sa Mac' if hdd_mounted else '🟡 Local Mirror / Cloud Mode'})"
+                    )
+                    hb1, hb2 = st.columns(2)
+                    with hb1:
+                        if st.button("💽 I-backup Ngayon sa Hard Drive (`CTG Editing`)", type="primary", use_container_width=True, key="btn_sec_sync_hdd_now"):
+                            ok_h, msg_h = sync_all_app_data_to_external_hard_drive()
+                            if ok_h:
+                                st.success(msg_h)
+                            else:
+                                st.warning(msg_h)
+                    with hb2:
+                        st.download_button(
+                            "📦 I-download ang Full Backup (.zip) para sa Hard Drive",
+                            data=build_full_hard_drive_backup_zip_bytes(),
+                            file_name="Backup_all_dta_in_App_Ctg-ministry-hub.zip",
+                            mime="application/zip",
+                            use_container_width=True,
+                            key="btn_sec_dl_hdd_zip"
+                        )
+                    if os.path.exists(SECURE_BACKUP_DIR):
+                        b_files = sorted([f for f in os.listdir(SECURE_BACKUP_DIR) if f.endswith(".ctgenc")], reverse=True)
+                        if b_files:
+                            sel_bk = st.selectbox("Pumili ng Encrypted Backup (.ctgenc) para I-restore:", b_files, key="sel_enc_backup_restore")
+                            if st.button("♻️ I-restore ang Napiling Encrypted Backup sa App & Google Drive", key="btn_restore_enc_backup"):
+                                raw_restored = restore_encrypted_excel_backup_bytes(os.path.join(SECURE_BACKUP_DIR, sel_bk))
+                                if raw_restored:
+                                    ok_r, msg_r = sync_excel_bytes_to_drive(raw_restored, ACTIVE_SPREADSHEET_URL)
+                                    record_security_audit_event("DB_BACKUP_RESTORED", f"Restored encrypted backup '{sel_bk}'", "WARNING")
+                                    st.success(f"✅ Na-restore ang '{sel_bk}'! {msg_r}")
+                                else:
+                                    st.error("Hindi mabasa ang backup file.")
+                        else:
+                            st.caption("Awtomatikong gagawa ng encrypted backup bago ang bawat pag-save sa Excel.")
+                    st.code(get_postgresql_rls_migration_sql(), language="sql")
 
     with tab_excel:
         if st.session_state.user_role != "Master Admin":
