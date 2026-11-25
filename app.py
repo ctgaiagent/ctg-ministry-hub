@@ -4028,7 +4028,7 @@ def compute_category_from_age(age_val) -> str:
     try:
         age_num = int(float(str(age_val).strip()))
         if age_num < 13:
-            return "KIDS"
+            return "KID"
         elif age_num < 25:
             return "YOUTH"
         elif age_num < 60:
@@ -5102,7 +5102,7 @@ def load_complete_parish_members(spreadsheet_url: str):
                         cat_str = compute_category_from_age(age_str)
                     elif not cat_str or cat_str.startswith("=") or cat_str.lower() == "nan":
                         cat_str = compute_category_from_age(age_str)
-                    if p_name == "HONGKONG PARISH" and cat_str in ("YOUTH", "KIDS", ""):
+                    if p_name == "HONGKONG PARISH" and cat_str in ("YOUTH", "KID", ""):
                         cat_str = "ADULT"
 
                     civ_raw = r.get("Civil Status", "")
@@ -5475,7 +5475,7 @@ def _apply_single_member_edit_to_workbook(
 
     if computed_age:
         auto_cat = compute_category_from_age(computed_age)
-        if parish_name == "HONGKONG PARISH" and auto_cat in ("YOUTH", "KIDS", ""):
+        if parish_name == "HONGKONG PARISH" and auto_cat in ("YOUTH", "KID", ""):
             auto_cat = "ADULT"
         cur_cat_cell = ws.cell(row=target_row, column=cat_col).value
         if not (isinstance(cur_cat_cell, str) and cur_cat_cell.startswith("=")):
@@ -5484,7 +5484,7 @@ def _apply_single_member_edit_to_workbook(
         cat_to_set = str(payload.get("Category") or new_category or "").strip().upper()
         if final_age_str and final_age_str.isdigit() and not payload.get("Category"):
             cat_to_set = compute_category_from_age(final_age_str)
-        if parish_name == "HONGKONG PARISH" and cat_to_set in ("YOUTH", "KIDS", ""):
+        if parish_name == "HONGKONG PARISH" and cat_to_set in ("YOUTH", "KID", ""):
             cat_to_set = "ADULT"
         cur_cat_cell = ws.cell(row=target_row, column=cat_col).value
         if cat_to_set and not (isinstance(cur_cat_cell, str) and cur_cat_cell.startswith("=")):
@@ -5959,10 +5959,10 @@ def _normalize_ctg_form_codes(item: dict) -> dict:
         "SR": "SISTER", "5R": "SISTER", "SISTER": "SISTER",
         "GF": "GRANDFATHER", "GRANDFATHER": "GRANDFATHER",
         "GM": "GRANDMOTHER", "GRANDMOTHER": "GRANDMOTHER",
-        "OT": "OTHER", "OTHER": "OTHER", "REL": "RELATIVE", "RELATIVE": "RELATIVE",
+        "SIL": "SON IN LAW", "SON IN LAW": "SON IN LAW", "SON-IN-LAW": "SON IN LAW", "DIL": "DAUGHTER IN LAW", "DAUGHTER IN LAW": "DAUGHTER IN LAW", "DAUGHTER-IN-LAW": "DAUGHTER IN LAW", "OT": "OTHER", "OTHER": "OTHER", "REL": "RELATIVE", "RELATIVE": "RELATIVE",
     }
     sex_map = {"M": "MALE", "MALE": "MALE", "F": "FEMALE", "FEMALE": "FEMALE"}
-    cat_map = {"K": "KIDS", "KIDS": "KIDS", "KID": "KIDS", "Y": "YOUTH", "YOUTH": "YOUTH", "A": "ADULT", "ADULT": "ADULT", "SC": "SENIOR CITIZEN", "SENIOR": "SENIOR CITIZEN", "SENIOR CITIZEN": "SENIOR CITIZEN"}
+    cat_map = {"K": "KID", "KID": "KID", "KID": "KID", "Y": "YOUTH", "YOUTH": "YOUTH", "A": "ADULT", "ADULT": "ADULT", "SC": "SENIOR CITIZEN", "SENIOR": "SENIOR CITIZEN", "SENIOR CITIZEN": "SENIOR CITIZEN"}
     civ_map = {"S": "SINGLE", "SINGLE": "SINGLE", "M": "MARRIED", "MARRIED": "MARRIED", "W": "WIDOWED", "WIDOWED": "WIDOWED", "SP": "SEPARATED", "SEPARATED": "SEPARATED"}
     sw_map = {"S": "STUDENT", "STUDENT": "STUDENT", "W": "WORKING", "WORKING": "WORKING", "N": "NONE", "NONE": "NONE", "N/A": "NONE", "NA": "NONE"}
     yn_map = {"Y": "YES", "YES": "YES", "N": "NO", "NO": "NO"}
@@ -6066,7 +6066,7 @@ def _get_builtin_juan_dela_cruz_8_members_example(default_parish: str = "LIPAY N
         ("4", "Ana Dela Cruz", "DAUGHTER", "FEMALE", "2000-08-20", "26", "ADULT", "SINGLE", "WORKING", "0920-123-4567", "YES", "ACTIVE", "YES", "2015-04-12"),
         ("5", "Lito Dela Cruz", "SON", "MALE", "2005-11-05", "21", "YOUTH", "SINGLE", "STUDENT", "0921-123-4567", "YES", "ACTIVE", "YES", "2020-10-10"),
         ("6", "Rosa Dela Cruz", "DAUGHTER", "FEMALE", "2010-12-25", "15", "YOUTH", "SINGLE", "STUDENT", "0922-123-4567", "YES", "ACTIVE", "NO", ""),
-        ("7", "Mario Dela Cruz", "SON", "MALE", "2015-07-07", "11", "KIDS", "SINGLE", "STUDENT", "", "YES", "ACTIVE", "NO", ""),
+        ("7", "Mario Dela Cruz", "SON", "MALE", "2015-07-07", "11", "KID", "SINGLE", "STUDENT", "", "YES", "ACTIVE", "NO", ""),
         ("8", "Lolo Tomas Dela Cruz", "GRANDFATHER", "MALE", "1945-05-05", "81", "SENIOR CITIZEN", "WIDOWED", "NONE", "0923-123-4567", "YES", "INACTIVE", "YES", "1960-01-01"),
     ]
     out_list = []
@@ -6114,7 +6114,7 @@ def _get_builtin_abel_claro_3_members_pdf_family(default_parish: str = "LIPAY NO
     raw_members = [
         ("1", "Abel A. Claro", "HEAD OF FAMILY", "MALE", "", "", "ADULT", "MARRIED", "WORKING", "09772107484", "YES", "ACTIVE", "YES", "", "Lipay Norte, San Gabriel, La Union"),
         ("2", "May-Ann D. Claro", "WIFE", "FEMALE", "1997-05-22", "29", "ADULT", "MARRIED", "STUDENT", "09053403237", "YES", "ACTIVE", "YES", "", "San Juan, La Union"),
-        ("3", "Zack Gabriel D. Claro", "SON", "MALE", "2018-07-24", "8", "KIDS", "SINGLE", "STUDENT", "", "YES", "ACTIVE", "NO", "", "San Juan, La Union"),
+        ("3", "Zack Gabriel D. Claro", "SON", "MALE", "2018-07-24", "8", "KID", "SINGLE", "STUDENT", "", "YES", "ACTIVE", "NO", "", "San Juan, La Union"),
     ]
     out_list = []
     for no_v, fn_v, rel_v, sex_v, bd_v, age_v, cat_v, civ_v, sw_v, con_v, cm_v, st_v, bap_v, bapd_v, cur_addr_v in raw_members:
@@ -6354,7 +6354,7 @@ def _get_builtin_cesar_claro_10_members_pdf_family(default_parish: str = "LIPAY 
         ("6", "Christine Claro", "DAUGHTER", "FEMALE", "2008-07-09", "18", "YOUTH", "SINGLE", "NONE", "", "YES", "ACTIVE", "YES", "", "Lipay Norte, San Gabriel, La Union"),
         ("7", "Lolita Claro", "SISTER", "FEMALE", "1968-06-10", "58", "ADULT", "MARRIED", "NONE", "", "YES", "ACTIVE", "YES", "", "Lipay Norte, San Gabriel, La Union"),
         ("8", "Filomena Claro", "MOTHER", "FEMALE", "1938-10-23", "88", "SENIOR CITIZEN", "WIDOWED", "NONE", "", "YES", "INACTIVE", "YES", "", "Lipay Norte, San Gabriel, La Union"),
-        ("9", "Lory Daye Mark Paskiang", "RELATIVE", "MALE", "2014-12-19", "11", "KIDS", "SINGLE", "STUDENT", "", "YES", "ACTIVE", "YES", "", "Lipay Norte, San Gabriel, La Union"),
+        ("9", "Lory Daye Mark Paskiang", "RELATIVE", "MALE", "2014-12-19", "11", "KID", "SINGLE", "STUDENT", "", "YES", "ACTIVE", "YES", "", "Lipay Norte, San Gabriel, La Union"),
         ("10", "Stephany De Guzman", "RELATIVE", "FEMALE", "", "", "ADULT", "SINGLE", "NONE", "", "YES", "ACTIVE", "YES", "", "Lipay Norte, San Gabriel, La Union"),
     ]
     out_list = []
@@ -6579,7 +6579,7 @@ def _get_builtin_avelino_astodillo_10_members_pdf_family(default_parish: str = "
         ("5", "Ma. Rizalinda Bihasa", "DAUGHTER", "FEMALE", "1978-10-08", "48", "ADULT", "MARRIED", "WORKING", "", "YES", "ACTIVE", "YES", "", "OFW"),
         ("6", "Aira Jane Bihasa", "GRANDDAUGHTER", "FEMALE", "2010-04-02", "16", "YOUTH", "SINGLE", "STUDENT", "", "YES", "ACTIVE", "YES", "", "Lipay Norte, San Gabriel, La Union"),
         ("7", "Zhiane Dave Bihasa", "GRANDSON", "MALE", "2012-04-06", "14", "YOUTH", "SINGLE", "STUDENT", "", "YES", "ACTIVE", "YES", "", "Lipay Norte, San Gabriel, La Union"),
-        ("8", "Ma. Janelle Bihasa", "GRANDDAUGHTER", "FEMALE", "2020-12-22", "6", "KIDS", "SINGLE", "STUDENT", "", "YES", "ACTIVE", "YES", "", "Lipay Norte, San Gabriel, La Union"),
+        ("8", "Ma. Janelle Bihasa", "GRANDDAUGHTER", "FEMALE", "2020-12-22", "6", "KID", "SINGLE", "STUDENT", "", "YES", "ACTIVE", "YES", "", "Lipay Norte, San Gabriel, La Union"),
         ("9", "Ericson Astudillo", "GRANDSON", "MALE", "1998-03-10", "28", "ADULT", "SINGLE", "WORKING", "", "YES", "ACTIVE", "YES", "", "Lipay Norte, San Gabriel, La Union"),
         ("10", "Avelino Astodillo", "HEAD OF FAMILY", "MALE", "1941-11-01", "84", "SENIOR CITIZEN", "MARRIED", "NONE", "09482105796", "YES", "ACTIVE", "YES", "", "Lipay Norte, San Gabriel, La Union"),
     ]
@@ -6643,9 +6643,9 @@ def _get_builtin_billy_paquit_6_members_pdf_family(default_parish: str = "LIPAY 
         ("1", "Lorna C. Paquit", "MOTHER", "FEMALE", "1953-10-16", "72", "SENIOR CITIZEN", "WIDOWED", "NONE", "09977587229", "YES", "ACTIVE", "YES", "", "Lipay Norte, San Gabriel, La Union"),
         ("2", "Billy C. Paquit", "HEAD OF FAMILY", "MALE", "1981-11-06", "45", "ADULT", "MARRIED", "WORKING", "09290422946", "YES", "ACTIVE", "YES", "", "Lipay Norte, San Gabriel, La Union"),
         ("3", "Jorica A. Paquit", "WIFE", "FEMALE", "1986-01-24", "40", "ADULT", "MARRIED", "WORKING", "09080312005", "YES", "ACTIVE", "YES", "", "Lipay Norte, San Gabriel, La Union"),
-        ("4", "Chema Aling G. Paquit", "DAUGHTER", "FEMALE", "2014-01-30", "12", "KIDS", "SINGLE", "STUDENT", "09400070404", "YES", "ACTIVE", "YES", "", "Lipay Norte, San Gabriel, La Union"),
-        ("5", "Phonda Caell G. Paquit", "DAUGHTER", "FEMALE", "2015-12-04", "10", "KIDS", "SINGLE", "STUDENT", "", "YES", "ACTIVE", "YES", "", "Lipay Norte, San Gabriel, La Union"),
-        ("6", "Billy Joel G. Paquit", "SON", "MALE", "2020-08-07", "5", "KIDS", "SINGLE", "STUDENT", "", "YES", "ACTIVE", "YES", "", "Lipay Norte, San Gabriel, La Union"),
+        ("4", "Chema Aling G. Paquit", "DAUGHTER", "FEMALE", "2014-01-30", "12", "KID", "SINGLE", "STUDENT", "09400070404", "YES", "ACTIVE", "YES", "", "Lipay Norte, San Gabriel, La Union"),
+        ("5", "Phonda Caell G. Paquit", "DAUGHTER", "FEMALE", "2015-12-04", "10", "KID", "SINGLE", "STUDENT", "", "YES", "ACTIVE", "YES", "", "Lipay Norte, San Gabriel, La Union"),
+        ("6", "Billy Joel G. Paquit", "SON", "MALE", "2020-08-07", "5", "KID", "SINGLE", "STUDENT", "", "YES", "ACTIVE", "YES", "", "Lipay Norte, San Gabriel, La Union"),
     ]
     out_list = []
     for no_v, fn_v, rel_v, sex_v, bd_v, age_v, cat_v, civ_v, sw_v, con_v, cm_v, st_v, bap_v, bapd_v, cur_addr_v in raw_members:
@@ -6701,7 +6701,7 @@ def _is_junk_ocr_header_name(name_str: str) -> bool:
         "CERTIFICATION", "ACCOMPLISHED", "COLLECTED", "SIGNATURE", "FAMILY", "MEMBERS",
         "PROVINCE", "BARANGAY", "MUNICIPALITY", "EMERGENCY", "REMARKS", "WORK", "NONE",
         "MOTHER", "FATHER", "BROTHER", "SISTER", "GRANDFATHER", "GRANDMOTHER",
-        "DAUGHTER", "HUSBAND", "WIFE", "OTHER", "KIDS", "YOUTH", "ADULT", "ADULTS",
+        "DAUGHTER", "HUSBAND", "WIFE", "OTHER", "KID", "YOUTH", "ADULT", "ADULTS",
         "SENIOR", "SENIORS", "CITIZEN", "SINGLE", "MARRIED", "WIDOWED", "SEPARATED",
         "ACTIVE", "INACTIVE", "TOTAL", "FULL", "NAME", "PARISH", "AREA", "ZONE",
         "CELL", "GROUP", "PASTOR", "WORKER", "OFFICE", "USE", "ONLY", "ENCODED",
@@ -6844,8 +6844,8 @@ def _get_builtin_ermito_claro_10_members_pdf_family(default_parish: str = "LIPAY
         ("4", "Marvin Bilar Claro", "SON", "MALE", "1995-01-20", "31", "ADULT", "SINGLE", "WORKING", "", "YES", "ACTIVE", "YES", "", "Lipay Norte, San Gabriel, La Union"),
         ("5", "Gypsy Claro Tembreza", "SON", "MALE", "1987-04-03", "39", "ADULT", "MARRIED", "WORKING", "", "YES", "ACTIVE", "YES", "", "Lipay Norte, San Gabriel, La Union"),
         ("6", "Marites Claro Tembreza", "DAUGHTER", "FEMALE", "1993-02-09", "33", "ADULT", "MARRIED", "WORKING", "", "YES", "ACTIVE", "YES", "", "Lipay Norte, San Gabriel, La Union"),
-        ("7", "Mhiggy Claro Tembreza", "GRANDSON", "MALE", "2023-04-13", "3", "KIDS", "SINGLE", "NONE", "", "YES", "ACTIVE", "YES", "", "Lipay Norte, San Gabriel, La Union"),
-        ("8", "Zhea Claro Tembreza", "GRANDDAUGHTER", "FEMALE", "2024-08-13", "2", "KIDS", "SINGLE", "NONE", "", "YES", "ACTIVE", "YES", "", "Lipay Norte, San Gabriel, La Union"),
+        ("7", "Mhiggy Claro Tembreza", "GRANDSON", "MALE", "2023-04-13", "3", "KID", "SINGLE", "NONE", "", "YES", "ACTIVE", "YES", "", "Lipay Norte, San Gabriel, La Union"),
+        ("8", "Zhea Claro Tembreza", "GRANDDAUGHTER", "FEMALE", "2024-08-13", "2", "KID", "SINGLE", "NONE", "", "YES", "ACTIVE", "YES", "", "Lipay Norte, San Gabriel, La Union"),
         ("9", "Alfredo Tadina", "SON", "MALE", "1987-01-10", "39", "ADULT", "MARRIED", "NONE", "", "NO", "INACTIVE", "NO", "", "Lipay Norte, San Gabriel, La Union"),
         ("10", "Mercy Claro Tadina", "DAUGHTER", "FEMALE", "1978-06-20", "48", "ADULT", "MARRIED", "WORKING", "", "YES", "ACTIVE", "YES", "", "Lipay Norte, San Gabriel, La Union"),
     ]
@@ -7112,12 +7112,12 @@ def _auto_clean_and_complete_family_records(records: list[dict], default_parish:
         rel_u = _clean_cell_str(r.get("Relationship", "HEAD OF FAMILY" if idx_r == 1 else "DEPENDENT")).upper()
         if idx_r == 1 and rel_u in ("HUSBAND", "HBD", ""):
             rel_u = "HEAD OF FAMILY"
-        if rel_u == "HEAD OF FAMILY" and fn_ref_name and not is_hk:
-            fn_m = _auto_correct_person_name_with_filename(fn_m, fn_ref_name)
+        # STRICT VERBATIM COPY-PASTE RULE:
+        # NEVER rewrite, alter, or force-harmonize a member's surname to match the Head of Family!
+        # Family members with different surnames (e.g., Son-in-law, Daughter-in-law, married daughters,
+        # grandchildren, relatives) MUST be preserved verbatim as written on the form image.
+        if rel_u == "HEAD OF FAMILY" and not hof_raw and not is_hk:
             hof_raw = fn_m
-        elif hof_raw and not is_hk and rel_u in ("HEAD OF FAMILY", "WIFE", "HUSBAND", "SON", "DAUGHTER"):
-            # Only harmonize surname if they share a similar surname (never overwrite married daughters' surnames like Biteng or Bihasa!)
-            fn_m = _auto_harmonize_family_surname(fn_m, hof_raw)
         r["Parish"] = matched_p
         r["Family ID"] = _clean_cell_str(r.get("Family ID", "")) or shared_fid
         r["Area/Zone"] = _clean_cell_str(r.get("Area/Zone", "")) or shared_area
@@ -7161,7 +7161,7 @@ def _auto_clean_and_complete_family_records(records: list[dict], default_parish:
                 cat_u = "KID"
         if not cat_u:
             cat_u = "KID" if rel_u in ("SON", "DAUGHTER") and not age_s else "ADULT"
-        if is_hk and cat_u in ("YOUTH", "KIDS", "KID"):
+        if is_hk and cat_u in ("YOUTH", "KID", "KID"):
             cat_u = "ADULT"
         r["Category"] = cat_u
 
@@ -7182,7 +7182,7 @@ def _auto_clean_and_complete_family_records(records: list[dict], default_parish:
         r["Emergency Relationship"] = _clean_cell_str(r.get("Emergency Relationship", "")) or shared_em_r or "Head of Family"
         r["Emergency Contact Number"] = _clean_cell_str(r.get("Emergency Contact Number", "")) or shared_em_c or _clean_cell_str(first.get("Contact No.", ""))
         sw_cur = _clean_cell_str(r.get("Student/Working", "")).upper()
-        if cat_u in ("YOUTH", "KIDS") and civ_u == "SINGLE" and rel_u in ("SON", "DAUGHTER", "GRANDSON", "GRANDDAUGHTER"):
+        if cat_u in ("YOUTH", "KID") and civ_u == "SINGLE" and rel_u in ("SON", "DAUGHTER", "GRANDSON", "GRANDDAUGHTER"):
             if sw_cur in ("", "NONE") and (not age_s.isdigit() or int(age_s) >= 4):
                 r["Student/Working"] = "STUDENT"
         r["Remarks"] = _clean_cell_str(r.get("Remarks", "")) or shared_rem
@@ -7975,11 +7975,11 @@ def classify_category(cat_val):
     if "YOUTH" in c_up:
         return "Youth"
     if "KID" in c_up or "CHILD" in c_up:
-        return "Kids"
+        return "Kid"
     return "No category"
 
 def build_status_summary_and_lists(df):
-    categories = ["Seniors", "Adults", "Youth", "Kids", "No category"]
+    categories = ["Seniors", "Adults", "Youth", "Kid", "No category"]
     counts = {
         "ACTIVE": {c: 0 for c in categories},
         "ACTIVE IN OTHER PARISH": {c: 0 for c in categories},
@@ -8008,7 +8008,7 @@ def build_status_summary_and_lists(df):
 
     def make_summary_row(label, grp_key):
         c = counts[grp_key]
-        s, a, y, k, nc = c["Seniors"], c["Adults"], c["Youth"], c["Kids"], c["No category"]
+        s, a, y, k, nc = c["Seniors"], c["Adults"], c["Youth"], c["Kid"], c["No category"]
         say = s + a + y
         tot = say + k + nc
         return [label, s, a, y, say, k, nc, tot]
@@ -8029,7 +8029,7 @@ def build_status_summary_and_lists(df):
         sum(x[6] for x in all_r),
         sum(x[7] for x in all_r),
     ]
-    summary_cols = ["Status", "Seniors", "Adults", "Youth", "Seniors + Adults + Youth", "Kids", "No category", "Total persons"]
+    summary_cols = ["Status", "Seniors", "Adults", "Youth", "Seniors + Adults + Youth", "Kid", "No category", "Total persons"]
     summary_df = pd.DataFrame([r_act, r_oth_p, r_inact, r_non, r_oth, tot_row], columns=summary_cols)
     mini_cols = ["Full name", "Family ID", "Category", "Status", "Church member"]
     df_act_list = pd.DataFrame(active_rows, columns=mini_cols) if active_rows else pd.DataFrame(columns=mini_cols)
@@ -8060,7 +8060,7 @@ def build_age_category_tables(df):
             adults_rows.append(item)
         elif c_grp == "Youth":
             youth_rows.append(item)
-        elif c_grp == "Kids":
+        elif c_grp == "Kid":
             kids_rows.append(item)
 
     df_seniors = pd.DataFrame(seniors_rows, columns=cat_cols) if seniors_rows else pd.DataFrame(columns=cat_cols)
@@ -8082,7 +8082,7 @@ def get_parish_member_denominators(parish_name: str) -> dict:
                         act_say += 1
                     if c_g == "Youth":
                         act_y += 1
-                    elif c_g == "Kids":
+                    elif c_g == "Kid":
                         act_k += 1
             if act_say > 0:
                 base["say"] = act_say
@@ -9220,7 +9220,7 @@ def analyze_uploaded_member_encoding_quality(parish_filter: str = "") -> str:
     if not df_scope.empty:
         tot_s = len(df_scope)
         with_fam_id = sum(1 for _, r in df_scope.iterrows() if str(r.get("Family ID", "")).strip())
-        with_cat = sum(1 for _, r in df_scope.iterrows() if classify_category(r.get("Category", "")) in ("Seniors", "Adults", "Youth", "Kids"))
+        with_cat = sum(1 for _, r in df_scope.iterrows() if classify_category(r.get("Category", "")) in ("Seniors", "Adults", "Youth", "Kid"))
         with_bday = sum(1 for _, r in df_scope.iterrows() if str(r.get("Birthday", "")).strip())
         completeness_pct = round(((with_fam_id + with_cat) / max(1, 2 * tot_s)) * 100.0, 1)
         report_lines.extend([
@@ -10065,8 +10065,8 @@ def write_pwr_attendance_and_remarks(ws, data_row: dict, parish_name: str = "", 
         elif col_b.upper() in ["YOUTHS", "YOUTH"] or col_c.upper() in ["YOUTHS", "YOUTH"]:
             section = "YOUTHS"
             continue
-        elif col_b.upper() == "KIDS" or col_c.upper() == "KIDS":
-            section = "KIDS"
+        elif col_b.upper() == "KID" or col_c.upper() == "KID":
+            section = "KID"
             continue
         elif "TOTAL" in col_a.upper() or "TOTAL" in col_b.upper():
             total_row_idx = r_idx
@@ -10106,7 +10106,7 @@ def write_pwr_attendance_and_remarks(ws, data_row: dict, parish_name: str = "", 
                 youth_named_rows.append((r_idx, name_col, name_val))
             else:
                 youth_blank_rows.append((r_idx, name_col, ""))
-        elif section == "KIDS":
+        elif section == "KID":
             if name_val:
                 kids_named_rows.append((r_idx, name_col, name_val))
             else:
@@ -11502,8 +11502,8 @@ def clear_week_block_values_in_sheet(ws, start_r: int, end_r: int, month_upper: 
         elif c2_up in ["YOUTHS", "YOUTH"] or c3.upper() in ["YOUTHS", "YOUTH"]:
             section = "YOUTHS"
             continue
-        elif c2_up == "KIDS" or c3.upper() == "KIDS":
-            section = "KIDS"
+        elif c2_up == "KID" or c3.upper() == "KID":
+            section = "KID"
             continue
         elif "TOTAL" in c1_up or "TOTAL" in c2_up:
             for c_i in range(4, 10):
@@ -11651,8 +11651,8 @@ def extract_weekly_report_from_excel_bytes(file_bytes: bytes, target_parish: str
             elif col_b.upper() in ["YOUTHS", "YOUTH"] or col_c.upper() in ["YOUTHS", "YOUTH"]:
                 section = "YOUTHS"
                 continue
-            elif col_b.upper() == "KIDS" or col_c.upper() == "KIDS":
-                section = "KIDS"
+            elif col_b.upper() == "KID" or col_c.upper() == "KID":
+                section = "KID"
                 continue
             elif "TOTAL" in col_a.upper() or "TOTAL" in col_b.upper() or "AVERAGE" in col_a.upper() or "AVERAGE" in col_b.upper():
                 section = None
@@ -11709,7 +11709,7 @@ def extract_weekly_report_from_excel_bytes(file_bytes: bytes, target_parish: str
                     result["youth_y"] += y_v
                     result["adal_y"] += a_v
                     result["youths_records"].append(mem_entry)
-                elif section == "KIDS":
+                elif section == "KID":
                     kids_cnt += 1
                     result["kids_k"] += k_v
                     result["kids_records"].append(mem_entry)
@@ -12305,7 +12305,7 @@ def extract_pwr_grid_and_ocr_from_image(file_bytes: bytes) -> dict:
                     if not t_clean:
                         continue
                     up_t = t_clean.upper()
-                    if "ATTENDANCE" in up_t or up_t in ["ADULTS", "YOUTHS", "KIDS"]:
+                    if "ATTENDANCE" in up_t or up_t in ["ADULTS", "YOUTHS", "KID"]:
                         continue
                     filtered.append((cy_v, x0_v, t_clean))
                 if not filtered:
@@ -12372,7 +12372,7 @@ def extract_pwr_grid_and_ocr_from_image(file_bytes: bytes) -> dict:
                     raw_val_lines = [ln.strip() for ln in pytesseract.image_to_string(val_3x, config="--psm 6").splitlines() if ln.strip()]
                     clean_v_lines = [
                         ln for ln in raw_val_lines
-                        if "ATTENDANCE" not in ln.upper() and ln.strip().upper() not in ["ADULTS", "YOUTHS", "KIDS"]
+                        if "ATTENDANCE" not in ln.upper() and ln.strip().upper() not in ["ADULTS", "YOUTHS", "KID"]
                     ]
                     if len(clean_v_lines) == len(ink_slot_indices):
                         for lg_idx, ln_str in enumerate(clean_v_lines):
@@ -12468,7 +12468,7 @@ def extract_pwr_grid_and_ocr_from_image(file_bytes: bytes) -> dict:
                                     if p_txt:
                                         c_lines = [
                                             ln.strip() for ln in p_txt.splitlines()
-                                            if ln.strip() and "ATTENDANCE" not in ln.upper() and ln.strip().upper() not in ["ADULTS", "YOUTHS", "KIDS"]
+                                            if ln.strip() and "ATTENDANCE" not in ln.upper() and ln.strip().upper() not in ["ADULTS", "YOUTHS", "KID"]
                                         ]
                                         if len(c_lines) == len(ink_slot_indices):
                                             for lg_idx, ln_str in enumerate(c_lines):
@@ -12708,9 +12708,9 @@ def extract_weekly_report_via_ai_vision(file_bytes: bytes, mime_type: str, model
             for use_json_mime in [True, False]:
                 try:
                     cfg = (
-                        types.GenerateContentConfig(temperature=0.1, response_mime_type="application/json")
+                        types.GenerateContentConfig(temperature=0.0, response_mime_type="application/json")
                         if use_json_mime
-                        else types.GenerateContentConfig(temperature=0.1)
+                        else types.GenerateContentConfig(temperature=0.0)
                     )
                     res = client.models.generate_content(
                         model=cur_m,
@@ -13866,7 +13866,7 @@ def build_parish_member_attendance_sheet_df(parish_name: str, selected_month: st
 
     rows.append({
         first_col: "",
-        "A.M & P.M Mass": "KIDS",
+        "A.M & P.M Mass": "KID",
         "Mass": "", "Pampamilya": "", "Online Ministry": "",
         "Youth Fellowship": "", "Kids Fellowship": "", "Adal ti Evangelio": ""
     })
@@ -13925,7 +13925,7 @@ def build_parish_member_attendance_sheet_df(parish_name: str, selected_month: st
     df_mem_out = pd.DataFrame(rows)
     if parish_name == "HONGKONG PARISH" and not df_mem_out.empty:
         # Remove YOUTHS and KIDS section header rows and drop Youth Fellowship & Kids Fellowship columns for Hongkong Parish
-        df_mem_out = df_mem_out[~df_mem_out["A.M & P.M Mass"].isin(["YOUTHS", "KIDS"])].copy()
+        df_mem_out = df_mem_out[~df_mem_out["A.M & P.M Mass"].isin(["YOUTHS", "KID"])].copy()
         drop_hk_cols = [c for c in ["Youth Fellowship", "Kids Fellowship"] if c in df_mem_out.columns]
         if drop_hk_cols:
             df_mem_out = df_mem_out.drop(columns=drop_hk_cols)
@@ -14913,7 +14913,7 @@ def render_weekly_report_page():
                     if not fn_m:
                         continue
                     cat_raw = "ADULT" if v_parish == "HONGKONG PARISH" else str(mr.get("Category", "ADULT")).upper().strip()
-                    grp_lbl = "KIDS" if ("KID" in cat_raw or "CHILD" in cat_raw) else ("YOUTH" if "YOUTH" in cat_raw else "ADULT")
+                    grp_lbl = "KID" if ("KID" in cat_raw or "CHILD" in cat_raw) else ("YOUTH" if "YOUTH" in cat_raw else "ADULT")
                     prev_m = saved_att_map.get(fn_m.upper(), {})
                     active_att_rows.append({
                         "No.": len(active_att_rows) + 1,
@@ -14923,7 +14923,7 @@ def render_weekly_report_page():
                         "Pampamilya": bool(int(prev_m.get("pampamilya", 0)) > 0) if prev_m else False,
                         "Online": bool(int(prev_m.get("online", 0)) > 0) if prev_m else False,
                         "Youth Fell.": bool(int(prev_m.get("youth", 0)) > 0) if (prev_m and grp_lbl == "YOUTH") else False,
-                        "Kids Fell.": bool(int(prev_m.get("kids", 0)) > 0) if (prev_m and grp_lbl == "KIDS") else False,
+                        "Kids Fell.": bool(int(prev_m.get("kids", 0)) > 0) if (prev_m and grp_lbl == "KID") else False,
                         "Adal": bool(int(prev_m.get("adal", 0)) > 0) if prev_m else False,
                     })
         except Exception:
@@ -15080,7 +15080,7 @@ def render_weekly_report_page():
                                 b_y = 1 if bool(arow.get("Youth Fell.", False)) else 0
                                 b_k = 1 if bool(arow.get("Kids Fell.", False)) else 0
                                 b_ad = 1 if bool(arow.get("Adal", False)) else 0
-                                if grp_u == "KIDS":
+                                if grp_u == "KID":
                                     pm_kk += b_k
                                     kids_recs_out.append({"name": nm_u, "mass": 0, "pampamilya": 0, "online": 0, "youth": 0, "kids": b_k, "adal": 0})
                                 elif grp_u == "YOUTH":
@@ -18550,6 +18550,11 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
                         with st.spinner(f"Sine-save at sini-sync sa Google Drive ang {len(changed_payloads)} in-adjust na rekord..."):
                             ok_b, msg_b = batch_update_members_in_excel_and_sync(ACTIVE_SPREADSHEET_URL, changed_payloads)
                             if ok_b:
+                                if st.session_state.get("user_role") == "Master Admin":
+                                    try:
+                                        sync_all_app_data_to_external_hard_drive()
+                                    except Exception:
+                                        pass
                                 st.success(f"✅ {msg_b}")
                                 time.sleep(0.1)
                                 st.rerun()
@@ -19422,7 +19427,7 @@ elif app_mode == "🧭 Parish Leader Portal (Wizard & Summary)":
         )
         df_act_home = df_home_scope[act_mask_h]
         act_adults_seniors_h = sum(1 for _, r in df_act_home.iterrows() if classify_category(r.get("Category", "")) in ("Adults", "Seniors"))
-        act_youth_kids_h = sum(1 for _, r in df_act_home.iterrows() if classify_category(r.get("Category", "")) in ("Youth", "Kids"))
+        act_youth_kids_h = sum(1 for _, r in df_act_home.iterrows() if classify_category(r.get("Category", "")) in ("Youth", "Kid"))
     else:
         df_act_home = pd.DataFrame()
         act_adults_seniors_h = 0
@@ -20010,7 +20015,7 @@ def _parse_member_rows_from_2d_ocr_overlay(overlay_lines: list, img_w: int, img_
             if m_ag and int(m_ag.group(1)) <= 99:
                 age_val = m_ag.group(1)
                 break
-        cat_raw_tok = next((t for t in cat_toks if t in ("SC", "5C", "50", "SO", "A", "Y", "4", "K", "ADULT", "YOUTH", "KIDS")), "")
+        cat_raw_tok = next((t for t in cat_toks if t in ("SC", "5C", "50", "SO", "A", "Y", "4", "K", "ADULT", "YOUTH", "KID")), "")
         cat_val = "SC" if cat_raw_tok in ("5C", "50", "SO") else ("Y" if cat_raw_tok == "4" else cat_raw_tok)
         civ_raw_tok = next((t for t in civ_toks if t in ("M", "S", "5", "W", "SP", "MARRIED", "SINGLE", "WIDOWED", "SEPARATED")), "SINGLE")
         civ_val = "S" if civ_raw_tok == "5" else civ_raw_tok
@@ -20467,7 +20472,7 @@ def _parse_multi_section_or_flat_excel_members(file_bytes: bytes, filename: str,
             "Remarks": _get_row_col(r_idx, "Remarks") or form_meta["Remarks"],
         }
         norm_item = _normalize_ctg_form_codes(raw_item)
-        if is_row_hk and norm_item.get("Category") in ("YOUTH", "KIDS", ""):
+        if is_row_hk and norm_item.get("Category") in ("YOUTH", "KID", ""):
             norm_item["Category"] = "ADULT"
         extracted_list.append(norm_item)
 
@@ -20595,7 +20600,7 @@ def _parse_single_section3_row_text(row_text: str, row_num_default: int, prev_ad
     civ_val = ""
     sw_val = ""
     idx_scan = 0
-    if idx_scan < len(toks_rem) and toks_rem[idx_scan].upper().strip(".,") in ("SC", "5C", "50", "A", "Y", "4", "K", "ADULT", "YOUTH", "KIDS", "SENIOR"):
+    if idx_scan < len(toks_rem) and toks_rem[idx_scan].upper().strip(".,") in ("SC", "5C", "50", "A", "Y", "4", "K", "ADULT", "YOUTH", "KID", "SENIOR"):
         raw_c = toks_rem[idx_scan].upper().strip(".,")
         cat_val = "SC" if raw_c in ("5C", "50", "SENIOR") else ("Y" if raw_c == "4" else raw_c)
         idx_scan += 1
@@ -20845,7 +20850,7 @@ def _extract_single_family_from_vision_parts(
             "Carefully read ALL pages/images provided AND the zoomed Section III Family Members Table crops: "
             "1. I. Parish Info (Parish, Area/Zone, Cell Group, Collected By, Date Accomplished) & II. Household Info (Family ID, Head of Family, Mobile Number, Complete Address, Barangay, City/Municipality, Province, ZIP Code). "
             "2. III. Family Members Table (across Page 2 Rows 1–2 AND Page 3 Rows 3–10 if multi-page) — extract EVERY numbered handwritten row (No. 1, 2, 3, 4, 5, 6, 7, 8, 9, 10...) including Full Name (IMPORTANT: a member's Given Name is often written on the top line of the Full Name cell and their Surname on the bottom line of the same cell!), Relationship, Sex, Birthdate (YYYY-MM-DD; convert 2-digit birth years like 01-10-58 to 1958-01-10 and Sept. 16 1951 to 1951-09-16), Age, Category, Civil Status, Student/Working, Contact No., Church Member (YES/NO), Status (ACTIVE/INACTIVE), Baptized (YES/NO), Baptism Date, and Current Address (if ditto marks '' are written, copy the address from the row above). "
-            "CRITICAL RULE: NEVER return only the Head of Family when Section III has multiple rows written! Note that the Head of Family (HOF) might be on Row 1, Row 2, or Row 10 of Section III. Extract ALL rows in exact table order (Row 1 to the last written row). "
+            "CRITICAL VERBATIM COPY-PASTE RULE: Transcribe EVERY SINGLE ROW (Row 1 to the last written row, up to 10+ members) in Section III Family Members EXACTLY as written in the image (character-for-character copy-paste). INCLUDE ALL family members even if their surname is DIFFERENT from the Head of Family (for example: married daughters, SON IN LAW, DAUGHTER IN LAW, grandchildren, nieces/nephews, or relatives). NEVER skip any row, NEVER change anyone's surname to match the Head of Family, and NEVER invent or guess values that are not written in the image (leave blank "" if empty in the image). Expand shorthand codes cleanly: HOF->HEAD OF FAMILY, HBD->HUSBAND, WF->WIFE, SN->SON, DT->DAUGHTER, SIL->SON IN LAW, DIL->DAUGHTER IN LAW, K->KID, Y->YOUTH, A->ADULT, SC->SENIOR CITIZEN, M->MALE, F->FEMALE, S->SINGLE, W->WORKING. "
             "3. V. Emergency Contact (Name, Relationship, Contact Number), VI. Remarks, and VII. Certification. "
             'Return ONLY a valid JSON object matching this structure: '
             '{"parish_info": {"parish": "...", "area": "...", "cell_group": "...", "collected_by": "...", "date_accomplished": "..."}, '
@@ -20865,9 +20870,9 @@ def _extract_single_family_from_vision_parts(
                 for use_json_mime in (True, False):
                     try:
                         cfg_v = (
-                            types.GenerateContentConfig(temperature=0.1, response_mime_type="application/json")
+                            types.GenerateContentConfig(temperature=0.0, response_mime_type="application/json")
                             if use_json_mime
-                            else types.GenerateContentConfig(temperature=0.1)
+                            else types.GenerateContentConfig(temperature=0.0)
                         )
                         res = client.models.generate_content(
                             model=m_try,
@@ -21015,7 +21020,7 @@ def _extract_single_family_from_vision_parts(
                                     res2 = client.models.generate_content(
                                         model=m_try,
                                         contents=table_vision_parts + [follow_prompt],
-                                        config=types.GenerateContentConfig(temperature=0.1, response_mime_type="application/json")
+                                        config=types.GenerateContentConfig(temperature=0.0, response_mime_type="application/json")
                                     )
                                     raw2 = re.sub(r"^```(?:json)?\s*|\s*```$", "", (res2.text or "").strip(), flags=re.I).strip()
                                     if "{" in raw2 and "}" in raw2:
@@ -21687,7 +21692,7 @@ def _smart_normalize_and_validate_uploaded_member_rows(rows: list[dict], default
 
         raw_cat = str(item.get("Category", "")).strip()
         std_cat = classify_category(raw_cat)
-        if std_cat not in ("Seniors", "Adults", "Youth", "Kids") and age_int is not None:
+        if std_cat not in ("Seniors", "Adults", "Youth", "Kid") and age_int is not None:
             if age_int >= 60:
                 std_cat = "Seniors"
             elif age_int >= 31:
@@ -21695,8 +21700,8 @@ def _smart_normalize_and_validate_uploaded_member_rows(rows: list[dict], default
             elif age_int >= 13:
                 std_cat = "Youth"
             else:
-                std_cat = "Kids"
-        if std_cat in ("Seniors", "Adults", "Youth", "Kids"):
+                std_cat = "Kid"
+        if std_cat in ("Seniors", "Adults", "Youth", "Kid"):
             item["Category"] = std_cat
 
         # 4. Status & Church Member normalization
@@ -22719,6 +22724,11 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                                 for vr in valid_edited_rows:
                                     vr["Family ID"] = saved_fid_now
                                 st.session_state["extracted_members_batch"] = valid_edited_rows
+                                if st.session_state.get("user_role") == "Master Admin":
+                                    try:
+                                        sync_all_app_data_to_external_hard_drive()
+                                    except Exception:
+                                        pass
                                 st.session_state["_last_auto_save_banner"] = (True, f"✅ {final_pv_msg}")
                                 st.session_state["add_form_refresh_counter"] = st.session_state.get("add_form_refresh_counter", 0) + 1
                                 st.cache_data.clear()
