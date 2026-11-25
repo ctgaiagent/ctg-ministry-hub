@@ -4400,8 +4400,14 @@ def _merge_persistent_journal_into_excel_bytes(excel_bytes: bytes) -> bytes:
                 if v_fid and v_fn:
                     existing_fid_rows_map.setdefault(v_fid, []).append(r_i)
             ex_rows_for_fid = existing_fid_rows_map.get(fid_k.upper(), [])
-            # STRICT NON-DESTRUCTIVE RULE: If this Family ID ALREADY exists in the Excel workbook, NEVER touch or overwrite it!
-            if len(ex_rows_for_fid) == 0:
+            # Apply journal entry if Family ID is missing in pulled workbook OR if user updated this Family ID in the App journal
+            wb_names_for_fid = [str(ws_p.cell(r_x, 4).value or "").strip() for r_x in ex_rows_for_fid]
+            j_names_for_fid = [str(m_x.get("Full Name", "")).strip() for m_x in members if str(m_x.get("Full Name", "")).strip()]
+            needs_journal_apply = (len(ex_rows_for_fid) == 0) or (wb_names_for_fid != j_names_for_fid)
+            if needs_journal_apply:
+                if len(ex_rows_for_fid) > 0:
+                    for old_r_x in ex_rows_for_fid:
+                        _clear_parish_sheet_row_preserving_formulas(ws_p, old_r_x)
                 changed = True
                 if "HEAD OF FAMILY MASTER" in wb.sheetnames:
                     ws_m = wb["HEAD OF FAMILY MASTER"]
@@ -4409,7 +4415,7 @@ def _merge_persistent_journal_into_excel_bytes(excel_bytes: bytes) -> bytes:
                     for r_m in range(4, (ws_m.max_row or 0) + 1):
                         ex_fid = str(ws_m.cell(r_m, 1).value or "").strip().upper()
                         ex_hof = str(ws_m.cell(r_m, 5).value or "").strip()
-                        if ex_fid == fid_k.upper() and not ex_hof:
+                        if ex_fid == fid_k.upper():
                             slot_r = r_m
                             break
                     if slot_r is None:
@@ -4970,6 +4976,15 @@ def load_complete_parish_members(spreadsheet_url: str):
         try:
             xls = pd.ExcelFile(io.BytesIO(excel_bytes))
             hof_lookup = {}
+            journal_member_overrides = {}
+            try:
+                _j_ov_data = _load_saved_families_journal() or {}
+                for _j_fid, _j_ent in _j_ov_data.items():
+                    for _j_m in (_j_ent.get("members") or []):
+                        if isinstance(_j_m, dict) and _j_m.get("Full Name"):
+                            journal_member_overrides[(_j_fid.upper(), str(_j_m["Full Name"]).strip().upper())] = _j_m
+            except Exception:
+                journal_member_overrides = {}
             if "HEAD OF FAMILY MASTER" in xls.sheet_names:
                 df_m = pd.read_excel(xls, sheet_name="HEAD OF FAMILY MASTER", header=2)
                 df_m.columns = [str(c).strip() for c in df_m.columns]
@@ -5159,6 +5174,16 @@ def load_complete_parish_members(spreadsheet_url: str):
                     if rem_str.lower() == "nan":
                         rem_str = ""
 
+                    _j_ov_rec = journal_member_overrides.get((fid_str.upper(), fn_str.upper()), {})
+                    if _j_ov_rec:
+                        if _j_ov_rec.get("Age") and not bdate_str:
+                            age_str = str(_j_ov_rec["Age"]).strip()
+                        if _j_ov_rec.get("Category"):
+                            cat_str = str(_j_ov_rec["Category"]).strip().upper()
+                        if _j_ov_rec.get("Current Address (If living separately)"):
+                            addr_str = str(_j_ov_rec["Current Address (If living separately)"]).strip()
+                        if _j_ov_rec.get("Head of Family"):
+                            hof_str = str(_j_ov_rec["Head of Family"]).strip()
                     all_rows.append({
                         "Parish": p_name,
                         "Family ID": fid_str,
@@ -5710,13 +5735,13 @@ def update_member_in_excel_and_sync(
 MASTER_PROTECTED_FORMULA_COLS = {7, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 28, 29, 37, 38, 39}
 PARISH_PROTECTED_FORMULA_COLS = {2, 8, 9, 17, 21, 45, 46}
 
-def _safe_write_cell_preserving_formulas(ws, row_idx: int, col_idx: int, new_value, allow_overwrite_formula: bool = False):
+def _safe_write_cell_preserving_formulas(ws, row_idx: int, col_idx: int, new_value, allow_overwrite_formula: bool = False, allow_clear_empty: bool = False):
     """Writes new_value to ws.cell(row_idx, col_idx) ONLY if the cell does NOT contain an Excel formula
     and is NOT a protected formula column in HEAD OF FAMILY MASTER or a Philippine Parish sheet."""
     if not col_idx or new_value is None:
         return
     val_str = str(new_value).strip()
-    if val_str == "":
+    if val_str == "" and not allow_clear_empty:
         return
     sheet_title = str(getattr(ws, "title", "") or "").strip().upper()
     if sheet_title == "HEAD OF FAMILY MASTER" and col_idx in MASTER_PROTECTED_FORMULA_COLS:
@@ -7710,7 +7735,7 @@ def append_new_member_to_excel_and_sync(spreadsheet_url: str, member_data: dict,
                         master_slot_row = r_m
                         break
 
-            if master_slot_row is not None and (not master_already_exists or rel_val == "HEAD OF FAMILY"):
+            if master_slot_row is not None:
                 ws_master.cell(row=master_slot_row, column=1).value = family_id
                 if not _clean_cell_str(ws_master.cell(row=master_slot_row, column=2).value):
                     ws_master.cell(row=master_slot_row, column=2).value = parish_name
@@ -7726,7 +7751,7 @@ def append_new_member_to_excel_and_sync(spreadsheet_url: str, member_data: dict,
                 _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 13, _clean_cell_str(member_data.get("Emergency Relationship", "")))
                 _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 14, _clean_cell_str(member_data.get("Emergency Contact Number", "")))
 
-                if rel_val == "HEAD OF FAMILY":
+                if True:
                     _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 25, "HEAD OF FAMILY")
                     _safe_write_cell_preserving_formulas(ws_master, master_slot_row, 26, _clean_cell_str(member_data.get("Sex", "")))
                     bdate_in = _clean_cell_str(member_data.get("Birthdate", ""))
@@ -7802,15 +7827,16 @@ def append_new_member_to_excel_and_sync(spreadsheet_url: str, member_data: dict,
                     dep_copy["Head of Family"] = head_name
                     records_to_insert.append(dep_copy)
 
-        seen_names_in_batch = set()
         unique_records_to_insert = []
-        for rec_item in records_to_insert:
+        seen_exact_no_name = set()
+        for idx_u_in, rec_item in enumerate(records_to_insert, 1):
             fn_key = _clean_cell_str(rec_item.get("Full Name", "")).upper()
-            if fn_key and fn_key not in seen_names_in_batch:
-                seen_names_in_batch.add(fn_key)
+            no_key = _clean_cell_str(rec_item.get("No.", str(idx_u_in)))
+            if fn_key and (no_key, fn_key) not in seen_exact_no_name:
+                seen_exact_no_name.add((no_key, fn_key))
                 unique_records_to_insert.append(rec_item)
 
-        # Map existing members of this Family ID in the Parish Sheet by BOTH Full Name AND Member No.
+        # Map existing members of this exact Family ID in the Parish Sheet by BOTH Full Name AND Member No.
         existing_member_row_map = {}
         existing_member_no_row_map = {}
         all_existing_fid_rows = []
@@ -7820,14 +7846,17 @@ def append_new_member_to_excel_and_sync(spreadsheet_url: str, member_data: dict,
             v_no_raw = _clean_cell_str(ws.cell(row=r_idx, column=no_col).value)
             if v_fid == family_id.upper() and (v_fn or v_no_raw):
                 all_existing_fid_rows.append(r_idx)
-                if v_fn:
+                if v_fn and v_fn.upper() not in existing_member_row_map:
                     existing_member_row_map[v_fn.upper()] = r_idx
                 if v_no_raw:
                     try:
-                        existing_member_no_row_map[int(float(v_no_raw))] = r_idx
+                        no_int_k = int(float(v_no_raw))
+                        if no_int_k not in existing_member_no_row_map:
+                            existing_member_no_row_map[no_int_k] = r_idx
                     except Exception:
                         pass
 
+        is_full_family_submission = (parish_name != "HONGKONG PARISH" and len(unique_records_to_insert) >= 1)
         used_target_rows = set()
         inserted_rows_info = []
         for idx_rec, rec in enumerate(unique_records_to_insert):
@@ -7845,11 +7874,20 @@ def append_new_member_to_excel_and_sync(spreadsheet_url: str, member_data: dict,
                 member_no = idx_rec + 1
 
             insert_row = None
-            # STRICT APPEND-ONLY PROTECTION: Only update an existing row if it has the EXACT same Full Name under this Family ID.
-            # Never overwrite an existing row belonging to a different member name!
+            # 1. Match by exact Full Name within this Family ID
             if rec_fn.upper() in existing_member_row_map and existing_member_row_map[rec_fn.upper()] not in used_target_rows:
                 insert_row = existing_member_row_map[rec_fn.upper()]
+            # 2. If user edited Full Name of an existing member in this Family ID, match by Member No. within this Family ID
+            elif is_full_family_submission and member_no in existing_member_no_row_map and existing_member_no_row_map[member_no] not in used_target_rows:
+                insert_row = existing_member_no_row_map[member_no]
+            # 3. Otherwise reuse the next existing slot belonging strictly to this same Family ID
+            elif is_full_family_submission:
+                for cand_ex_r in all_existing_fid_rows:
+                    if cand_ex_r not in used_target_rows:
+                        insert_row = cand_ex_r
+                        break
 
+            # 4. If new member added (or brand-new Family ID), place in the first available empty row
             if insert_row is None:
                 for r_idx in range(5, (ws.max_row or 0) + 1):
                     if r_idx in used_target_rows:
@@ -7957,7 +7995,12 @@ def append_new_member_to_excel_and_sync(spreadsheet_url: str, member_data: dict,
 
             inserted_rows_info.append(f"{rec_fn} (No. {member_no}, Row {insert_row})")
 
-        # Preserve all existing rows in the Parish sheet (never delete or clear existing member rows during append!)
+        # If user removed/deleted extra rows from THIS specific Family ID in Step 3 (e.g. cleaning out duplicate/garbage rows),
+        # clear ONLY the unused leftover rows belonging to this exact Family ID while keeping all formulas and other families 100% intact!
+        if is_full_family_submission and all_existing_fid_rows:
+            for extra_r in all_existing_fid_rows:
+                if extra_r not in used_target_rows:
+                    _clear_parish_sheet_row_preserving_formulas(ws, extra_r)
 
         _save_family_to_persistent_journal(family_id, parish_name, member_data, unique_records_to_insert)
         out_buf = io.BytesIO()
@@ -22750,50 +22793,102 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                 key=f"extracted_members_preview_data_editor_{pv_rev_k}"
             )
 
-            with st.expander("📋 Tingnan ang Buong 29-Column Master Upload Format (Parish • Family ID • Head of Family • III. Family Members • Address • Emergency Contact)", expanded=False):
-                st.caption("Ito ang kumpletong 29-column table format (tulad ng nasa Batch Upload Excel Template) na awtomatikong binubuo mula sa Household Info sa itaas at sa III. Family Members Table:")
-                _em_num_29 = pv_em_num.split("(")[0].strip()
-                _em_rel_29 = pv_em_num.split("(")[1].rstrip(")").strip() if "(" in pv_em_num else str(first_rec_meta.get("Emergency Relationship", ""))
-                _full_addr_29 = ", ".join([x for x in [pv_house, pv_brgy, pv_city, pv_prov] if x.strip()])
-                _rows_29 = []
-                for _i29, _r29 in edited_preview_df.iterrows():
-                    _fn29 = _clean_cell_str(_r29.get("Full Name", ""))
-                    if not _fn29 and len(edited_preview_df) > 1:
-                        continue
-                    _bd29 = _clean_cell_str(_r29.get("Birthdate", ""))
-                    _ag29 = compute_age_from_birthdate(_bd29) if _bd29 else _clean_cell_str(_r29.get("Age", ""))
-                    _ct29 = compute_category_from_age(_ag29) if (_ag29 and str(_ag29).isdigit()) else _clean_cell_str(_r29.get("Category", ""))
-                    _rows_29.append({
-                        "Parish": pv_parish,
-                        "Family ID": pv_fid.strip(),
-                        "Head of Family": pv_hof.strip() or _fn29,
-                        "No.": _clean_cell_str(_r29.get("No.", str(len(_rows_29) + 1))) or str(len(_rows_29) + 1),
-                        "Full Name": _fn29,
-                        "Relationship": _clean_cell_str(_r29.get("Relationship", "HEAD OF FAMILY" if len(_rows_29) == 0 else "DEPENDENT")),
-                        "Sex": _clean_cell_str(_r29.get("Sex", "")),
-                        "Birthdate": _bd29,
-                        "Age": _ag29,
-                        "Category": _ct29,
-                        "Civil Status": _clean_cell_str(_r29.get("Civil Status", "")),
-                        "Student/Working": _clean_cell_str(_r29.get("Student/Working", "")),
-                        "Contact No.": _clean_cell_str(_r29.get("Contact No.", pv_mob.strip() if len(_rows_29) == 0 else "")),
-                        "Church Member": _clean_cell_str(_r29.get("Church Member", "YES")),
-                        "Status": _clean_cell_str(_r29.get("Status", "ACTIVE")),
-                        "Baptized": _clean_cell_str(_r29.get("Baptized", "YES")),
-                        "Baptism Date": _clean_cell_str(_r29.get("Baptism Date", "")),
-                        "Current Address (If living separately)": _clean_cell_str(_r29.get("Current Address (If living separately)", "")) or _full_addr_29,
-                        "Remarks": pv_rem.strip(),
-                        "Area/Zone": pv_area.strip(),
-                        "Cell Group": pv_cell.strip(),
-                        "House / Street / Purok": pv_house.strip(),
-                        "Barangay": pv_brgy.strip(),
-                        "City/Municipality": pv_city.strip(),
-                        "Province / Area": pv_prov.strip(),
-                        "ZIP Code": str(first_rec_meta.get("ZIP Code", "2513")),
-                        "Emergency Contact Name": pv_em_name.strip(),
-                        "Emergency Relationship": _em_rel_29,
-                        "Emergency Contact Number": _em_num_29,
-                    })
+            # Build the authoritative, live-synced 29-Column Master Upload payload directly from the user's edits
+            _em_num_29 = _normalize_phone_sim_number(pv_em_num.split("(")[0].strip()) or pv_em_num.split("(")[0].strip()
+            _em_rel_29 = pv_em_num.split("(")[1].rstrip(")").strip() if "(" in pv_em_num else str(first_rec_meta.get("Emergency Relationship", ""))
+            _full_addr_29 = ", ".join([x for x in [pv_house, pv_brgy, pv_city, pv_prov] if x.strip() and x.strip().upper() not in pv_house.strip().upper()])
+            if pv_house.strip():
+                _full_addr_29 = pv_house.strip() if not _full_addr_29 else f"{pv_house.strip()}, {_full_addr_29}"
+
+            # Sync Head of Family name if the user edited the HEAD OF FAMILY row (or Row 1) inside III. Family Members Table
+            _table_hof_candidate = ""
+            for _idx_h, _rh in edited_preview_df.iterrows():
+                _r_fn_h = _clean_cell_str(_rh.get("Full Name", ""))
+                _r_rel_h = _clean_cell_str(_rh.get("Relationship", "")).upper()
+                if _r_fn_h and (_r_rel_h == "HEAD OF FAMILY" or not _table_hof_candidate):
+                    _table_hof_candidate = _r_fn_h
+                    if _r_rel_h == "HEAD OF FAMILY":
+                        break
+            _orig_hof_meta = _clean_cell_str(first_rec_meta.get("Head of Family", first_rec_meta.get("Full Name", "")))
+            if _table_hof_candidate and pv_hof.strip() == _orig_hof_meta and _table_hof_candidate != _orig_hof_meta:
+                _resolved_hof_29 = _table_hof_candidate
+            else:
+                _resolved_hof_29 = pv_hof.strip() or _table_hof_candidate
+
+            _rows_29 = []
+            for _i29, _r29 in edited_preview_df.iterrows():
+                _fn29 = _clean_cell_str(_r29.get("Full Name", ""))
+                if not _fn29:
+                    continue
+                _orig_row_in = df_preview_in.iloc[_i29].to_dict() if _i29 < len(df_preview_in) else {}
+                _raw_ag29 = _clean_cell_str(_r29.get("Age", ""))
+                _raw_bd29 = _clean_cell_str(_r29.get("Birthdate", ""))
+                _bd29 = _normalize_handwritten_date_to_iso(_raw_bd29, age_hint=_raw_ag29) if _raw_bd29 else ""
+                _bd_changed = (_raw_bd29 != _clean_cell_str(_orig_row_in.get("Birthdate", "")))
+                _ag_changed = (_raw_ag29 != _clean_cell_str(_orig_row_in.get("Age", "")))
+                if _ag_changed and _raw_ag29:
+                    _ag29 = _raw_ag29
+                elif _bd29:
+                    _ag29 = compute_age_from_birthdate(_bd29) or _raw_ag29
+                else:
+                    _ag29 = _raw_ag29
+
+                _raw_ct29 = _clean_cell_str(_r29.get("Category", "")).upper()
+                if _raw_ct29 == "KIDS":
+                    _raw_ct29 = "KID"
+                _ct_changed = (_raw_ct29 != _clean_cell_str(_orig_row_in.get("Category", "")).upper())
+                if _ct_changed and _raw_ct29:
+                    _ct29 = _raw_ct29
+                elif (_bd_changed or _ag_changed or not _raw_ct29) and _ag29 and str(_ag29).isdigit():
+                    _ct29 = compute_category_from_age(_ag29) or _raw_ct29
+                else:
+                    _ct29 = _raw_ct29 or (compute_category_from_age(_ag29) if (_ag29 and str(_ag29).isdigit()) else "ADULT")
+
+                _rel29 = "HEAD OF FAMILY" if pv_parish == "HONGKONG PARISH" else (_clean_cell_str(_r29.get("Relationship", "")) or ("HEAD OF FAMILY" if len(_rows_29) == 0 else "DEPENDENT"))
+                _sex29 = _clean_cell_str(_r29.get("Sex", "")).upper()
+                if not _sex29:
+                    _sex29 = "FEMALE" if _rel29 in ("WIFE", "DAUGHTER", "DAUGHTER IN LAW", "MOTHER", "SISTER", "GRANDMOTHER", "GRANDDAUGHTER") else "MALE"
+                _civ29 = _clean_cell_str(_r29.get("Civil Status", "")).upper() or ("MARRIED" if _rel29 in ("WIFE", "HUSBAND") else "SINGLE")
+                _sw29 = _clean_cell_str(_r29.get("Student/Working", "")) or ("STUDENT" if _ct29 in ("KID", "YOUTH") else "WORKING")
+                _con29 = _normalize_phone_sim_number(_clean_cell_str(_r29.get("Contact No.", ""))) or _clean_cell_str(_r29.get("Contact No.", "")) or (_normalize_phone_sim_number(pv_mob.strip()) if len(_rows_29) == 0 else "")
+                _bapd29 = _normalize_handwritten_date_to_iso(_clean_cell_str(_r29.get("Baptism Date", ""))) if _clean_cell_str(_r29.get("Baptism Date", "")) else ""
+
+                _rows_29.append({
+                    "Parish": pv_parish,
+                    "Family ID": pv_fid.strip() if pv_parish != "HONGKONG PARISH" else "",
+                    "Head of Family": _fn29 if pv_parish == "HONGKONG PARISH" else (_resolved_hof_29 or _fn29),
+                    "No.": str(len(_rows_29) + 1),
+                    "Full Name": _fn29,
+                    "Relationship": _rel29,
+                    "Sex": _sex29,
+                    "Birthdate": _bd29,
+                    "Age": _ag29,
+                    "Category": _ct29,
+                    "Civil Status": _civ29,
+                    "Student/Working": _sw29,
+                    "Contact No.": _con29,
+                    "Church Member": _clean_cell_str(_r29.get("Church Member", "YES")) or "YES",
+                    "Status": _clean_cell_str(_r29.get("Status", "ACTIVE")) or "ACTIVE",
+                    "Baptized": _clean_cell_str(_r29.get("Baptized", "YES")) or "YES",
+                    "Baptism Date": _bapd29,
+                    "Current Address (If living separately)": _clean_cell_str(_r29.get("Current Address (If living separately)", "")) or _full_addr_29,
+                    "Remarks": pv_rem.strip(),
+                    "Area/Zone": pv_area.strip(),
+                    "Cell Group": pv_cell.strip(),
+                    "House / Street / Purok": pv_house.strip() or _full_addr_29,
+                    "Barangay": pv_brgy.strip(),
+                    "City/Municipality": pv_city.strip(),
+                    "Province / Area": pv_prov.strip(),
+                    "ZIP Code": str(first_rec_meta.get("ZIP Code", "2513")),
+                    "Emergency Contact Name": pv_em_name.strip(),
+                    "Emergency Relationship": _em_rel_29,
+                    "Emergency Contact Number": _em_num_29,
+                    "Work Type": _clean_cell_str(_r29.get("Work Type", "")) if pv_parish == "HONGKONG PARISH" else "",
+                    "Day Off": _clean_cell_str(_r29.get("Day Off", "")) if pv_parish == "HONGKONG PARISH" else "",
+                })
+
+            with st.expander("📋 Tingnan ang Buong 29-Column Master Upload Format (Parish • Family ID • Head of Family • III. Family Members • Address • Emergency Contact)", expanded=True):
+                st.caption("Ito ang eksaktong 29-column final records (awtomatikong naka-sync sa bawat edit mo sa III. Family Members Table sa itaas) na direktang ipapasok sa Google Drive Excel kapag pinindot mo ang Confirm & I-save:")
                 st.dataframe(pd.DataFrame(_rows_29), use_container_width=True, hide_index=True)
 
             pv_btn_c1, pv_btn_c2, pv_btn_c3 = st.columns([1.8, 1.25, 1.05])
@@ -22881,50 +22976,9 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                             if p_link:
                                 st.info(f"📸 Na-upload ang litrato sa Google Drive ([Buksan]({p_link}))")
 
-                    valid_edited_rows = []
-                    full_pv_addr = ", ".join([x for x in [pv_house, pv_brgy, pv_city, pv_prov] if x.strip()])
-                    em_num_clean = pv_em_num.split("(")[0].strip()
-                    em_rel_clean = pv_em_num.split("(")[1].rstrip(")").strip() if "(" in pv_em_num else str(first_rec_meta.get("Emergency Relationship", ""))
-                    for idx_ed, erow in edited_preview_df.iterrows():
-                        fn_ed = _clean_cell_str(erow.get("Full Name", ""))
-                        if not fn_ed:
-                            continue
-                        m_dict = {
-                            "Parish": pv_parish,
-                            "Family ID": pv_fid.strip() if pv_parish != "HONGKONG PARISH" else "",
-                            "Area/Zone": pv_area.strip(),
-                            "Cell Group": pv_cell.strip(),
-                            "Head of Family": fn_ed if pv_parish == "HONGKONG PARISH" else (pv_hof.strip() or fn_ed),
-                            "No.": _clean_cell_str(erow.get("No.", str(len(valid_edited_rows) + 1))) or str(len(valid_edited_rows) + 1),
-                            "Full Name": fn_ed,
-                            "Relationship": "HEAD OF FAMILY" if pv_parish == "HONGKONG PARISH" else (_clean_cell_str(erow.get("Relationship", "HEAD OF FAMILY" if len(valid_edited_rows) == 0 else "DEPENDENT"))),
-                            "Sex": _clean_cell_str(erow.get("Sex", "MALE")),
-                            "Birthdate": _clean_cell_str(erow.get("Birthdate", "")),
-                            "Age": _clean_cell_str(erow.get("Age", "")),
-                            "Category": _clean_cell_str(erow.get("Category", "")),
-                            "Civil Status": _clean_cell_str(erow.get("Civil Status", "SINGLE")),
-                            "Student/Working": _clean_cell_str(erow.get("Student/Working", "WORKING")),
-                            "Contact No.": _clean_cell_str(erow.get("Contact No.", pv_mob.strip() if len(valid_edited_rows) == 0 else "")),
-                            "Church Member": _clean_cell_str(erow.get("Church Member", "YES")),
-                            "Status": _clean_cell_str(erow.get("Status", "ACTIVE")),
-                            "Baptized": _clean_cell_str(erow.get("Baptized", "YES")),
-                            "Baptism Date": _clean_cell_str(erow.get("Baptism Date", "")),
-                            "House / Street / Purok": pv_house.strip(),
-                            "Barangay": pv_brgy.strip(),
-                            "City/Municipality": pv_city.strip(),
-                            "Province / Area": pv_prov.strip(),
-                            "ZIP Code": str(first_rec_meta.get("ZIP Code", "")),
-                            "Current Address (If living separately)": _clean_cell_str(erow.get("Current Address (If living separately)", "")) or full_pv_addr,
-                            "Work Type": _clean_cell_str(erow.get("Work Type", "")) if pv_parish == "HONGKONG PARISH" else "",
-                            "Day Off": _clean_cell_str(erow.get("Day Off", "")) if pv_parish == "HONGKONG PARISH" else "",
-                            "Emergency Contact Name": pv_em_name.strip(),
-                            "Emergency Relationship": em_rel_clean,
-                            "Emergency Contact Number": em_num_clean,
-                            "Remarks": pv_rem.strip(),
-                        }
-                        valid_edited_rows.append(m_dict)
-
-                    valid_edited_rows = _auto_clean_and_complete_family_records(valid_edited_rows, pv_parish)
+                    # Submit the EXACT 29-column rows displayed in 'Tingnan ang Buong 29-Column Master Upload Format' (_rows_29)
+                    # without running _auto_clean_and_complete_family_records so 100% of the user's manual edits and row order are preserved!
+                    valid_edited_rows = [r_item.copy() for r_item in _rows_29]
                     if not valid_edited_rows:
                         st.warning("⚠️ Walang nakalistang Full Name sa III. Family Members Table.")
                     else:
