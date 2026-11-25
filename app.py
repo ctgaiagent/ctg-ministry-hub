@@ -1904,13 +1904,29 @@ def sync_all_app_data_to_external_hard_drive(excel_bytes_override: bytes = None)
     except Exception as e_hdd:
         return False, f"⚠️ Hard Drive Backup Notice: {str(e_hdd)[:120]}"
 
+_HDD_ZIP_BYTES_MEMO = {"sig": "", "bytes": b""}
+
 def build_full_hard_drive_backup_zip_bytes() -> bytes:
     """Builds a complete, ready-to-save ZIP archive (`Backup_all_dta_in_App_Ctg-ministry-hub.zip`) containing all
-    Excel databases, JSON records, accounts, leadership profiles, and encrypted snapshots for the `CTG Editing` hard drive."""
+    Excel databases, JSON records, accounts, leadership profiles, and encrypted snapshots for the `CTG Editing` hard drive.
+    Memoized by file mtime so UI reruns on table cell edits take 0.0001s instead of re-compressing 7MB every click."""
+    if st.session_state.get("user_role") not in ("Master Admin", "Super Admin"):
+        return b""
+    tracked = ["CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx", "CTG_PWR_2027_CONSOLIDATION.xlsx", LOCAL_WEEKLY_REPORTS_DB, "ctg_saved_families_journal.json"]
+    sig_parts = []
+    for tf in tracked:
+        if tf and os.path.exists(tf):
+            try:
+                sig_parts.append(f"{tf}:{int(os.path.getmtime(tf))}:{os.path.getsize(tf)}")
+            except Exception:
+                pass
+    cur_sig = "|".join(sig_parts)
+    if cur_sig and _HDD_ZIP_BYTES_MEMO.get("sig") == cur_sig and _HDD_ZIP_BYTES_MEMO.get("bytes"):
+        return _HDD_ZIP_BYTES_MEMO["bytes"]
     buf = io.BytesIO()
     root_folder = "Backup all dta in App Ctg-ministry-hub"
     try:
-        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
             for xl_f in ["CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx", "CTG_PWR_2027_CONSOLIDATION.xlsx", LOCAL_PWR_MASTER_FILE]:
                 if xl_f and os.path.exists(xl_f):
                     zf.write(xl_f, f"{root_folder}/01_Master_Excel_Database/{os.path.basename(xl_f)}")
@@ -1934,7 +1950,10 @@ def build_full_hard_drive_backup_zip_bytes() -> bytes:
                         zf.write(os.path.join(SECURE_BACKUP_DIR, fn_e), f"{root_folder}/04_Encrypted_Snapshots/{fn_e}")
     except Exception:
         pass
-    return buf.getvalue()
+    res_b = buf.getvalue()
+    _HDD_ZIP_BYTES_MEMO["sig"] = cur_sig
+    _HDD_ZIP_BYTES_MEMO["bytes"] = res_b
+    return res_b
 
 def get_postgresql_rls_migration_sql() -> str:
     """Returns the production-ready PostgreSQL Schema & Row-Level Security (RLS) policy SQL script
@@ -4738,6 +4757,7 @@ def fetch_live_excel_bytes(spreadsheet_url: str, force_cloud: bool = False) -> t
     except Exception:
         return b"", "CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx"
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def build_hongkong_membership_template_excel_bytes() -> bytes:
     """Builds the official Hongkong Membership Data Base.xlsx template matching 'HONG KONG PARISH - OFW MEMBERS'."""
     wb = openpyxl.Workbook()
@@ -4771,6 +4791,7 @@ def build_hongkong_membership_template_excel_bytes() -> bytes:
     wb.save(buf)
     return buf.getvalue()
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def build_family_info_form_excel_template_bytes(default_parish: str = "LIPAY NORTE PARISH") -> bytes:
     """Builds the official multi-section Church of the Temple of God Official Family Information Form (.xlsx)
     with III. FAMILY MEMBERS (Rows 1 to 10 pre-numbered: No., Full Name, Relationship, Sex, Birthdate, Age, Category,
@@ -4859,6 +4880,7 @@ def build_family_info_form_excel_template_bytes(default_parish: str = "LIPAY NOR
     wb.save(buf)
     return buf.getvalue()
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def build_flat_29col_batch_upload_excel_template_bytes(default_parish: str = "LIPAY NORTE PARISH") -> bytes:
     """Builds the 29-column Batch Upload Excel Template (.xlsx) matching Screenshot 2026-11-22 at 10.04.24 PM.png:
     Row 1: INSTRUCTIONS: Fill out the details below. Do not change the column headers. You can delete the sample data before uploading.
@@ -5961,7 +5983,8 @@ def _clean_cell_str(v) -> str:
     except Exception:
         pass
     s = str(v).strip()
-    if s.lower() in ("nan", "nat", "none", "null", "n/a"):
+    # IMPORTANT: Never strip uppercase "NONE" here because "NONE" is a valid Student/Working value!
+    if s in ("nan", "NaN", "NAN", "nat", "NaT", "NAT", "None", "null", "NULL", "<NA>"):
         return ""
     if s.endswith(".0") and s[:-2].isdigit():
         s = s[:-2]
@@ -5989,7 +6012,13 @@ def _normalize_ctg_form_codes(item: dict) -> dict:
     sex_map = {"M": "MALE", "MALE": "MALE", "F": "FEMALE", "FEMALE": "FEMALE"}
     cat_map = {"K": "KID", "KID": "KID", "KID": "KID", "Y": "YOUTH", "YOUTH": "YOUTH", "A": "ADULT", "ADULT": "ADULT", "SC": "SENIOR CITIZEN", "SENIOR": "SENIOR CITIZEN", "SENIOR CITIZEN": "SENIOR CITIZEN"}
     civ_map = {"S": "SINGLE", "SINGLE": "SINGLE", "M": "MARRIED", "MARRIED": "MARRIED", "W": "WIDOWED", "WIDOWED": "WIDOWED", "SP": "SEPARATED", "SEPARATED": "SEPARATED"}
-    sw_map = {"S": "STUDENT", "STUDENT": "STUDENT", "W": "WORKING", "WORKING": "WORKING", "N": "NONE", "NONE": "NONE", "N/A": "NONE", "NA": "NONE"}
+    sw_map = {
+        "S": "STUDENT", "STUDENT": "STUDENT", "STUDENTS": "STUDENT",
+        "W": "WORKING", "WORKING": "WORKING",
+        "N": "NONE", "NONE": "NONE", "N/A": "NONE", "NA": "NONE",
+        "NONE / N/A": "NONE", "WALANG TRABAHO": "NONE", "UNEMPLOYED": "NONE",
+        "HOUSEWIFE": "NONE", "RETIRED": "NONE", "-": "NONE"
+    }
     yn_map = {"Y": "YES", "YES": "YES", "N": "NO", "NO": "NO"}
     st_map = {
         "A": "ACTIVE", "ACTIVE": "ACTIVE",
@@ -6009,9 +6038,13 @@ def _normalize_ctg_form_codes(item: dict) -> dict:
         "ON GOING INDOC": "ON GOING INDOC"
     }
 
+    raw_sw_preserve = str(item.get("Student/Working", "") if item.get("Student/Working") is not None else "").strip()
     out = {}
     for k, v in item.items():
-        out[k] = _clean_cell_str(v)
+        sv = _clean_cell_str(v)
+        if k != "Student/Working" and sv.upper() in ("N/A", "NA", "NONE", "NULL"):
+            sv = ""
+        out[k] = sv
 
     fid_c = out.get("Family ID", "").upper()
     if fid_c in ("NAN", "NONE", "NULL", "-", "AUTO"):
@@ -6030,8 +6063,20 @@ def _normalize_ctg_form_codes(item: dict) -> dict:
     civ_u = out.get("Civil Status", "SINGLE").upper()
     out["Civil Status"] = civ_map.get(civ_u, civ_u or "SINGLE")
 
-    sw_u = out.get("Student/Working", "WORKING").upper()
-    out["Student/Working"] = sw_map.get(sw_u, out.get("Student/Working", "WORKING") or "WORKING")
+    sw_u = raw_sw_preserve.upper()
+    if sw_u in sw_map:
+        out["Student/Working"] = sw_map[sw_u]
+    elif sw_u:
+        out["Student/Working"] = raw_sw_preserve
+    else:
+        # When blank on form: Senior Citizens & unemployed dependents default to NONE, Kids/Youth to STUDENT
+        cur_cat_check = out.get("Category", "").upper()
+        if cur_cat_check == "SENIOR CITIZEN":
+            out["Student/Working"] = "NONE"
+        elif cur_cat_check in ("KID", "YOUTH"):
+            out["Student/Working"] = "STUDENT"
+        else:
+            out["Student/Working"] = "NONE"
 
     cm_u = out.get("Church Member", "").upper()
     if cm_u in yn_map:
@@ -7348,10 +7393,14 @@ def _auto_clean_and_complete_family_records(records: list[dict], default_parish:
         r["Emergency Relationship"] = _clean_cell_str(r.get("Emergency Relationship", "")) or shared_em_r or "Head of Family"
         r["Emergency Contact Number"] = _clean_cell_str(r.get("Emergency Contact Number", "")) or shared_em_c or _clean_cell_str(first.get("Contact No.", ""))
         sw_cur = _clean_cell_str(r.get("Student/Working", "")).upper()
-        if cat_u == "KID" or (cat_u == "YOUTH" and civ_u == "SINGLE" and rel_u in ("SON", "DAUGHTER", "GRANDSON", "GRANDDAUGHTER") and (not age_s.isdigit() or int(age_s) <= 19)):
+        if sw_cur in ("N", "N/A", "NA", "NONE", "WALANG TRABAHO", "UNEMPLOYED"):
+            r["Student/Working"] = "NONE"
+        elif cat_u == "SENIOR CITIZEN" and not sw_cur:
+            r["Student/Working"] = "NONE"
+        elif cat_u == "KID" or (cat_u == "YOUTH" and civ_u == "SINGLE" and rel_u in ("SON", "DAUGHTER", "GRANDSON", "GRANDDAUGHTER") and (not age_s.isdigit() or int(age_s) <= 19)):
             if age_s.isdigit() and int(age_s) < 4:
                 r["Student/Working"] = "NONE"
-            elif sw_cur in ("", "NONE", "WORKING"):
+            elif sw_cur in ("", "WORKING"):
                 r["Student/Working"] = "STUDENT"
         r["Remarks"] = _clean_cell_str(r.get("Remarks", "")) or shared_rem
         cleaned_list.append(_normalize_ctg_form_codes(r))
@@ -21075,10 +21124,10 @@ def _extract_single_family_from_vision_parts(
     for t_crop_im in section3_table_crops_pil:
         detected_ink_row_bands_total += len(_detect_section3_horizontal_row_bands(t_crop_im))
 
-    # Run Google Drive Native Cloud Vision Document AI OCR first on the newly uploaded file bytes (if available)
+    # Fast path: only run slow Google Drive temp-doc OCR before Vision if no Gemini API key is configured
     drive_native_ocr_text = ""
     try:
-        raw_pending_files = st.session_state.get("_pending_raw_upload_files", [])
+        raw_pending_files = st.session_state.get("_pending_raw_upload_files", []) if not valid_keys else []
         if raw_pending_files and isinstance(raw_pending_files, list):
             ocr_chunks = []
             for pf_it in raw_pending_files:
@@ -21222,7 +21271,7 @@ def _extract_single_family_from_vision_parts(
                                     "Age": _clean_cell_str(m_obj.get("age", m_obj.get("Age", ""))),
                                     "Category": _clean_cell_str(m_obj.get("category", m_obj.get("Category", ""))),
                                     "Civil Status": _clean_cell_str(m_obj.get("civil_status", m_obj.get("Civil Status", "SINGLE"))),
-                                    "Student/Working": _clean_cell_str(m_obj.get("student_working", m_obj.get("Student/Working", "WORKING"))),
+                                    "Student/Working": _clean_cell_str(m_obj.get("student_working", m_obj.get("Student/Working", ""))),
                                     "Contact No.": _clean_cell_str(m_obj.get("contact_no", m_obj.get("Contact No.", mob_v if idx_m == 1 else ""))),
                                     "Church Member": _clean_cell_str(m_obj.get("church_member", m_obj.get("Church Member", "YES"))),
                                     "Status": _clean_cell_str(m_obj.get("status", m_obj.get("Status", "ACTIVE"))),
@@ -22834,22 +22883,37 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                     _ag29 = _raw_ag29
 
                 _raw_ct29 = _clean_cell_str(_r29.get("Category", "")).upper()
-                if _raw_ct29 == "KIDS":
+                if _raw_ct29 in ("KIDS", "K"):
                     _raw_ct29 = "KID"
-                _ct_changed = (_raw_ct29 != _clean_cell_str(_orig_row_in.get("Category", "")).upper())
+                elif _raw_ct29 in ("SC", "SENIOR", "SENIORS"):
+                    _raw_ct29 = "SENIOR CITIZEN"
+                _orig_ct_in = _clean_cell_str(_orig_row_in.get("Category", "")).upper()
+                _ct_changed = (_raw_ct29 != _orig_ct_in)
+                # Always respect the user's selected Category in III. Family Members Table;
+                # only auto-compute Category from Age if Category was NOT manually changed AND (Birthdate/Age changed or Category is empty)
                 if _ct_changed and _raw_ct29:
                     _ct29 = _raw_ct29
-                elif (_bd_changed or _ag_changed or not _raw_ct29) and _ag29 and str(_ag29).isdigit():
+                elif (_bd_changed or _ag_changed) and not _ct_changed and _ag29 and str(_ag29).isdigit():
                     _ct29 = compute_category_from_age(_ag29) or _raw_ct29
+                elif _raw_ct29:
+                    _ct29 = _raw_ct29
+                elif _ag29 and str(_ag29).isdigit():
+                    _ct29 = compute_category_from_age(_ag29)
                 else:
-                    _ct29 = _raw_ct29 or (compute_category_from_age(_ag29) if (_ag29 and str(_ag29).isdigit()) else "ADULT")
+                    _ct29 = "ADULT"
 
                 _rel29 = "HEAD OF FAMILY" if pv_parish == "HONGKONG PARISH" else (_clean_cell_str(_r29.get("Relationship", "")) or ("HEAD OF FAMILY" if len(_rows_29) == 0 else "DEPENDENT"))
                 _sex29 = _clean_cell_str(_r29.get("Sex", "")).upper()
                 if not _sex29:
                     _sex29 = "FEMALE" if _rel29 in ("WIFE", "DAUGHTER", "DAUGHTER IN LAW", "MOTHER", "SISTER", "GRANDMOTHER", "GRANDDAUGHTER") else "MALE"
                 _civ29 = _clean_cell_str(_r29.get("Civil Status", "")).upper() or ("MARRIED" if _rel29 in ("WIFE", "HUSBAND") else "SINGLE")
-                _sw29 = _clean_cell_str(_r29.get("Student/Working", "")) or ("STUDENT" if _ct29 in ("KID", "YOUTH") else "WORKING")
+                _raw_sw29 = _clean_cell_str(_r29.get("Student/Working", ""))
+                if _raw_sw29.upper() in ("NONE", "N", "N/A", "NA"):
+                    _sw29 = "NONE"
+                elif _raw_sw29:
+                    _sw29 = _raw_sw29
+                else:
+                    _sw29 = "NONE" if _ct29 == "SENIOR CITIZEN" else ("STUDENT" if _ct29 in ("KID", "YOUTH") else "NONE")
                 _con29 = _normalize_phone_sim_number(_clean_cell_str(_r29.get("Contact No.", ""))) or _clean_cell_str(_r29.get("Contact No.", "")) or (_normalize_phone_sim_number(pv_mob.strip()) if len(_rows_29) == 0 else "")
                 _bapd29 = _normalize_handwritten_date_to_iso(_clean_cell_str(_r29.get("Baptism Date", ""))) if _clean_cell_str(_r29.get("Baptism Date", "")) else ""
 
