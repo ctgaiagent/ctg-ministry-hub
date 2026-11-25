@@ -1791,7 +1791,9 @@ def save_uploaded_form_to_external_hard_drive(file_bytes: bytes, filename: str, 
 def sync_all_app_data_to_external_hard_drive(excel_bytes_override: bytes = None) -> tuple[bool, str]:
     """Mirrors all Master Excel databases, Weekly Consolidation Excel, uploaded Parish Forms, JSON journals,
     accounts, leadership profiles, and encrypted backups directly to:
-    `/Volumes/CTG Editing/Backup all dta in App Ctg-ministry-hub` (or local fallback folder if unplugged)."""
+    `/Volumes/CTG Editing/Backup all dta in App Ctg-ministry-hub` (Master Admin ONLY)."""
+    if st.session_state.get("user_role") not in ("Master Admin", "Super Admin"):
+        return False, "⛔ Access Denied: Ang External Hard Drive Backup ay para lamang sa Master Admin."
     try:
         base_dir, is_mounted = get_active_external_hard_drive_backup_dir()
         dir_excel = os.path.join(base_dir, "01_Master_Excel_Database")
@@ -7126,9 +7128,9 @@ def _auto_clean_and_complete_family_records(records: list[dict], default_parish:
         r["Relationship"] = "HEAD OF FAMILY" if is_hk else rel_u
 
         sex_u = _clean_cell_str(r.get("Sex", "")).upper()
-        if rel_u in ("WIFE", "DAUGHTER", "MOTHER", "SISTER", "GRANDMOTHER", "GRANDDAUGHTER"):
+        if rel_u in ("WIFE", "DAUGHTER", "DAUGHTER IN LAW", "MOTHER", "SISTER", "GRANDMOTHER", "GRANDDAUGHTER"):
             sex_u = "FEMALE"
-        elif rel_u in ("HUSBAND", "SON", "FATHER", "BROTHER", "GRANDFATHER", "GRANDSON"):
+        elif rel_u in ("HUSBAND", "SON", "SON IN LAW", "FATHER", "BROTHER", "GRANDFATHER", "GRANDSON"):
             sex_u = "MALE"
         elif sex_u not in ("MALE", "FEMALE"):
             sex_u = "FEMALE" if any(w in fn_m.upper().split() for w in ["ANA", "LIZA", "MARIA", "MARY", "MERCY", "MAY-ANN", "ELLA", "MARIELOU", "ROSA", "ELENA", "GRACE"]) else "MALE"
@@ -7156,10 +7158,10 @@ def _auto_clean_and_complete_family_records(records: list[dict], default_parish:
             elif av >= 13:
                 cat_u = "YOUTH"
             else:
-                cat_u = "KIDS"
+                cat_u = "KID"
         if not cat_u:
-            cat_u = "KIDS" if rel_u in ("SON", "DAUGHTER") and not age_s else "ADULT"
-        if is_hk and cat_u in ("YOUTH", "KIDS"):
+            cat_u = "KID" if rel_u in ("SON", "DAUGHTER") and not age_s else "ADULT"
+        if is_hk and cat_u in ("YOUTH", "KIDS", "KID"):
             cat_u = "ADULT"
         r["Category"] = cat_u
 
@@ -18582,7 +18584,7 @@ def render_parish_directory_and_census_view(page_heading: str, page_subtitle: st
                 def_st_idx = status_choices.index(canon_st) if canon_st in status_choices else 0
                 upd_status = st.selectbox("Bagong Status:", status_choices, index=def_st_idx, key="quick_upd_st")
             with u_col2:
-                cat_choices = ["SENIOR CITIZEN", "ADULT", "YOUTH", "KIDS"]
+                cat_choices = ["SENIOR CITIZEN", "ADULT", "YOUTH", "KID"]
                 cur_cat = str(sel_row["Category"]).upper().strip()
                 def_cat_idx = 1
                 if "SENIOR" in cur_cat:
@@ -20491,8 +20493,8 @@ def _parse_single_section3_row_text(row_text: str, row_num_default: int, prev_ad
         "HEAD OF FAMILY": "HEAD OF FAMILY", "HOF": "HEAD OF FAMILY", "H0F": "HEAD OF FAMILY", "NOF": "HEAD OF FAMILY", "HDF": "HEAD OF FAMILY", "HEAD": "HEAD OF FAMILY",
         "HUSBAND": "HUSBAND", "HBD": "HUSBAND",
         "WIFE": "WIFE", "WF": "WIFE", "WE": "WIFE", "WP": "WIFE", "WT": "WIFE", "WIPE": "WIFE",
-        "SON": "SON", "SN": "SON", "5N": "SON",
-        "DAUGHTER": "DAUGHTER", "DT": "DAUGHTER", "0T": "DAUGHTER", "DI": "DAUGHTER", "D1": "DAUGHTER", "PT": "DAUGHTER",
+        "SON": "SON", "SN": "SON", "5N": "SON", "SON IN LAW": "SON IN LAW", "SON-IN-LAW": "SON IN LAW", "SONINLAW": "SON IN LAW",
+        "DAUGHTER": "DAUGHTER", "DT": "DAUGHTER", "0T": "DAUGHTER", "DI": "DAUGHTER", "D1": "DAUGHTER", "PT": "DAUGHTER", "DAUGHTER IN LAW": "DAUGHTER IN LAW", "DAUGHTER-IN-LAW": "DAUGHTER IN LAW", "DAUGHTERINLAW": "DAUGHTER IN LAW",
         "DAUGTHER": "DAUGHTER", "PAUGHTER": "DAUGHTER", "PAUGTHER": "DAUGHTER", "PAUGHICK": "DAUGHTER", "PANTHER": "DAUGHTER",
         "GRANDDAUGHTER": "GRANDDAUGHTER", "GDT": "GRANDDAUGHTER", "6DT": "GRANDDAUGHTER", "CDT": "GRANDDAUGHTER", "GOT": "GRANDDAUGHTER", "GDI": "GRANDDAUGHTER", "GD1": "GRANDDAUGHTER", "GD": "GRANDDAUGHTER",
         "GRANDSON": "GRANDSON", "GSN": "GRANDSON", "6SN": "GRANDSON", "CSN": "GRANDSON", "G5N": "GRANDSON", "G8N": "GRANDSON", "GON": "GRANDSON", "GS": "GRANDSON",
@@ -21275,8 +21277,8 @@ def _extract_single_family_from_vision_parts(
         "HEAD OF FAMILY": "HEAD OF FAMILY", "HOF": "HEAD OF FAMILY", "H0F": "HEAD OF FAMILY", "NOF": "HEAD OF FAMILY", "HDF": "HEAD OF FAMILY",
         "HUSBAND": "HUSBAND", "HBD": "HUSBAND",
         "WIFE": "WIFE", "WF": "WIFE", "WE": "WIFE", "WP": "WIFE", "WT": "WIFE",
-        "SON": "SON", "SN": "SON", "5N": "SON",
-        "DAUGHTER": "DAUGHTER", "DT": "DAUGHTER", "0T": "DAUGHTER", "DI": "DAUGHTER", "D1": "DAUGHTER", "PT": "DAUGHTER",
+        "SON": "SON", "SN": "SON", "5N": "SON", "SON IN LAW": "SON IN LAW", "SON-IN-LAW": "SON IN LAW", "SONINLAW": "SON IN LAW",
+        "DAUGHTER": "DAUGHTER", "DT": "DAUGHTER", "0T": "DAUGHTER", "DI": "DAUGHTER", "D1": "DAUGHTER", "PT": "DAUGHTER", "DAUGHTER IN LAW": "DAUGHTER IN LAW", "DAUGHTER-IN-LAW": "DAUGHTER IN LAW", "DAUGHTERINLAW": "DAUGHTER IN LAW",
         "GRANDDAUGHTER": "GRANDDAUGHTER", "GDT": "GRANDDAUGHTER", "6DT": "GRANDDAUGHTER", "CDT": "GRANDDAUGHTER", "GOT": "GRANDDAUGHTER", "GDI": "GRANDDAUGHTER", "GD1": "GRANDDAUGHTER", "GD": "GRANDDAUGHTER",
         "GRANDSON": "GRANDSON", "GSN": "GRANDSON", "6SN": "GRANDSON", "CSN": "GRANDSON", "G5N": "GRANDSON", "G8N": "GRANDSON", "GON": "GRANDSON", "GS": "GRANDSON",
         "FATHER": "FATHER", "FA": "FATHER",
@@ -21922,24 +21924,25 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                         st.success(msg_fl)
                     else:
                         st.warning(msg_fl)
-        hdd_c1, hdd_c2 = st.columns(2)
-        with hdd_c1:
-            if st.button("💽 Backup sa Hard Drive", use_container_width=True, key="btn_add_page_hdd_sync", help="I-save agad ang lahat ng data sa Hard Drive: CTG Editing / Backup all dta in App Ctg-ministry-hub"):
-                ok_hd, msg_hd = sync_all_app_data_to_external_hard_drive()
-                if ok_hd:
-                    st.success(msg_hd)
-                else:
-                    st.warning(msg_hd)
-        with hdd_c2:
-            st.download_button(
-                "📦 ZIP para sa Hard Drive",
-                data=build_full_hard_drive_backup_zip_bytes(),
-                file_name="Backup_all_dta_in_App_Ctg-ministry-hub.zip",
-                mime="application/zip",
-                use_container_width=True,
-                key="btn_dl_full_hdd_zip_add_page",
-                help="I-download ang buong Backup ZIP para i-save sa Hard Drive: CTG Editing -> Backup all dta in App Ctg-ministry-hub"
-            )
+        if st.session_state.user_role == "Master Admin":
+            hdd_c1, hdd_c2 = st.columns(2)
+            with hdd_c1:
+                if st.button("💽 Backup sa Hard Drive", use_container_width=True, key="btn_add_page_hdd_sync", help="I-save agad ang lahat ng data sa Hard Drive: CTG Editing / Backup all dta in App Ctg-ministry-hub"):
+                    ok_hd, msg_hd = sync_all_app_data_to_external_hard_drive()
+                    if ok_hd:
+                        st.success(msg_hd)
+                    else:
+                        st.warning(msg_hd)
+            with hdd_c2:
+                st.download_button(
+                    "📦 ZIP para sa Hard Drive",
+                    data=build_full_hard_drive_backup_zip_bytes(),
+                    file_name="Backup_all_dta_in_App_Ctg-ministry-hub.zip",
+                    mime="application/zip",
+                    use_container_width=True,
+                    key="btn_dl_full_hdd_zip_add_page",
+                    help="I-download ang buong Backup ZIP para i-save sa Hard Drive: CTG Editing -> Backup all dta in App Ctg-ministry-hub"
+                )
         dl_t1, dl_t2 = st.columns(2)
         with dl_t1:
             if is_hk_add_mode:
@@ -22015,9 +22018,9 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                 )
             with up_opt_c2:
                 auto_save_on_drop = st.checkbox(
-                    "⚡ Auto-Upload sa Drive Folder & Auto-Save Agad sa Excel Pagka-pili ng File",
+                    "☁️ Auto-Upload ang Image/File sa Google Drive Folder (Sa App Muna ang Data Bago I-save sa Master Excel)",
                     value=True,
-                    help="Kapag naka-check, awtomatikong ia-upload ang file sa Google Drive folder ng Parokya at ise-save agad ang pamilya sa Excel, tapos ipapakita sa Step 3 sa ibaba para ma-check o ma-update mo kung may gustong baguhin.",
+                    help="Kapag naka-check, ang raw Image o PDF file lamang ang direktang ia-upload sa Google Drive folder ng Parokya. Ang nabasang datos ng mga miyembro ay ilalagay muna sa Step 3 Editor sa App para ma-check at ma-edit mo bago pindutin ang 'Confirm & I-save / I-update sa Google Drive'.",
                     key="chk_auto_save_on_file_drop"
                 )
                 if st.button("🧹 I-clear / Mag-upload ng Ibang File", use_container_width=True, key="btn_clear_current_upload_top"):
@@ -22034,7 +22037,7 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
             if auto_mem_files:
                 cur_file_sig = f"{def_p_auto}::" + "|".join(f"{uf.name}:{uf.size}" for uf in auto_mem_files)
                 manual_reprocess_clicked = st.button(
-                    f"🚀 Basahin Muli ang File & I-save Agad sa {def_p_auto} (Google Drive Folder + Master Excel)",
+                    f"🔍 Basahin Muli ang File/Image & Ilagay sa App Editor ({def_p_auto})",
                     type="primary",
                     use_container_width=True,
                     key="btn_single_one_click_upload_and_save_all"
@@ -22113,81 +22116,55 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                             else:
                                 st.session_state.pop("_last_upload_folder_error", None)
 
+                        target_p = def_p_auto if def_p_auto in get_allowed_parishes_for_current_user() else st.session_state.assigned_parish
                         if not ext_members:
-                            st.warning("⚠️ Walang nabasang pangalan sa file. Maaari kang mag-encode nang direkta sa Step 3 Table sa ibaba.")
+                            # Fallback: Always populate an editable starter family batch in the app with any OCR text so Step 3 Editor is ready
+                            raw_ocr_hint = ""
+                            try:
+                                if batch_payload:
+                                    raw_ocr_hint = (_extract_text_via_google_drive_native_ocr(batch_payload[0]["bytes"], batch_payload[0]["type"]) or "")[:300]
+                            except Exception:
+                                raw_ocr_hint = ""
+                            ext_members = [{
+                                "Parish": target_p,
+                                "Family ID": next_avail_fid,
+                                "Head of Family": os.path.splitext(auto_mem_files[0].name)[0].replace("_", " ").strip(),
+                                "No.": "1",
+                                "Full Name": "",
+                                "Relationship": "HEAD OF FAMILY",
+                                "Sex": "",
+                                "Birthdate": "",
+                                "Age": "",
+                                "Category": "ADULT",
+                                "Civil Status": "MARRIED",
+                                "Student/Working": "WORKING",
+                                "Contact No.": "",
+                                "Church Member": "YES",
+                                "Status": "ACTIVE",
+                                "Baptized": "YES",
+                                "Baptism Date": "",
+                                "Remarks": f"OCR Hint: {raw_ocr_hint}" if raw_ocr_hint else f"Uploaded: {auto_mem_files[0].name}",
+                            }]
+                            st.session_state["extracted_members_batch"] = ext_members
+                            st.session_state["add_form_refresh_counter"] = st.session_state.get("add_form_refresh_counter", 0) + 1
+                            st.session_state["_last_auto_save_banner"] = (
+                                True,
+                                f"ℹ️ **Nailagay ang uploaded form sa App (Step 2 & Step 3 Editor) para sa {target_p}.** Hindi pa ito naisusulat sa `CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx` — kumpletuhin o i-edit ang table sa ibaba at pindutin ang **'💾 Confirm & I-save / I-update sa Google Drive'**."
+                            )
                         else:
-                            target_p = def_p_auto if def_p_auto in get_allowed_parishes_for_current_user() else st.session_state.assigned_parish
                             ext_members = _auto_clean_and_complete_family_records(ext_members, target_p, auto_mem_files[0].name)
                             for em_it in ext_members:
                                 em_it["Parish"] = target_p
-
-                            if auto_save_on_drop or manual_reprocess_clicked:
-                                total_saved_members = 0
-                                save_messages = []
-                                if target_p == "HONGKONG PARISH":
-                                    for m_it in ext_members:
-                                        m_copy = m_it.copy()
-                                        m_copy["Parish"] = "HONGKONG PARISH"
-                                        m_copy["Head of Family"] = _clean_cell_str(m_copy.get("Full Name", ""))
-                                        m_copy["Relationship"] = "HEAD OF FAMILY"
-                                        if m_copy.get("Category") in ("YOUTH", "KIDS", ""):
-                                            m_copy["Category"] = "ADULT"
-                                        ok_1c, msg_1c = append_new_member_to_excel_and_sync(ACTIVE_SPREADSHEET_URL, m_copy, [])
-                                        if m_copy.get("Family ID"):
-                                            m_it["Family ID"] = m_copy["Family ID"]
-                                        if ok_1c:
-                                            total_saved_members += 1
-                                            save_messages.append(msg_1c)
-                                        else:
-                                            save_messages.append(f"⚠️ {msg_1c}")
-                                else:
-                                    is_excel_csv_batch = all(
-                                        uf.name.split(".")[-1].lower() in ("xlsx", "csv")
-                                        for uf in auto_mem_files
-                                    )
-                                    families_grouped = {}
-                                    if not is_excel_csv_batch and ext_members:
-                                        # 1 PDF or Image Form Upload = 1 Unified Family (never split into 2 Family IDs!)
-                                        unified_hof_p1 = _clean_cell_str(ext_members[0].get("Head of Family", "")) or _clean_cell_str(ext_members[0].get("Full Name", ""))
-                                        single_fam_list = []
-                                        for m_it in ext_members:
-                                            m_it["Parish"] = target_p
-                                            m_it["Head of Family"] = unified_hof_p1
-                                            single_fam_list.append(m_it.copy())
-                                        families_grouped[unified_hof_p1.upper()] = single_fam_list
-                                    else:
-                                        for m_it in ext_members:
-                                            m_copy = m_it.copy()
-                                            m_copy["Parish"] = target_p
-                                            hof_k = _clean_cell_str(m_copy.get("Head of Family", "")) or _clean_cell_str(m_copy.get("Full Name", ""))
-                                            families_grouped.setdefault(hof_k.upper(), []).append(m_copy)
-
-                                    for _, fam_members in families_grouped.items():
-                                        head_item = fam_members[0].copy()
-                                        deps_items = [d.copy() for d in fam_members[1:]] if len(fam_members) > 1 else []
-                                        ok_1c, msg_1c = append_new_member_to_excel_and_sync(ACTIVE_SPREADSHEET_URL, head_item, deps_items)
-                                        assigned_fid_1c = _clean_cell_str(head_item.get("Family ID", ""))
-                                        if assigned_fid_1c:
-                                            for em_orig in ext_members:
-                                                if _clean_cell_str(em_orig.get("Head of Family", "")).upper() == _clean_cell_str(head_item.get("Head of Family", "")).upper():
-                                                    em_orig["Family ID"] = assigned_fid_1c
-                                        if ok_1c:
-                                            total_saved_members += len(fam_members)
-                                            save_messages.append(msg_1c)
-                                        else:
-                                            save_messages.append(f"⚠️ {msg_1c}")
-
-                                st.cache_data.clear()
-                                master_members_df, excel_filename = load_complete_parish_members(ACTIVE_SPREADSHEET_URL)
-                                st.session_state["_last_auto_save_banner"] = (
-                                    total_saved_members > 0,
-                                    f"✅ **Auto-Save Kumpleto ({total_saved_members} Miyembro naidagdag/na-update sa {target_p} Family Database & Google Drive Excel)!** "
-                                    f"Maaari mong i-review o i-edit ang lahat ng fields sa **Step 3** sa ibaba — naka-lock na ang Family ID (`{ext_members[0].get('Family ID', '')}`) kaya hindi ito madodoble. | "
-                                    + " | ".join(save_messages)
-                                )
-
+                                if not _clean_cell_str(em_it.get("Family ID", "")) and target_p != "HONGKONG PARISH":
+                                    em_it["Family ID"] = next_avail_fid
                             st.session_state["extracted_members_batch"] = ext_members
+                            st.session_state["staged_upload_df"] = pd.DataFrame(ext_members)
                             st.session_state["add_form_refresh_counter"] = st.session_state.get("add_form_refresh_counter", 0) + 1
+                            st.session_state["_last_auto_save_banner"] = (
+                                True,
+                                f"✅ **Nabasa ang {len(ext_members)} Miyembro at nailagay sa App (Step 3 Editor sa ibaba) para sa {target_p}!** "
+                                f"Hindi pa ito naka-encode sa `CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx`. I-check o i-edit muna ang lahat ng fields sa Step 3, pagkatapos ay pindutin ang **'💾 Confirm & I-save / I-update sa Google Drive'** upang awtomatikong maipasok ang tamang datos sa Master Excel."
+                            )
 
                 if st.session_state.get("_last_uploaded_drive_links"):
                     links_md = " • ".join(f"[📁 {fn_l}]({url_l})" for fn_l, url_l in st.session_state["_last_uploaded_drive_links"])
@@ -22239,7 +22216,7 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                             "Sex": "FEMALE" if (is_hk_add_mode or r_i == 2) else "MALE",
                             "Birthdate": "",
                             "Age": "",
-                            "Category": "ADULT" if r_i <= 2 else "KIDS",
+                            "Category": "ADULT" if r_i <= 2 else "KID",
                             "Civil Status": "MARRIED" if r_i <= 2 else "SINGLE",
                             "Student/Working": "WORKING" if r_i <= 2 else "STUDENT",
                             "Contact No.": "",
@@ -22298,7 +22275,7 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                             st.rerun()
                 with ld_c3:
                     st.write("")
-                    if st.button("🗑️ Burahin ang Pamilyang Ito (Para Ulitin)", use_container_width=True, key="btn_delete_existing_fam_paraan3"):
+                    if (not is_current_user_read_only_viewer()) and st.button("🗑️ Burahin ang Pamilyang Ito (Para Ulitin)", use_container_width=True, key="btn_delete_existing_fam_paraan3"):
                         target_fid_del = fam_lookup_dict.get(sel_existing_fam_lbl, "")
                         if target_fid_del:
                             with st.spinner(f"Binubura ang {target_fid_del} mula sa HEAD OF FAMILY MASTER at {def_p_auto}..."):
@@ -22504,10 +22481,11 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
 
             rel_valid_opts = [
                 "", "HEAD OF FAMILY", "HUSBAND", "WIFE", "SON", "DAUGHTER",
+                "SON IN LAW", "DAUGHTER IN LAW",
                 "FATHER", "MOTHER", "BROTHER", "SISTER", "GRANDFATHER",
                 "GRANDMOTHER", "GRANDSON", "GRANDDAUGHTER", "RELATIVE", "OTHER", "DEPENDENT"
             ]
-            cat_valid_opts = ["", "ADULT", "SENIOR CITIZEN"] if pv_parish == "HONGKONG PARISH" else ["", "ADULT", "YOUTH", "KIDS", "SENIOR CITIZEN"]
+            cat_valid_opts = ["", "ADULT", "SENIOR CITIZEN"] if pv_parish == "HONGKONG PARISH" else ["", "ADULT", "YOUTH", "KID", "SENIOR CITIZEN"]
             sw_valid_opts = [
                 "", "WORKING", "STUDENT", "NONE", "OFW - WORKING", "DOMESTIC HELPER",
                 "CAREGIVER", "DRIVER", "F&B / HOSPITALITY", "OFFICE / PROFESSIONAL",
@@ -22821,13 +22799,24 @@ elif app_mode == "📢 Announcement Broadcaster":
 elif app_mode == "🛠️ App Settings":
     render_title_with_logo("🛠️ App Controller, Theme, Excel Sync & Configuration Settings", "I-customize ang hitsura ng app, i-manage ang Google Drive Excel File, at i-update ang API settings.")
 
-    tab_ui, tab_heads, tab_security, tab_excel, tab_api = st.tabs([
-        "🎨 Theme, Display & App Controller",
-        "👑 Supreme Head, Asawa & 2 Diocese Heads Editor",
-        "🔐 Account Security, Username/Password & Access Control",
-        "📊 Google Drive Links & Separate Upload Center",
-        "🔑 API & Google Drive / Gmail Credentials (Fix 403 Scope)"
-    ])
+    is_master_admin_settings = (st.session_state.user_role == "Master Admin")
+    if not is_master_admin_settings:
+        st.info("🔒 **Protected Access Mode:** Ang iyong account ay may pahintulot lamang sa sarili mong **Theme Preferences** at **Account Security**. Ang Master Admin Settings, Secrets, Hard Drive Backup, at System Controls ay protektado.")
+        tab_ui, tab_security = st.tabs([
+            "🎨 Theme & Display Preferences",
+            "🔐 Aking Account Security & Password"
+        ])
+        tab_heads = None
+        tab_excel = None
+        tab_api = None
+    else:
+        tab_ui, tab_heads, tab_security, tab_excel, tab_api = st.tabs([
+            "🎨 Theme, Display & App Controller",
+            "👑 Supreme Head, Asawa & 2 Diocese Heads Editor",
+            "🔐 Account Security, Username/Password & Access Control",
+            "📊 Google Drive Links & Separate Upload Center",
+            "🔑 API & Google Drive / Gmail Credentials (Fix 403 Scope)"
+        ])
 
     with tab_ui:
         st.subheader("🎛️ App Appearance & Controller Settings")
@@ -22883,13 +22872,14 @@ elif app_mode == "🛠️ App Settings":
                 time.sleep(0.1)
                 st.rerun()
 
-    with tab_heads:
-        if st.session_state.user_role == "Master Admin" or st.session_state.get("login_role") == "Master Admin":
-            render_master_admin_heads_editor_panel(context_key="app_settings_heads")
-        else:
-            _my_p_set = st.session_state.get("assigned_parish", PARISH_ORDER[0])
-            _my_r_set = get_default_parish_leader_role_title(_my_p_set)
-            st.info(f"🔒 Ang **👑 Master Admin Editor (Supreme Head, Asawa, at 2 Diocese Heads)** ay para lamang sa **Master Admin**. Maaari mong i-update ang iyong **{_my_r_set} Profile & Picture ({_my_p_set})** sa kaliwang Sidebar Control Panel (`👤 I-edit ang Aking {_my_r_set} Profile & Picture`).")
+    if tab_heads is not None:
+        with tab_heads:
+            if st.session_state.user_role == "Master Admin" or st.session_state.get("login_role") == "Master Admin":
+                render_master_admin_heads_editor_panel(context_key="app_settings_heads")
+            else:
+                _my_p_set = st.session_state.get("assigned_parish", PARISH_ORDER[0])
+                _my_r_set = get_default_parish_leader_role_title(_my_p_set)
+                st.info(f"🔒 Ang **👑 Master Admin Editor (Supreme Head, Asawa, at 2 Diocese Heads)** ay para lamang sa **Master Admin**. Maaari mong i-update ang iyong **{_my_r_set} Profile & Picture ({_my_p_set})** sa kaliwang Sidebar Control Panel (`👤 I-edit ang Aking {_my_r_set} Profile & Picture`).")
 
     with tab_security:
         st.subheader("🔐 Account Security, Encrypted Passwords (PBKDF2-SHA256) & User Access Control")
@@ -23306,514 +23296,516 @@ elif app_mode == "🛠️ App Settings":
                             st.caption("Awtomatikong gagawa ng encrypted backup bago ang bawat pag-save sa Excel.")
                     st.code(get_postgresql_rls_migration_sql(), language="sql")
 
-    with tab_excel:
-        if st.session_state.user_role != "Master Admin":
-            st.info("🔒 Ang Google Drive Excel Link & Weekly Report Folder Configuration ay para lamang sa **Master Admin**.")
-        else:
-            st.subheader("🗂️ Organized Google Drive Links & Separate Upload Center (Master Admin)")
-            st.caption("Naka-organize at magkahiwalay na dito ang **(1) Lahat ng Weekly Report Links** (pinagsama-sama para madaling magdagdag ng maraming linggo at buwan), **(2) Parish Census & Member Directory Links**, **(3) Outreach & Other Ministry Links**, at **(4) Hiwalay na Upload & Sync Center**.")
+    if tab_excel is not None:
+        with tab_excel:
+            if st.session_state.user_role != "Master Admin":
+                st.info("🔒 Ang Google Drive Excel Link & Weekly Report Folder Configuration ay para lamang sa **Master Admin**.")
+            else:
+                st.subheader("🗂️ Organized Google Drive Links & Separate Upload Center (Master Admin)")
+                st.caption("Naka-organize at magkahiwalay na dito ang **(1) Lahat ng Weekly Report Links** (pinagsama-sama para madaling magdagdag ng maraming linggo at buwan), **(2) Parish Census & Member Directory Links**, **(3) Outreach & Other Ministry Links**, at **(4) Hiwalay na Upload & Sync Center**.")
 
-            saved_links_list = load_saved_drive_links_registry()
+                saved_links_list = load_saved_drive_links_registry()
 
-            def _classify_saved_link_group(item: dict) -> str:
-                cat = str(item.get("category", "")).upper()
-                lbl = str(item.get("label", "")).upper()
-                url = str(item.get("url", "")).strip()
-                if (
-                    "CENSUS" in cat
-                    or "MEMBERS DATABASE" in cat
-                    or "CTG_HEADS_TOTAL" in lbl
-                    or "APP_STORAGE" in lbl
-                    or "MEMBERS DATABASE ALL PARISH" in lbl
-                    or MASTER_CENSUS_EXCEL_FILE_ID in url
-                    or APP_STORAGE_FOLDER_ID in url
-                    or ALL_PARISH_DB_FOLDER_ID in url
-                ):
-                    return "CENSUS"
-                if (
-                    "WEEKLY REPORT" in cat
-                    or "PWR" in cat
-                    or "MASTER FOLDER" in cat
-                    or "PARISH UPLOAD FOLDER" in cat
-                    or "PWR" in lbl
-                    or "WEEKLY" in lbl
-                    or "12snjykc" in url
-                    or "1WHvH81k" in url
-                    or "1v7BFj32" in url
-                    or "1tOdW8FR" in url
-                    or "CONSOLIDATION" in lbl
-                ):
-                    return "WEEKLY"
-                return "OUTREACH_OTHER"
+                def _classify_saved_link_group(item: dict) -> str:
+                    cat = str(item.get("category", "")).upper()
+                    lbl = str(item.get("label", "")).upper()
+                    url = str(item.get("url", "")).strip()
+                    if (
+                        "CENSUS" in cat
+                        or "MEMBERS DATABASE" in cat
+                        or "CTG_HEADS_TOTAL" in lbl
+                        or "APP_STORAGE" in lbl
+                        or "MEMBERS DATABASE ALL PARISH" in lbl
+                        or MASTER_CENSUS_EXCEL_FILE_ID in url
+                        or APP_STORAGE_FOLDER_ID in url
+                        or ALL_PARISH_DB_FOLDER_ID in url
+                    ):
+                        return "CENSUS"
+                    if (
+                        "WEEKLY REPORT" in cat
+                        or "PWR" in cat
+                        or "MASTER FOLDER" in cat
+                        or "PARISH UPLOAD FOLDER" in cat
+                        or "PWR" in lbl
+                        or "WEEKLY" in lbl
+                        or "12snjykc" in url
+                        or "1WHvH81k" in url
+                        or "1v7BFj32" in url
+                        or "1tOdW8FR" in url
+                        or "CONSOLIDATION" in lbl
+                    ):
+                        return "WEEKLY"
+                    return "OUTREACH_OTHER"
 
-            weekly_links = [(i, it) for i, it in enumerate(saved_links_list) if _classify_saved_link_group(it) == "WEEKLY"]
-            census_links = [(i, it) for i, it in enumerate(saved_links_list) if _classify_saved_link_group(it) == "CENSUS"]
-            other_links = [(i, it) for i, it in enumerate(saved_links_list) if _classify_saved_link_group(it) == "OUTREACH_OTHER"]
+                weekly_links = [(i, it) for i, it in enumerate(saved_links_list) if _classify_saved_link_group(it) == "WEEKLY"]
+                census_links = [(i, it) for i, it in enumerate(saved_links_list) if _classify_saved_link_group(it) == "CENSUS"]
+                other_links = [(i, it) for i, it in enumerate(saved_links_list) if _classify_saved_link_group(it) == "OUTREACH_OTHER"]
 
-            subtab_weekly, subtab_census, subtab_outreach, subtab_upload = st.tabs([
-                f"📑 1. Weekly Report Links ({len(weekly_links)})",
-                f"📊 2. Parish Census & Directory Links ({len(census_links)})",
-                f"🏠 3. Outreach & Other Links ({len(other_links)})",
-                "📤 4. Separate Upload & Sync Center (Excel / Links)"
-            ])
+                subtab_weekly, subtab_census, subtab_outreach, subtab_upload = st.tabs([
+                    f"📑 1. Weekly Report Links ({len(weekly_links)})",
+                    f"📊 2. Parish Census & Directory Links ({len(census_links)})",
+                    f"🏠 3. Outreach & Other Links ({len(other_links)})",
+                    "📤 4. Separate Upload & Sync Center (Excel / Links)"
+                ])
 
-            # =================================================================
-            # SUB-TAB 1: WEEKLY REPORT LINKS (PINAGSAMA-SAMA PARA SA MARAMING IDARAGDAG)
-            # =================================================================
-            with subtab_weekly:
-                st.markdown("### 📑 Pinagsama-samang Weekly Report Links (January–December 2027 • 1st–5th Week)")
-                st.caption("Dito mo maaaring idagdag at makita nang sama-sama ang lahat ng Google Drive links para sa **Weekly Report & Parish Monitoring** (isa-isa man o maramihang links nang sabay-sabay).")
+                # =================================================================
+                # SUB-TAB 1: WEEKLY REPORT LINKS (PINAGSAMA-SAMA PARA SA MARAMING IDARAGDAG)
+                # =================================================================
+                with subtab_weekly:
+                    st.markdown("### 📑 Pinagsama-samang Weekly Report Links (January–December 2027 • 1st–5th Week)")
+                    st.caption("Dito mo maaaring idagdag at makita nang sama-sama ang lahat ng Google Drive links para sa **Weekly Report & Parish Monitoring** (isa-isa man o maramihang links nang sabay-sabay).")
 
-                with st.expander("➕ Magdagdag ng Bagong Weekly Report Link (Single o Bulk Multi-Link Upload)", expanded=True):
-                    wk_mode = st.radio(
-                        "Paraan ng Pagdadagdag ng Weekly Report Link:",
-                        ["📌 Single Weekly Report Link (Isa-isang Link)", "📚 Bulk Add Multiple Weekly Report Links (Maramihang Links Sabay-sabay)"],
-                        horizontal=True,
-                        key="wk_link_add_mode"
-                    )
-                    if wk_mode.startswith("📌"):
-                        with st.form("add_weekly_drive_link_form"):
-                            wc1, wc2, wc3 = st.columns([1.5, 1.3, 1.2])
-                            with wc1:
-                                w_lbl = st.text_input("🏷️ Pangalan / Label (Hal. PWR. January 2nd Week.xlsx):")
-                            with wc2:
-                                w_cat = st.selectbox(
-                                    "📂 Uri ng Weekly Report Link:",
-                                    [
-                                        "Master Weekly Report Excel (PWR)",
-                                        "Parish Weekly Report Excel (JAN–DEC 2027)",
-                                        "Google Drive Master Folder",
-                                        "Parish Upload Folder"
-                                    ]
-                                )
-                            with wc3:
-                                w_parish = st.selectbox("🏛️ Parokya / Scope:", ["Lahat ng Parokya (Master)"] + PARISH_ORDER)
+                    with st.expander("➕ Magdagdag ng Bagong Weekly Report Link (Single o Bulk Multi-Link Upload)", expanded=True):
+                        wk_mode = st.radio(
+                            "Paraan ng Pagdadagdag ng Weekly Report Link:",
+                            ["📌 Single Weekly Report Link (Isa-isang Link)", "📚 Bulk Add Multiple Weekly Report Links (Maramihang Links Sabay-sabay)"],
+                            horizontal=True,
+                            key="wk_link_add_mode"
+                        )
+                        if wk_mode.startswith("📌"):
+                            with st.form("add_weekly_drive_link_form"):
+                                wc1, wc2, wc3 = st.columns([1.5, 1.3, 1.2])
+                                with wc1:
+                                    w_lbl = st.text_input("🏷️ Pangalan / Label (Hal. PWR. January 2nd Week.xlsx):")
+                                with wc2:
+                                    w_cat = st.selectbox(
+                                        "📂 Uri ng Weekly Report Link:",
+                                        [
+                                            "Master Weekly Report Excel (PWR)",
+                                            "Parish Weekly Report Excel (JAN–DEC 2027)",
+                                            "Google Drive Master Folder",
+                                            "Parish Upload Folder"
+                                        ]
+                                    )
+                                with wc3:
+                                    w_parish = st.selectbox("🏛️ Parokya / Scope:", ["Lahat ng Parokya (Master)"] + PARISH_ORDER)
 
-                            wc4, wc5, wc6 = st.columns([1.0, 1.0, 2.0])
-                            with wc4:
-                                w_month = st.selectbox("📅 Buwan (2027):", ["All Months"] + MONTHS_2027, index=1)
-                            with wc5:
-                                w_week = st.selectbox("🗓️ Linggo (Week):", ["All Weeks"] + WEEKS_2027, index=1)
-                            with wc6:
-                                w_url = st.text_input("🔗 Google Drive Link (I-paste ang URL ng Weekly Report Excel o Folder):")
+                                wc4, wc5, wc6 = st.columns([1.0, 1.0, 2.0])
+                                with wc4:
+                                    w_month = st.selectbox("📅 Buwan (2027):", ["All Months"] + MONTHS_2027, index=1)
+                                with wc5:
+                                    w_week = st.selectbox("🗓️ Linggo (Week):", ["All Weeks"] + WEEKS_2027, index=1)
+                                with wc6:
+                                    w_url = st.text_input("🔗 Google Drive Link (I-paste ang URL ng Weekly Report Excel o Folder):")
 
-                            if st.form_submit_button("➕ Idagdag sa Weekly Report Links & I-sync", type="primary", use_container_width=True):
-                                if not w_url.strip():
-                                    st.warning("Mag-paste muna ng Google Drive Link URL.")
-                                else:
-                                    auto_lbl = w_lbl.strip() or f"PWR. {w_month} {w_week} ({w_parish})"
-                                    add_link_to_drive_registry(auto_lbl, w_cat, w_month, w_week, w_parish, w_url.strip())
-                                    eff_m = "January" if w_month == "All Months" else w_month
-                                    eff_w = "1st Week" if w_week == "All Weeks" else w_week
-                                    _, s_msg = auto_sync_from_any_drive_link(w_url.strip(), eff_m, eff_w, w_parish)
-                                    st.cache_data.clear()
-                                    st.success(f"✅ Naidagdag sa Weekly Report Links ang '{auto_lbl}'! ({s_msg})")
+                                if st.form_submit_button("➕ Idagdag sa Weekly Report Links & I-sync", type="primary", use_container_width=True):
+                                    if not w_url.strip():
+                                        st.warning("Mag-paste muna ng Google Drive Link URL.")
+                                    else:
+                                        auto_lbl = w_lbl.strip() or f"PWR. {w_month} {w_week} ({w_parish})"
+                                        add_link_to_drive_registry(auto_lbl, w_cat, w_month, w_week, w_parish, w_url.strip())
+                                        eff_m = "January" if w_month == "All Months" else w_month
+                                        eff_w = "1st Week" if w_week == "All Weeks" else w_week
+                                        _, s_msg = auto_sync_from_any_drive_link(w_url.strip(), eff_m, eff_w, w_parish)
+                                        st.cache_data.clear()
+                                        st.success(f"✅ Naidagdag sa Weekly Report Links ang '{auto_lbl}'! ({s_msg})")
+                                        time.sleep(0.1)
+                                        st.rerun()
+                        else:
+                            st.caption("I-paste ang maraming Google Drive links (isang link bawat linya, o `Label | Link`). Awtomatikong isasama ang lahat sa Weekly Report Links group!")
+                            bk_c1, bk_c2, bk_c3 = st.columns(3)
+                            with bk_c1:
+                                bk_month = st.selectbox("📅 Default na Buwan:", ["All Months"] + MONTHS_2027, index=1, key="bk_wk_month")
+                            with bk_c2:
+                                bk_week = st.selectbox("🗓️ Default na Linggo:", ["All Weeks"] + WEEKS_2027, index=0, key="bk_wk_week")
+                            with bk_c3:
+                                bk_parish = st.selectbox("🏛️ Default na Parokya:", ["Lahat ng Parokya (Master)"] + PARISH_ORDER, key="bk_wk_parish")
+                            bulk_text = st.text_area(
+                                "📋 I-paste ang mga Weekly Report Google Drive Links (1 link per line, o `Label | https://drive.google.com/...`):",
+                                height=130,
+                                placeholder="PWR. January 2nd Week.xlsx | https://docs.google.com/spreadsheets/d/...\nPWR. January 3rd Week.xlsx | https://docs.google.com/spreadsheets/d/..."
+                            )
+                            if st.button("🚀 Idagdag ang Lahat ng Weekly Report Links sa Listahan", type="primary", use_container_width=True):
+                                lines_in = [ln.strip() for ln in bulk_text.splitlines() if ln.strip()]
+                                added_bulk = 0
+                                for idx_ln, ln in enumerate(lines_in, 1):
+                                    if "|" in ln:
+                                        parts_ln = [p.strip() for p in ln.split("|", 1)]
+                                        lbl_b, url_b = parts_ln[0], parts_ln[1]
+                                    else:
+                                        url_b = ln
+                                        lbl_b = f"Weekly Report Link #{len(weekly_links) + idx_ln} ({bk_month} {bk_week})"
+                                    if "http" in url_b:
+                                        detected_w = bk_week
+                                        for wk_cand in WEEKS_2027:
+                                            if wk_cand.lower() in lbl_b.lower():
+                                                detected_w = wk_cand
+                                                break
+                                        detected_m = bk_month
+                                        for mo_cand in MONTHS_2027:
+                                            if mo_cand.lower() in lbl_b.lower():
+                                                detected_m = mo_cand
+                                                break
+                                        cat_b = "Google Drive Master Folder" if "/folders/" in url_b else "Master Weekly Report Excel (PWR)"
+                                        add_link_to_drive_registry(lbl_b, cat_b, detected_m, detected_w, bk_parish, url_b)
+                                        added_bulk += 1
+                                if added_bulk > 0:
+                                    st.success(f"✅ Matagumpay na naidagdag ang **{added_bulk}** Weekly Report Links!")
                                     time.sleep(0.1)
                                     st.rerun()
-                    else:
-                        st.caption("I-paste ang maraming Google Drive links (isang link bawat linya, o `Label | Link`). Awtomatikong isasama ang lahat sa Weekly Report Links group!")
-                        bk_c1, bk_c2, bk_c3 = st.columns(3)
-                        with bk_c1:
-                            bk_month = st.selectbox("📅 Default na Buwan:", ["All Months"] + MONTHS_2027, index=1, key="bk_wk_month")
-                        with bk_c2:
-                            bk_week = st.selectbox("🗓️ Default na Linggo:", ["All Weeks"] + WEEKS_2027, index=0, key="bk_wk_week")
-                        with bk_c3:
-                            bk_parish = st.selectbox("🏛️ Default na Parokya:", ["Lahat ng Parokya (Master)"] + PARISH_ORDER, key="bk_wk_parish")
-                        bulk_text = st.text_area(
-                            "📋 I-paste ang mga Weekly Report Google Drive Links (1 link per line, o `Label | https://drive.google.com/...`):",
-                            height=130,
-                            placeholder="PWR. January 2nd Week.xlsx | https://docs.google.com/spreadsheets/d/...\nPWR. January 3rd Week.xlsx | https://docs.google.com/spreadsheets/d/..."
-                        )
-                        if st.button("🚀 Idagdag ang Lahat ng Weekly Report Links sa Listahan", type="primary", use_container_width=True):
-                            lines_in = [ln.strip() for ln in bulk_text.splitlines() if ln.strip()]
-                            added_bulk = 0
-                            for idx_ln, ln in enumerate(lines_in, 1):
-                                if "|" in ln:
-                                    parts_ln = [p.strip() for p in ln.split("|", 1)]
-                                    lbl_b, url_b = parts_ln[0], parts_ln[1]
                                 else:
-                                    url_b = ln
-                                    lbl_b = f"Weekly Report Link #{len(weekly_links) + idx_ln} ({bk_month} {bk_week})"
-                                if "http" in url_b:
-                                    detected_w = bk_week
-                                    for wk_cand in WEEKS_2027:
-                                        if wk_cand.lower() in lbl_b.lower():
-                                            detected_w = wk_cand
-                                            break
-                                    detected_m = bk_month
-                                    for mo_cand in MONTHS_2027:
-                                        if mo_cand.lower() in lbl_b.lower():
-                                            detected_m = mo_cand
-                                            break
-                                    cat_b = "Google Drive Master Folder" if "/folders/" in url_b else "Master Weekly Report Excel (PWR)"
-                                    add_link_to_drive_registry(lbl_b, cat_b, detected_m, detected_w, bk_parish, url_b)
-                                    added_bulk += 1
-                            if added_bulk > 0:
-                                st.success(f"✅ Matagumpay na naidagdag ang **{added_bulk}** Weekly Report Links!")
+                                    st.warning("Walang nakitang valid na `https://...` Google Drive link.")
+
+                    # Filter bar for the grouped Weekly Report links directory
+                    wf_c1, wf_c2, wf_c3 = st.columns(3)
+                    with wf_c1:
+                        flt_wk_month = st.selectbox("🔍 Salain ayon sa Buwan:", ["Lahat ng Buwan", "All Months"] + MONTHS_2027, key="flt_wk_links_m")
+                    with wf_c2:
+                        flt_wk_week = st.selectbox("🔍 Salain ayon sa Linggo:", ["Lahat ng Linggo", "All Weeks"] + WEEKS_2027, key="flt_wk_links_w")
+                    with wf_c3:
+                        flt_wk_parish = st.selectbox("🔍 Salain ayon sa Parokya:", ["Lahat", "Lahat ng Parokya (Master)"] + PARISH_ORDER, key="flt_wk_links_p")
+
+                    filtered_weekly_links = []
+                    for orig_idx, it in weekly_links:
+                        if flt_wk_month != "Lahat ng Buwan" and it.get("month", "") != flt_wk_month:
+                            continue
+                        if flt_wk_week != "Lahat ng Linggo" and it.get("week", "") != flt_wk_week:
+                            continue
+                        if flt_wk_parish != "Lahat" and it.get("parish", "") != flt_wk_parish:
+                            continue
+                        filtered_weekly_links.append((orig_idx, it))
+
+                    if filtered_weekly_links:
+                        df_wk_links = pd.DataFrame([
+                            {
+                                "ID": orig_i + 1,
+                                "Pangalan / Label": it.get("label", ""),
+                                "Kategorya": it.get("category", ""),
+                                "Buwan": it.get("month", ""),
+                                "Linggo": it.get("week", ""),
+                                "Parokya / Scope": it.get("parish", ""),
+                                "Google Drive Link": it.get("url", ""),
+                            }
+                            for orig_i, it in filtered_weekly_links
+                        ])
+                        st.dataframe(df_wk_links, use_container_width=True, hide_index=True)
+
+                        wk_sel_opts = [
+                            f"[#{orig_i + 1}] {it.get('label')} — {it.get('month')} {it.get('week')} ({it.get('parish')})"
+                            for orig_i, it in filtered_weekly_links
+                        ]
+                        sel_wk_pos = st.selectbox("🎯 Pumili ng Weekly Report Link para I-sync o Alisin:", range(len(wk_sel_opts)), format_func=lambda i: wk_sel_opts[i], key="sel_wk_link_action")
+                        wk_orig_idx, wk_chosen = filtered_weekly_links[sel_wk_pos]
+                        wk_btn_c1, wk_btn_c2 = st.columns(2)
+                        with wk_btn_c1:
+                            if st.button("🔄 I-sync ang Napiling Weekly Report Link sa Monitoring Tables", type="primary", use_container_width=True, key="btn_sync_sel_wk"):
+                                eff_m = "January" if wk_chosen.get("month") == "All Months" else wk_chosen.get("month", "January")
+                                eff_w = "1st Week" if wk_chosen.get("week") == "All Weeks" else wk_chosen.get("week", "1st Week")
+                                _, msg_w = auto_sync_from_any_drive_link(wk_chosen.get("url", ""), eff_m, eff_w, wk_chosen.get("parish", "Lahat ng Parokya (Master)"))
+                                st.cache_data.clear()
+                                st.success(f"✅ {msg_w}")
                                 time.sleep(0.1)
                                 st.rerun()
-                            else:
-                                st.warning("Walang nakitang valid na `https://...` Google Drive link.")
-
-                # Filter bar for the grouped Weekly Report links directory
-                wf_c1, wf_c2, wf_c3 = st.columns(3)
-                with wf_c1:
-                    flt_wk_month = st.selectbox("🔍 Salain ayon sa Buwan:", ["Lahat ng Buwan", "All Months"] + MONTHS_2027, key="flt_wk_links_m")
-                with wf_c2:
-                    flt_wk_week = st.selectbox("🔍 Salain ayon sa Linggo:", ["Lahat ng Linggo", "All Weeks"] + WEEKS_2027, key="flt_wk_links_w")
-                with wf_c3:
-                    flt_wk_parish = st.selectbox("🔍 Salain ayon sa Parokya:", ["Lahat", "Lahat ng Parokya (Master)"] + PARISH_ORDER, key="flt_wk_links_p")
-
-                filtered_weekly_links = []
-                for orig_idx, it in weekly_links:
-                    if flt_wk_month != "Lahat ng Buwan" and it.get("month", "") != flt_wk_month:
-                        continue
-                    if flt_wk_week != "Lahat ng Linggo" and it.get("week", "") != flt_wk_week:
-                        continue
-                    if flt_wk_parish != "Lahat" and it.get("parish", "") != flt_wk_parish:
-                        continue
-                    filtered_weekly_links.append((orig_idx, it))
-
-                if filtered_weekly_links:
-                    df_wk_links = pd.DataFrame([
-                        {
-                            "ID": orig_i + 1,
-                            "Pangalan / Label": it.get("label", ""),
-                            "Kategorya": it.get("category", ""),
-                            "Buwan": it.get("month", ""),
-                            "Linggo": it.get("week", ""),
-                            "Parokya / Scope": it.get("parish", ""),
-                            "Google Drive Link": it.get("url", ""),
-                        }
-                        for orig_i, it in filtered_weekly_links
-                    ])
-                    st.dataframe(df_wk_links, use_container_width=True, hide_index=True)
-
-                    wk_sel_opts = [
-                        f"[#{orig_i + 1}] {it.get('label')} — {it.get('month')} {it.get('week')} ({it.get('parish')})"
-                        for orig_i, it in filtered_weekly_links
-                    ]
-                    sel_wk_pos = st.selectbox("🎯 Pumili ng Weekly Report Link para I-sync o Alisin:", range(len(wk_sel_opts)), format_func=lambda i: wk_sel_opts[i], key="sel_wk_link_action")
-                    wk_orig_idx, wk_chosen = filtered_weekly_links[sel_wk_pos]
-                    wk_btn_c1, wk_btn_c2 = st.columns(2)
-                    with wk_btn_c1:
-                        if st.button("🔄 I-sync ang Napiling Weekly Report Link sa Monitoring Tables", type="primary", use_container_width=True, key="btn_sync_sel_wk"):
-                            eff_m = "January" if wk_chosen.get("month") == "All Months" else wk_chosen.get("month", "January")
-                            eff_w = "1st Week" if wk_chosen.get("week") == "All Weeks" else wk_chosen.get("week", "1st Week")
-                            _, msg_w = auto_sync_from_any_drive_link(wk_chosen.get("url", ""), eff_m, eff_w, wk_chosen.get("parish", "Lahat ng Parokya (Master)"))
-                            st.cache_data.clear()
-                            st.success(f"✅ {msg_w}")
-                            time.sleep(0.1)
-                            st.rerun()
-                    with wk_btn_c2:
-                        if len(saved_links_list) > 1 and st.button("🗑️ Alisin ang Napiling Weekly Report Link", use_container_width=True, key="btn_del_sel_wk"):
-                            saved_links_list.pop(wk_orig_idx)
-                            save_drive_links_registry(saved_links_list)
-                            st.success("Inalis na ang napiling Weekly Report link.")
-                            time.sleep(0.1)
-                            st.rerun()
-                else:
-                    st.info("Walang Weekly Report link na tumugma sa kasalukuyang filter.")
-
-            # =================================================================
-            # SUB-TAB 2: PARISH CENSUS & DIRECTORY LINKS (HIWALAY PARA SA CENSUS & MEMBER MANAGER)
-            # =================================================================
-            with subtab_census:
-                st.markdown("### 📊 Parish Census & Member Directory Google Drive Links")
-                st.caption("Narito ang mga links na ginagamit ng **📊 Parish Census & Member Manager**, **📊 Parish Directory & Family Search**, at **➕ Magdagdag ng Miyembro & Litrato** (`CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx` sa `CTG Ministry Hub app_Storage` at `CTG MEMBERS DATABASE ALL PARISH`).")
-
-                with st.form("add_census_drive_link_form"):
-                    cc1, cc2, cc3 = st.columns([1.4, 1.3, 1.3])
-                    with cc1:
-                        c_lbl = st.text_input("🏷️ Pangalan / Label ng Census o Folder Link:", placeholder="Hal. CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx")
-                    with cc2:
-                        c_cat = st.selectbox(
-                            "📂 Uri ng Census / Directory Link:",
-                            [
-                                "Master Census / Members Database Excel",
-                                "Photos / Videos / Media Archive Folder"
-                            ]
-                        )
-                    with cc3:
-                        c_parish = st.selectbox("🏛️ Parokya / Scope:", ["Lahat ng Parokya (Master)"] + PARISH_ORDER, key="cen_add_parish")
-                    c_url = st.text_input("🔗 Google Drive Link (Master Census Excel File o CTG MEMBERS DATABASE Folder):", value=ACTIVE_SPREADSHEET_URL)
-
-                    if st.form_submit_button("💾 I-save sa Parish Census Links & I-sync Agad sa Census at Directory", type="primary", use_container_width=True):
-                        if not c_url.strip():
-                            st.warning("Mag-paste muna ng Google Drive Link.")
-                        else:
-                            final_c_lbl = c_lbl.strip() or f"Master Census Excel ({c_parish})"
-                            add_link_to_drive_registry(final_c_lbl, c_cat, "All Months", "All Weeks", c_parish, c_url.strip())
-                            if "/folders/" not in c_url.strip():
-                                st.session_state.custom_secrets["CLOUD_SPREADSHEET_URL"] = c_url.strip()
-                                save_cloud_url_config(new_url=c_url.strip())
-                            _, c_sync_msg = auto_sync_from_any_drive_link(c_url.strip(), "January", "1st Week", c_parish)
-                            st.cache_data.clear()
-                            st.success(f"✅ Na-save at na-sync na ang '{final_c_lbl}' para sa Parish Census & Member Manager at Parish Directory! ({c_sync_msg})")
-                            time.sleep(0.1)
-                            st.rerun()
-
-                if census_links:
-                    df_cen_links = pd.DataFrame([
-                        {
-                            "ID": orig_i + 1,
-                            "Pangalan / Label": it.get("label", ""),
-                            "Kategorya": it.get("category", ""),
-                            "Parokya / Scope": it.get("parish", ""),
-                            "Google Drive Link": it.get("url", ""),
-                        }
-                        for orig_i, it in census_links
-                    ])
-                    st.dataframe(df_cen_links, use_container_width=True, hide_index=True)
-
-                st.markdown("#### 📁 Mga Direktang Subfolder ng 10 Parokya sa `CTG MEMBERS DATABASE ALL PARISH` (Para sa Uploaded Member Images)")
-                subfolders_df = pd.DataFrame([
-                    {
-                        "Parokya": p_n,
-                        "Subfolder ID": f_id,
-                        "Google Drive Subfolder URL": f"https://drive.google.com/drive/folders/{f_id}"
-                    }
-                    for p_n, f_id in CTG_MEMBERS_DB_PARISH_SUBFOLDER_IDS.items()
-                ])
-                st.dataframe(subfolders_df, use_container_width=True, hide_index=True)
-
-            # =================================================================
-            # SUB-TAB 3: OUTREACH (VISITATION, MISSION, INDOCTRINATION) & OTHER LINKS
-            # =================================================================
-            with subtab_outreach:
-                st.markdown("### 🏠 House Visitation, Missionary Work, Indoctrination & Iba Pang Ministry Links")
-                with st.form("add_other_drive_link_form"):
-                    oc1, oc2, oc3 = st.columns([1.4, 1.4, 1.2])
-                    with oc1:
-                        o_lbl = st.text_input("🏷️ Pangalan / Label ng Link:")
-                    with oc2:
-                        o_cat = st.selectbox(
-                            "📂 Kategorya:",
-                            [
-                                "Outreach / House Visitation / Missionary / Indoctrination",
-                                "Financial / Offerings / Tithes Report",
-                                "Church Events / Youth & Kids Ministry",
-                                "Documents / Templates / Certificates / Forms",
-                                "Custom / Iba Pang Google Drive Link o Folder"
-                            ]
-                        )
-                    with oc3:
-                        o_parish = st.selectbox("🏛️ Parokya / Scope:", ["Lahat ng Parokya (Master)"] + PARISH_ORDER, key="oth_add_parish")
-                    o_url = st.text_input("🔗 Google Drive Link URL:")
-                    if st.form_submit_button("➕ Idagdag sa Outreach / Ministry Links & I-sync", type="primary", use_container_width=True):
-                        if not o_url.strip():
-                            st.warning("Mag-paste muna ng Google Drive Link.")
-                        else:
-                            final_o_lbl = o_lbl.strip() or f"{o_cat} ({o_parish})"
-                            add_link_to_drive_registry(final_o_lbl, o_cat, "All Months", "All Weeks", o_parish, o_url.strip())
-                            _, o_msg = auto_sync_from_any_drive_link(o_url.strip(), "January", "1st Week", o_parish)
-                            st.cache_data.clear()
-                            st.success(f"✅ Naidagdag ang '{final_o_lbl}'! ({o_msg})")
-                            time.sleep(0.1)
-                            st.rerun()
-
-                if other_links:
-                    df_oth_links = pd.DataFrame([
-                        {
-                            "ID": orig_i + 1,
-                            "Pangalan / Label": it.get("label", ""),
-                            "Kategorya": it.get("category", ""),
-                            "Parokya / Scope": it.get("parish", ""),
-                            "Google Drive Link": it.get("url", ""),
-                        }
-                        for orig_i, it in other_links
-                    ])
-                    st.dataframe(df_oth_links, use_container_width=True, hide_index=True)
-
-            # =================================================================
-            # SUB-TAB 4: SEPARATE UPLOAD & SYNC CENTER (HIWALAY NA PAG-UPLOAD NG CENSUS VS WEEKLY REPORT)
-            # =================================================================
-            with subtab_upload:
-                st.markdown("### 📤 Separate File Upload & Google Drive Link Sync Center")
-                st.caption("Magkahiwalay ang pag-upload ng **Master Census Excel (`CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx`)** at **Weekly Report Excel (`PWR.xlsx`)** upang hindi magkahalo ang datos.")
-
-                up_col_census, up_col_weekly = st.columns(2)
-
-                with up_col_census:
-                    st.markdown("#### 📊 A. Upload / Sync para sa Parish Census & Directory")
-                    st.info("📍 **Target:** `CTG Ministry Hub app_Storage` → `CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx` (`Parish Census & Member Manager` at `Parish Directory & Family Search`)")
-                    cen_up_file = st.file_uploader(
-                        "📤 Pumili ng Master Census Excel (.xlsx, hal. CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx):",
-                        type=["xlsx"],
-                        key="settings_sep_census_xlsx_uploader"
-                    )
-                    if cen_up_file is not None:
-                        if st.button("🚀 I-upload sa Parish Census & Directory + I-sync sa Google Drive app_Storage", type="primary", use_container_width=True, key="btn_sep_upload_census"):
-                            with st.spinner("Ina-update ang Parish Census & Member Manager, Parish Directory, at Google Drive app_Storage..."):
-                                c_bytes = cen_up_file.read()
-                                if _is_valid_census_excel_bytes(c_bytes):
-                                    ok_u, msg_u = sync_excel_bytes_to_drive(c_bytes, ACTIVE_SPREADSHEET_URL)
-                                    st.cache_data.clear()
-                                    st.cache_resource.clear()
-                                    st.success(f"✅ Matagumpay na naipasok ang `{cen_up_file.name}` sa Parish Census & Member Manager at Parish Directory & Family Search! ({msg_u})")
-                                    time.sleep(0.1)
-                                    st.rerun()
-                                else:
-                                    st.error("⚠️ Ang in-upload na file ay walang 'HEAD OF FAMILY MASTER' o Parish sheets. Gamitin ang Panel B sa kanan kung Weekly Report ito.")
-
-                with up_col_weekly:
-                    st.markdown("#### 📑 B. Upload / Sync para sa Weekly Report & Monitoring")
-                    if weekly_links:
-                        wk_up_opts = [
-                            f"[#{orig_i + 1}] {it.get('label')} — {it.get('month')} {it.get('week')} ({it.get('parish')})"
-                            for orig_i, it in weekly_links
-                        ]
-                        sel_wk_up_i = st.selectbox("🎯 Pumili ng Target na Weekly Report Link / Folder:", range(len(wk_up_opts)), format_func=lambda i: wk_up_opts[i], key="sep_wk_target_sel")
-                        _, chosen_wk_item = weekly_links[sel_wk_up_i]
-                        chosen_wk_url = str(chosen_wk_item.get("url", "")).strip()
-                        chosen_wk_m = "January" if chosen_wk_item.get("month") == "All Months" else chosen_wk_item.get("month", "January")
-                        chosen_wk_w = "1st Week" if chosen_wk_item.get("week") == "All Weeks" else chosen_wk_item.get("week", "1st Week")
-                        chosen_wk_p = chosen_wk_item.get("parish", "Lahat ng Parokya (Master)")
-
-                        wk_up_file = st.file_uploader(
-                            f"📤 Pumili ng Weekly Report Excel (.xlsx) para sa '{chosen_wk_item.get('label')}':",
-                            type=["xlsx"],
-                            key="settings_sep_weekly_xlsx_uploader"
-                        )
-                        if wk_up_file is not None:
-                            if st.button(f"🚀 I-upload sa '{chosen_wk_item.get('label')}' & I-update ang Weekly Monitoring", type="primary", use_container_width=True, key="btn_sep_upload_weekly"):
-                                with st.spinner(f"Ina-upload sa '{chosen_wk_item.get('label')}' at ina-update ang Weekly Report tables..."):
-                                    w_bytes = wk_up_file.read()
-                                    if _is_valid_census_excel_bytes(w_bytes):
-                                        ok_c, msg_c = sync_excel_bytes_to_drive(w_bytes, ACTIVE_SPREADSHEET_URL)
-                                        st.cache_data.clear()
-                                        st.success(f"✅ Natukoy na Master Census Excel ito (`{wk_up_file.name}`) kaya direktang ipinasok sa Parish Census & Directory! ({msg_c})")
-                                    else:
-                                        with open(LOCAL_PWR_MASTER_FILE, "wb") as f_w:
-                                            f_w.write(w_bytes)
-                                        if "/folders/" in chosen_wk_url:
-                                            _, msg_w = upload_file_to_google_drive(
-                                                w_bytes,
-                                                wk_up_file.name,
-                                                mime_type=wk_up_file.type,
-                                                parent_folder_url=chosen_wk_url,
-                                                parish_name="" if "Master" in chosen_wk_p else chosen_wk_p,
-                                                month_name=chosen_wk_m
-                                            )
-                                        else:
-                                            service = get_google_drive_service()
-                                            f_id_w = extract_id_from_url(chosen_wk_url)
-                                            if service and f_id_w:
-                                                try:
-                                                    media_w = MediaIoBaseUpload(io.BytesIO(w_bytes), mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", resumable=True)
-                                                    service.files().update(fileId=f_id_w, media_body=media_w, supportsAllDrives=True).execute()
-                                                    msg_w = "Na-update ang Weekly Report Excel sa Google Drive!"
-                                                except Exception as e_w:
-                                                    msg_w = f"Na-save sa App Weekly Report ({str(e_w)})"
-                                            else:
-                                                msg_w = "Na-save sa App Weekly Report!"
-                                        cnt_p = parse_master_pwr_excel_into_db(w_bytes, chosen_wk_m, chosen_wk_w)
-                                        if cnt_p == 0 and "Master" not in chosen_wk_p:
-                                            ext_d = extract_weekly_report_from_excel_bytes(w_bytes, target_parish=chosen_wk_p)
-                                            save_weekly_monitoring_record(chosen_wk_p, chosen_wk_m, chosen_wk_w, ext_d.get("report_date", "01/02/27"), ext_d, drive_link=chosen_wk_url)
-                                        st.cache_data.clear()
-                                        st.success(f"✅ {msg_w} (Na-update ang Weekly Monitoring para sa {chosen_wk_m} - {chosen_wk_w}!)")
-                                    time.sleep(0.1)
-                                    st.rerun()
+                        with wk_btn_c2:
+                            if len(saved_links_list) > 1 and st.button("🗑️ Alisin ang Napiling Weekly Report Link", use_container_width=True, key="btn_del_sel_wk"):
+                                saved_links_list.pop(wk_orig_idx)
+                                save_drive_links_registry(saved_links_list)
+                                st.success("Inalis na ang napiling Weekly Report link.")
+                                time.sleep(0.1)
+                                st.rerun()
                     else:
-                        st.info("Magdagdag muna ng Weekly Report link sa Tab 1.")
+                        st.info("Walang Weekly Report link na tumugma sa kasalukuyang filter.")
 
+                # =================================================================
+                # SUB-TAB 2: PARISH CENSUS & DIRECTORY LINKS (HIWALAY PARA SA CENSUS & MEMBER MANAGER)
+                # =================================================================
+                with subtab_census:
+                    st.markdown("### 📊 Parish Census & Member Directory Google Drive Links")
+                    st.caption("Narito ang mga links na ginagamit ng **📊 Parish Census & Member Manager**, **📊 Parish Directory & Family Search**, at **➕ Magdagdag ng Miyembro & Litrato** (`CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx` sa `CTG Ministry Hub app_Storage` at `CTG MEMBERS DATABASE ALL PARISH`).")
 
-    with tab_api:
-        if st.session_state.user_role != "Master Admin":
-            st.info("🔒 Ang API & Google Drive Cloud Storage credentials ay maaari lamang baguhin ng Master Admin.")
-        else:
-            st.subheader("🔑 API Keys & Google Drive / Gmail Cloud Storage Integration")
-            g_cid = st.session_state.custom_secrets.get("GMAIL_CLIENT_ID", GMAIL_CLIENT_ID)
-            g_csec = st.session_state.custom_secrets.get("GMAIL_CLIENT_SECRET", GMAIL_CLIENT_SECRET)
-            if g_cid and g_csec:
-                with st.expander("🔓 One-Click Google Drive + Gmail Token Generator (Fix 403 Error)", expanded=True):
-                    st.caption("Kung nagkakaroon ng '403 Insufficient Authentication Scopes' sa Google Drive upload, gamitin ito upang makagawa ng Refresh Token na may buong Google Drive + Gmail permission:")
-                    try:
-                        oauth_scopes = "https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/gmail.send"
-                        auth_params = {
-                            "client_id": g_cid.strip(),
-                            "redirect_uri": "http://localhost",
-                            "response_type": "code",
-                            "scope": oauth_scopes,
-                            "access_type": "offline",
-                            "prompt": "consent"
-                        }
-                        auth_url = "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(auth_params)
-                        st.markdown(f"**Step 1:** [👉 Pindutin Ito upang Pahintulutan ang Google Drive at Gmail]({auth_url})")
-                        auth_code_in = st.text_input("Step 2: Pagkatapos mag-Allow, kopyahin ang buong `http://localhost/?code=...` URL mula sa address bar at i-paste dito:").strip()
-                        if st.button("🔑 Kunin at I-save ang Bagong Google Drive Refresh Token", type="primary"):
-                            clean_code = auth_code_in
-                            if "code=" in clean_code:
-                                clean_code = urllib.parse.unquote(re.search(r"code=([^&]+)", clean_code).group(1))
-                            token_res = requests.post(
-                                "https://oauth2.googleapis.com/token",
-                                data={
-                                    "code": clean_code,
-                                    "client_id": g_cid.strip(),
-                                    "client_secret": g_csec.strip(),
-                                    "redirect_uri": "http://localhost",
-                                    "grant_type": "authorization_code"
-                                },
-                                timeout=20
+                    with st.form("add_census_drive_link_form"):
+                        cc1, cc2, cc3 = st.columns([1.4, 1.3, 1.3])
+                        with cc1:
+                            c_lbl = st.text_input("🏷️ Pangalan / Label ng Census o Folder Link:", placeholder="Hal. CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx")
+                        with cc2:
+                            c_cat = st.selectbox(
+                                "📂 Uri ng Census / Directory Link:",
+                                [
+                                    "Master Census / Members Database Excel",
+                                    "Photos / Videos / Media Archive Folder"
+                                ]
                             )
-                            token_json = token_res.json()
-                            new_rt = token_json.get("refresh_token", "")
-                            if new_rt:
-                                persist_drive_refresh_token_everywhere(new_rt, g_cid.strip(), g_csec.strip())
-                                ok_fl_s, msg_fl_s = flush_all_pending_drive_uploads_and_excel(ACTIVE_SPREADSHEET_URL)
-                                st.success(f"✅ Matagumpay na nakuha at na-save ang bagong Google Drive + Gmail Refresh Token! ({msg_fl_s})")
-                                st.info("📌 **MAHALAGA PARA SA STREAMLIT CLOUD:** Kopyahin ang linya sa ibaba at i-paste sa iyong **Streamlit Cloud Dashboard → App Settings → Secrets** (palitan ang lumang `GMAIL_REFRESH_TOKEN`) upang hindi na mawala ang Google Drive access kahit mag-restart ang app:")
-                                st.code(f'GMAIL_REFRESH_TOKEN = "{new_rt}"', language="toml")
-                            else:
-                                st.error(f"Hindi nakuha ang refresh_token: {token_json}")
-                    except Exception as ex:
-                        st.caption(f"OAuth Helper Notice: {str(ex)}")
+                        with cc3:
+                            c_parish = st.selectbox("🏛️ Parokya / Scope:", ["Lahat ng Parokya (Master)"] + PARISH_ORDER, key="cen_add_parish")
+                        c_url = st.text_input("🔗 Google Drive Link (Master Census Excel File o CTG MEMBERS DATABASE Folder):", value=ACTIVE_SPREADSHEET_URL)
 
-            with st.form("set_form"):
-                ng = st.text_input("GEMINI_API_KEY", value=st.session_state.custom_secrets.get("GEMINI_API_KEY", ""), type="password")
-                ng2 = st.text_input("GEMINI_API_KEY_2", value=st.session_state.custom_secrets.get("GEMINI_API_KEY_2", ""), type="password")
-                nt = st.text_input("NOTION_TOKEN", value=st.session_state.custom_secrets.get("NOTION_TOKEN", ""), type="password")
-                ndb = st.text_input("NOTION_CRM_DB_ID", value=st.session_state.custom_secrets.get("NOTION_CRM_DB_ID", ""))
-                npdb = st.text_input("NOTION_PRAYER_DB_ID", value=st.session_state.custom_secrets.get("NOTION_PRAYER_DB_ID", ""))
-                nqdb = st.text_input("NOTION_QUESTIONS_DB_ID", value=st.session_state.custom_secrets.get("NOTION_QUESTIONS_DB_ID", ""))
-                ncdb = st.text_input("NOTION_COUNSELLING_DB_ID", value=st.session_state.custom_secrets.get("NOTION_COUNSELLING_DB_ID", ""))
-                nodb = st.text_input("NOTION_OUTREACH_DB_ID (House Visitation, Missionary Work & Indoctrination Tasks)", value=st.session_state.custom_secrets.get("NOTION_OUTREACH_DB_ID", ""))
-                gci = st.text_input("GMAIL_CLIENT_ID", value=st.session_state.custom_secrets.get("GMAIL_CLIENT_ID", ""))
-                gcs = st.text_input("GMAIL_CLIENT_SECRET", value=st.session_state.custom_secrets.get("GMAIL_CLIENT_SECRET", ""), type="password")
-                cur_best_rt = (
-                    st.session_state.get("_verified_working_drive_rt")
-                    or load_saved_config().get("GOOGLE_DRIVE_REFRESH_TOKEN")
-                    or st.session_state.custom_secrets.get("GOOGLE_DRIVE_REFRESH_TOKEN")
-                    or st.session_state.custom_secrets.get("GMAIL_REFRESH_TOKEN", "")
-                )
-                grt = st.text_input("GMAIL_REFRESH_TOKEN / GOOGLE_DRIVE_REFRESH_TOKEN", value=cur_best_rt, type="password")
-                if st.form_submit_button("💾 I-save ang API & Cloud Credentials", type="primary"):
-                    new_creds = {
-                        "GEMINI_API_KEY": ng, "GEMINI_API_KEY_2": ng2, "NOTION_TOKEN": nt,
-                        "NOTION_CRM_DB_ID": ndb, "NOTION_PRAYER_DB_ID": npdb,
-                        "NOTION_QUESTIONS_DB_ID": nqdb, "NOTION_COUNSELLING_DB_ID": ncdb, "NOTION_OUTREACH_DB_ID": nodb,
-                        "GMAIL_CLIENT_ID": gci, "GMAIL_CLIENT_SECRET": gcs,
-                        "GMAIL_REFRESH_TOKEN": grt, "GOOGLE_DRIVE_REFRESH_TOKEN": grt
-                    }
-                    st.session_state.custom_secrets.update(new_creds)
-                    if str(grt or "").strip():
-                        persist_drive_refresh_token_everywhere(grt.strip(), gci.strip(), gcs.strip())
-                    try:
-                        existing_cfg = load_saved_config()
-                        for k_c, v_c in new_creds.items():
-                            if str(v_c or "").strip():
-                                existing_cfg[k_c] = str(v_c).strip()
-                        with open(LOCAL_CONFIG_FILE, "w", encoding="utf-8") as f:
-                            json.dump(existing_cfg, f, indent=2)
-                    except Exception:
-                        pass
-                    st.session_state["_last_live_sync_sig"] = _compute_shared_state_signature()
-                    ok_fl_f, msg_fl_f = flush_all_pending_drive_uploads_and_excel(ACTIVE_SPREADSHEET_URL)
-                    st.cache_data.clear()
-                    st.success(f"✅ Na-save na ang mga credentials at na-sync sa Cloud Vault! ({msg_fl_f})")
-                    time.sleep(0.1)
-                    st.rerun()
+                        if st.form_submit_button("💾 I-save sa Parish Census Links & I-sync Agad sa Census at Directory", type="primary", use_container_width=True):
+                            if not c_url.strip():
+                                st.warning("Mag-paste muna ng Google Drive Link.")
+                            else:
+                                final_c_lbl = c_lbl.strip() or f"Master Census Excel ({c_parish})"
+                                add_link_to_drive_registry(final_c_lbl, c_cat, "All Months", "All Weeks", c_parish, c_url.strip())
+                                if "/folders/" not in c_url.strip():
+                                    st.session_state.custom_secrets["CLOUD_SPREADSHEET_URL"] = c_url.strip()
+                                    save_cloud_url_config(new_url=c_url.strip())
+                                _, c_sync_msg = auto_sync_from_any_drive_link(c_url.strip(), "January", "1st Week", c_parish)
+                                st.cache_data.clear()
+                                st.success(f"✅ Na-save at na-sync na ang '{final_c_lbl}' para sa Parish Census & Member Manager at Parish Directory! ({c_sync_msg})")
+                                time.sleep(0.1)
+                                st.rerun()
+
+                    if census_links:
+                        df_cen_links = pd.DataFrame([
+                            {
+                                "ID": orig_i + 1,
+                                "Pangalan / Label": it.get("label", ""),
+                                "Kategorya": it.get("category", ""),
+                                "Parokya / Scope": it.get("parish", ""),
+                                "Google Drive Link": it.get("url", ""),
+                            }
+                            for orig_i, it in census_links
+                        ])
+                        st.dataframe(df_cen_links, use_container_width=True, hide_index=True)
+
+                    st.markdown("#### 📁 Mga Direktang Subfolder ng 10 Parokya sa `CTG MEMBERS DATABASE ALL PARISH` (Para sa Uploaded Member Images)")
+                    subfolders_df = pd.DataFrame([
+                        {
+                            "Parokya": p_n,
+                            "Subfolder ID": f_id,
+                            "Google Drive Subfolder URL": f"https://drive.google.com/drive/folders/{f_id}"
+                        }
+                        for p_n, f_id in CTG_MEMBERS_DB_PARISH_SUBFOLDER_IDS.items()
+                    ])
+                    st.dataframe(subfolders_df, use_container_width=True, hide_index=True)
+
+                # =================================================================
+                # SUB-TAB 3: OUTREACH (VISITATION, MISSION, INDOCTRINATION) & OTHER LINKS
+                # =================================================================
+                with subtab_outreach:
+                    st.markdown("### 🏠 House Visitation, Missionary Work, Indoctrination & Iba Pang Ministry Links")
+                    with st.form("add_other_drive_link_form"):
+                        oc1, oc2, oc3 = st.columns([1.4, 1.4, 1.2])
+                        with oc1:
+                            o_lbl = st.text_input("🏷️ Pangalan / Label ng Link:")
+                        with oc2:
+                            o_cat = st.selectbox(
+                                "📂 Kategorya:",
+                                [
+                                    "Outreach / House Visitation / Missionary / Indoctrination",
+                                    "Financial / Offerings / Tithes Report",
+                                    "Church Events / Youth & Kids Ministry",
+                                    "Documents / Templates / Certificates / Forms",
+                                    "Custom / Iba Pang Google Drive Link o Folder"
+                                ]
+                            )
+                        with oc3:
+                            o_parish = st.selectbox("🏛️ Parokya / Scope:", ["Lahat ng Parokya (Master)"] + PARISH_ORDER, key="oth_add_parish")
+                        o_url = st.text_input("🔗 Google Drive Link URL:")
+                        if st.form_submit_button("➕ Idagdag sa Outreach / Ministry Links & I-sync", type="primary", use_container_width=True):
+                            if not o_url.strip():
+                                st.warning("Mag-paste muna ng Google Drive Link.")
+                            else:
+                                final_o_lbl = o_lbl.strip() or f"{o_cat} ({o_parish})"
+                                add_link_to_drive_registry(final_o_lbl, o_cat, "All Months", "All Weeks", o_parish, o_url.strip())
+                                _, o_msg = auto_sync_from_any_drive_link(o_url.strip(), "January", "1st Week", o_parish)
+                                st.cache_data.clear()
+                                st.success(f"✅ Naidagdag ang '{final_o_lbl}'! ({o_msg})")
+                                time.sleep(0.1)
+                                st.rerun()
+
+                    if other_links:
+                        df_oth_links = pd.DataFrame([
+                            {
+                                "ID": orig_i + 1,
+                                "Pangalan / Label": it.get("label", ""),
+                                "Kategorya": it.get("category", ""),
+                                "Parokya / Scope": it.get("parish", ""),
+                                "Google Drive Link": it.get("url", ""),
+                            }
+                            for orig_i, it in other_links
+                        ])
+                        st.dataframe(df_oth_links, use_container_width=True, hide_index=True)
+
+                # =================================================================
+                # SUB-TAB 4: SEPARATE UPLOAD & SYNC CENTER (HIWALAY NA PAG-UPLOAD NG CENSUS VS WEEKLY REPORT)
+                # =================================================================
+                with subtab_upload:
+                    st.markdown("### 📤 Separate File Upload & Google Drive Link Sync Center")
+                    st.caption("Magkahiwalay ang pag-upload ng **Master Census Excel (`CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx`)** at **Weekly Report Excel (`PWR.xlsx`)** upang hindi magkahalo ang datos.")
+
+                    up_col_census, up_col_weekly = st.columns(2)
+
+                    with up_col_census:
+                        st.markdown("#### 📊 A. Upload / Sync para sa Parish Census & Directory")
+                        st.info("📍 **Target:** `CTG Ministry Hub app_Storage` → `CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx` (`Parish Census & Member Manager` at `Parish Directory & Family Search`)")
+                        cen_up_file = st.file_uploader(
+                            "📤 Pumili ng Master Census Excel (.xlsx, hal. CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx):",
+                            type=["xlsx"],
+                            key="settings_sep_census_xlsx_uploader"
+                        )
+                        if cen_up_file is not None:
+                            if st.button("🚀 I-upload sa Parish Census & Directory + I-sync sa Google Drive app_Storage", type="primary", use_container_width=True, key="btn_sep_upload_census"):
+                                with st.spinner("Ina-update ang Parish Census & Member Manager, Parish Directory, at Google Drive app_Storage..."):
+                                    c_bytes = cen_up_file.read()
+                                    if _is_valid_census_excel_bytes(c_bytes):
+                                        ok_u, msg_u = sync_excel_bytes_to_drive(c_bytes, ACTIVE_SPREADSHEET_URL)
+                                        st.cache_data.clear()
+                                        st.cache_resource.clear()
+                                        st.success(f"✅ Matagumpay na naipasok ang `{cen_up_file.name}` sa Parish Census & Member Manager at Parish Directory & Family Search! ({msg_u})")
+                                        time.sleep(0.1)
+                                        st.rerun()
+                                    else:
+                                        st.error("⚠️ Ang in-upload na file ay walang 'HEAD OF FAMILY MASTER' o Parish sheets. Gamitin ang Panel B sa kanan kung Weekly Report ito.")
+
+                    with up_col_weekly:
+                        st.markdown("#### 📑 B. Upload / Sync para sa Weekly Report & Monitoring")
+                        if weekly_links:
+                            wk_up_opts = [
+                                f"[#{orig_i + 1}] {it.get('label')} — {it.get('month')} {it.get('week')} ({it.get('parish')})"
+                                for orig_i, it in weekly_links
+                            ]
+                            sel_wk_up_i = st.selectbox("🎯 Pumili ng Target na Weekly Report Link / Folder:", range(len(wk_up_opts)), format_func=lambda i: wk_up_opts[i], key="sep_wk_target_sel")
+                            _, chosen_wk_item = weekly_links[sel_wk_up_i]
+                            chosen_wk_url = str(chosen_wk_item.get("url", "")).strip()
+                            chosen_wk_m = "January" if chosen_wk_item.get("month") == "All Months" else chosen_wk_item.get("month", "January")
+                            chosen_wk_w = "1st Week" if chosen_wk_item.get("week") == "All Weeks" else chosen_wk_item.get("week", "1st Week")
+                            chosen_wk_p = chosen_wk_item.get("parish", "Lahat ng Parokya (Master)")
+
+                            wk_up_file = st.file_uploader(
+                                f"📤 Pumili ng Weekly Report Excel (.xlsx) para sa '{chosen_wk_item.get('label')}':",
+                                type=["xlsx"],
+                                key="settings_sep_weekly_xlsx_uploader"
+                            )
+                            if wk_up_file is not None:
+                                if st.button(f"🚀 I-upload sa '{chosen_wk_item.get('label')}' & I-update ang Weekly Monitoring", type="primary", use_container_width=True, key="btn_sep_upload_weekly"):
+                                    with st.spinner(f"Ina-upload sa '{chosen_wk_item.get('label')}' at ina-update ang Weekly Report tables..."):
+                                        w_bytes = wk_up_file.read()
+                                        if _is_valid_census_excel_bytes(w_bytes):
+                                            ok_c, msg_c = sync_excel_bytes_to_drive(w_bytes, ACTIVE_SPREADSHEET_URL)
+                                            st.cache_data.clear()
+                                            st.success(f"✅ Natukoy na Master Census Excel ito (`{wk_up_file.name}`) kaya direktang ipinasok sa Parish Census & Directory! ({msg_c})")
+                                        else:
+                                            with open(LOCAL_PWR_MASTER_FILE, "wb") as f_w:
+                                                f_w.write(w_bytes)
+                                            if "/folders/" in chosen_wk_url:
+                                                _, msg_w = upload_file_to_google_drive(
+                                                    w_bytes,
+                                                    wk_up_file.name,
+                                                    mime_type=wk_up_file.type,
+                                                    parent_folder_url=chosen_wk_url,
+                                                    parish_name="" if "Master" in chosen_wk_p else chosen_wk_p,
+                                                    month_name=chosen_wk_m
+                                                )
+                                            else:
+                                                service = get_google_drive_service()
+                                                f_id_w = extract_id_from_url(chosen_wk_url)
+                                                if service and f_id_w:
+                                                    try:
+                                                        media_w = MediaIoBaseUpload(io.BytesIO(w_bytes), mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", resumable=True)
+                                                        service.files().update(fileId=f_id_w, media_body=media_w, supportsAllDrives=True).execute()
+                                                        msg_w = "Na-update ang Weekly Report Excel sa Google Drive!"
+                                                    except Exception as e_w:
+                                                        msg_w = f"Na-save sa App Weekly Report ({str(e_w)})"
+                                                else:
+                                                    msg_w = "Na-save sa App Weekly Report!"
+                                            cnt_p = parse_master_pwr_excel_into_db(w_bytes, chosen_wk_m, chosen_wk_w)
+                                            if cnt_p == 0 and "Master" not in chosen_wk_p:
+                                                ext_d = extract_weekly_report_from_excel_bytes(w_bytes, target_parish=chosen_wk_p)
+                                                save_weekly_monitoring_record(chosen_wk_p, chosen_wk_m, chosen_wk_w, ext_d.get("report_date", "01/02/27"), ext_d, drive_link=chosen_wk_url)
+                                            st.cache_data.clear()
+                                            st.success(f"✅ {msg_w} (Na-update ang Weekly Monitoring para sa {chosen_wk_m} - {chosen_wk_w}!)")
+                                        time.sleep(0.1)
+                                        st.rerun()
+                        else:
+                            st.info("Magdagdag muna ng Weekly Report link sa Tab 1.")
+
+
+    if tab_api is not None:
+        with tab_api:
+            if st.session_state.user_role != "Master Admin":
+                st.info("🔒 Ang API & Google Drive Cloud Storage credentials ay maaari lamang baguhin ng Master Admin.")
+            else:
+                st.subheader("🔑 API Keys & Google Drive / Gmail Cloud Storage Integration")
+                g_cid = st.session_state.custom_secrets.get("GMAIL_CLIENT_ID", GMAIL_CLIENT_ID)
+                g_csec = st.session_state.custom_secrets.get("GMAIL_CLIENT_SECRET", GMAIL_CLIENT_SECRET)
+                if g_cid and g_csec:
+                    with st.expander("🔓 One-Click Google Drive + Gmail Token Generator (Fix 403 Error)", expanded=True):
+                        st.caption("Kung nagkakaroon ng '403 Insufficient Authentication Scopes' sa Google Drive upload, gamitin ito upang makagawa ng Refresh Token na may buong Google Drive + Gmail permission:")
+                        try:
+                            oauth_scopes = "https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/gmail.send"
+                            auth_params = {
+                                "client_id": g_cid.strip(),
+                                "redirect_uri": "http://localhost",
+                                "response_type": "code",
+                                "scope": oauth_scopes,
+                                "access_type": "offline",
+                                "prompt": "consent"
+                            }
+                            auth_url = "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(auth_params)
+                            st.markdown(f"**Step 1:** [👉 Pindutin Ito upang Pahintulutan ang Google Drive at Gmail]({auth_url})")
+                            auth_code_in = st.text_input("Step 2: Pagkatapos mag-Allow, kopyahin ang buong `http://localhost/?code=...` URL mula sa address bar at i-paste dito:").strip()
+                            if st.button("🔑 Kunin at I-save ang Bagong Google Drive Refresh Token", type="primary"):
+                                clean_code = auth_code_in
+                                if "code=" in clean_code:
+                                    clean_code = urllib.parse.unquote(re.search(r"code=([^&]+)", clean_code).group(1))
+                                token_res = requests.post(
+                                    "https://oauth2.googleapis.com/token",
+                                    data={
+                                        "code": clean_code,
+                                        "client_id": g_cid.strip(),
+                                        "client_secret": g_csec.strip(),
+                                        "redirect_uri": "http://localhost",
+                                        "grant_type": "authorization_code"
+                                    },
+                                    timeout=20
+                                )
+                                token_json = token_res.json()
+                                new_rt = token_json.get("refresh_token", "")
+                                if new_rt:
+                                    persist_drive_refresh_token_everywhere(new_rt, g_cid.strip(), g_csec.strip())
+                                    ok_fl_s, msg_fl_s = flush_all_pending_drive_uploads_and_excel(ACTIVE_SPREADSHEET_URL)
+                                    st.success(f"✅ Matagumpay na nakuha at na-save ang bagong Google Drive + Gmail Refresh Token! ({msg_fl_s})")
+                                    st.info("📌 **MAHALAGA PARA SA STREAMLIT CLOUD:** Kopyahin ang linya sa ibaba at i-paste sa iyong **Streamlit Cloud Dashboard → App Settings → Secrets** (palitan ang lumang `GMAIL_REFRESH_TOKEN`) upang hindi na mawala ang Google Drive access kahit mag-restart ang app:")
+                                    st.code(f'GMAIL_REFRESH_TOKEN = "{new_rt}"', language="toml")
+                                else:
+                                    st.error(f"Hindi nakuha ang refresh_token: {token_json}")
+                        except Exception as ex:
+                            st.caption(f"OAuth Helper Notice: {str(ex)}")
+
+                with st.form("set_form"):
+                    ng = st.text_input("GEMINI_API_KEY", value=st.session_state.custom_secrets.get("GEMINI_API_KEY", ""), type="password")
+                    ng2 = st.text_input("GEMINI_API_KEY_2", value=st.session_state.custom_secrets.get("GEMINI_API_KEY_2", ""), type="password")
+                    nt = st.text_input("NOTION_TOKEN", value=st.session_state.custom_secrets.get("NOTION_TOKEN", ""), type="password")
+                    ndb = st.text_input("NOTION_CRM_DB_ID", value=st.session_state.custom_secrets.get("NOTION_CRM_DB_ID", ""))
+                    npdb = st.text_input("NOTION_PRAYER_DB_ID", value=st.session_state.custom_secrets.get("NOTION_PRAYER_DB_ID", ""))
+                    nqdb = st.text_input("NOTION_QUESTIONS_DB_ID", value=st.session_state.custom_secrets.get("NOTION_QUESTIONS_DB_ID", ""))
+                    ncdb = st.text_input("NOTION_COUNSELLING_DB_ID", value=st.session_state.custom_secrets.get("NOTION_COUNSELLING_DB_ID", ""))
+                    nodb = st.text_input("NOTION_OUTREACH_DB_ID (House Visitation, Missionary Work & Indoctrination Tasks)", value=st.session_state.custom_secrets.get("NOTION_OUTREACH_DB_ID", ""))
+                    gci = st.text_input("GMAIL_CLIENT_ID", value=st.session_state.custom_secrets.get("GMAIL_CLIENT_ID", ""))
+                    gcs = st.text_input("GMAIL_CLIENT_SECRET", value=st.session_state.custom_secrets.get("GMAIL_CLIENT_SECRET", ""), type="password")
+                    cur_best_rt = (
+                        st.session_state.get("_verified_working_drive_rt")
+                        or load_saved_config().get("GOOGLE_DRIVE_REFRESH_TOKEN")
+                        or st.session_state.custom_secrets.get("GOOGLE_DRIVE_REFRESH_TOKEN")
+                        or st.session_state.custom_secrets.get("GMAIL_REFRESH_TOKEN", "")
+                    )
+                    grt = st.text_input("GMAIL_REFRESH_TOKEN / GOOGLE_DRIVE_REFRESH_TOKEN", value=cur_best_rt, type="password")
+                    if st.form_submit_button("💾 I-save ang API & Cloud Credentials", type="primary"):
+                        new_creds = {
+                            "GEMINI_API_KEY": ng, "GEMINI_API_KEY_2": ng2, "NOTION_TOKEN": nt,
+                            "NOTION_CRM_DB_ID": ndb, "NOTION_PRAYER_DB_ID": npdb,
+                            "NOTION_QUESTIONS_DB_ID": nqdb, "NOTION_COUNSELLING_DB_ID": ncdb, "NOTION_OUTREACH_DB_ID": nodb,
+                            "GMAIL_CLIENT_ID": gci, "GMAIL_CLIENT_SECRET": gcs,
+                            "GMAIL_REFRESH_TOKEN": grt, "GOOGLE_DRIVE_REFRESH_TOKEN": grt
+                        }
+                        st.session_state.custom_secrets.update(new_creds)
+                        if str(grt or "").strip():
+                            persist_drive_refresh_token_everywhere(grt.strip(), gci.strip(), gcs.strip())
+                        try:
+                            existing_cfg = load_saved_config()
+                            for k_c, v_c in new_creds.items():
+                                if str(v_c or "").strip():
+                                    existing_cfg[k_c] = str(v_c).strip()
+                            with open(LOCAL_CONFIG_FILE, "w", encoding="utf-8") as f:
+                                json.dump(existing_cfg, f, indent=2)
+                        except Exception:
+                            pass
+                        st.session_state["_last_live_sync_sig"] = _compute_shared_state_signature()
+                        ok_fl_f, msg_fl_f = flush_all_pending_drive_uploads_and_excel(ACTIVE_SPREADSHEET_URL)
+                        st.cache_data.clear()
+                        st.success(f"✅ Na-save na ang mga credentials at na-sync sa Cloud Vault! ({msg_fl_f})")
+                        time.sleep(0.1)
+                        st.rerun()
     st.stop()
 
 # =====================================================================
