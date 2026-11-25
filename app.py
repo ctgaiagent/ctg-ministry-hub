@@ -8696,32 +8696,682 @@ def _ensure_notion_records_loaded():
 all_chat_msgs_global = load_internal_chat_messages()
 my_chat_id = get_current_chat_identity()
 
-def query_excel_database(search_query: str) -> str:
-    """Naghahanap ng miyembro o pamilya sa CTG Excel Database."""
-    if master_members_df.empty:
-        return "Error: Walang laman o hindi makita ang Excel database."
-    try:
-        df_scope = master_members_df.copy()
-        if st.session_state.user_role == "Diocese Admin":
-            df_scope = df_scope[df_scope["Parish"].isin(get_allowed_parishes_for_current_user())]
-        elif st.session_state.user_role == "Parish Leader":
-            df_scope = df_scope[df_scope["Parish"] == st.session_state.assigned_parish]
-        match = df_scope[df_scope.astype(str).apply(lambda x: x.str.contains(search_query, case=False, na=False)).any(axis=1)]
-        if not match.empty:
-            results = []
-            for _, row in match.head(25).iterrows():
-                results.append(
-                    f"Parish: {row['Parish']} | Family ID: {row['Family ID']} | "
-                    f"Full Name: {row['Full Name']} | Category: {row['Category']} | Status: {row['Status']} | Remarks: {row['Remarks']}"
-                )
-            return f"May {len(match)} na nahanap sa Excel Database:\n" + "\n".join(results)
-        return f"Walang nahanap na record sa Excel para sa '{search_query}'."
-    except Exception as e:
-        return f"Error sa pagbasa ng Excel: {str(e)}"
 
-# ⚡ INSTANT IN-MEMORY NOTION QUERY (0.01s SPEED)
+# =====================================================================
+# 🤖 CTG MINISTRY HUB — FREE-FIRST AI AGENT & SECURITY ARCHITECTURE
+# Modular AI Components:
+#   - ai/security/permissions.py   -> AIPermissionsGuard
+#   - ai/security/redaction.py     -> AIRedactionEngine
+#   - ai/usage/quota_manager.py    -> FreeQuotaManager
+#   - ai/usage/cache.py            -> ParishScopedAICache
+#   - ai/tools/membership_tools.py -> MembershipTools (Python-First)
+#   - ai/tools/reporting_tools.py  -> ReportingTools (Python-First)
+#   - ai/tools/document_tools.py   -> DocumentTools (Authorized Drive/Notion)
+#   - ai/providers/gemini_provider.py -> GeminiFreeTierProvider
+#   - ai/orchestrator.py           -> CTGFreeFirstAIOrchestrator
+# =====================================================================
+
+FREE_TIER_ALLOWED_GEMINI_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+]
+
+def get_configured_free_gemini_model(requested_model: str = "") -> str:
+    """Reads the preferred Gemini Flash or Flash-Lite model from environment / st.secrets configuration.
+    Never defaults to paid-only models; enforces free-tier friendly Flash / Flash-Lite models."""
+    env_model = ""
+    try:
+        env_model = (
+            st.session_state.get("custom_secrets", {}).get("GEMINI_MODEL", "")
+            or get_secret("GEMINI_MODEL")
+            or os.environ.get("GEMINI_MODEL", "")
+        )
+    except Exception:
+        env_model = os.environ.get("GEMINI_MODEL", "")
+    raw_choice = str(requested_model or env_model or "gemini-2.5-flash").split()[0].strip()
+    if raw_choice in ("gemini-3.8-flash", "gemini-2.5-pro", "gemini-3.1-pro-preview"):
+        return "gemini-2.5-flash"
+    if raw_choice in FREE_TIER_ALLOWED_GEMINI_MODELS:
+        return raw_choice
+    return "gemini-2.5-flash"
+
+
+class AIRedactionEngine:
+    """ai/security/redaction.py — Scrubs secrets, tokens, hashes, and unauthorized PII before sending to Gemini or logs."""
+    _SECRET_PATTERNS = [
+        (re.compile(r"AIza[0-9A-Za-z_\-]{25,}"), "[REDACTED_GEMINI_API_KEY]"),
+        (re.compile(r"GOCSPX-[0-9A-Za-z_\-]{15,}"), "[REDACTED_OAUTH_CLIENT_SECRET]"),
+        (re.compile(r"1//0[0-9A-Za-z_\-]{20,}"), "[REDACTED_OAUTH_REFRESH_TOKEN]"),
+        (re.compile(r"ya29\.[0-9A-Za-z_\-\.]{20,}"), "[REDACTED_OAUTH_ACCESS_TOKEN]"),
+        (re.compile(r"(?:secret|ntn)_[0-9A-Za-z]{20,}"), "[REDACTED_NOTION_TOKEN]"),
+        (re.compile(r"pbkdf2_sha256\$[0-9]+\$[0-9A-Za-z+/=]+\$[0-9A-Za-z+/=]+"), "[REDACTED_PASSWORD_HASH]"),
+        (re.compile(r"(?i)(password|passwd|pwd|api_key|client_secret|refresh_token|access_token|session_secret)\s*[:=]\s*['\"]?[^'\"\s,;}]+['\"]?"), r"\1=[REDACTED_SECRET]"),
+    ]
+
+    @classmethod
+    def redact_text(cls, text: str) -> str:
+        s = str(text or "")
+        if not s:
+            return ""
+        for pat, repl in cls._SECRET_PATTERNS:
+            s = pat.sub(repl, s)
+        # Redact any live configured secret values if present in memory
+        try:
+            for k_val in get_valid_gemini_keys():
+                if k_val and len(k_val) >= 16 and k_val in s:
+                    s = s.replace(k_val, "[REDACTED_CONFIGURED_KEY]")
+        except Exception:
+            pass
+        return s
+
+    @classmethod
+    def sanitize_error_message(cls, err: Exception | str) -> str:
+        """Ensures error messages never expose confidential member records, file paths, or API keys."""
+        raw = cls.redact_text(str(err or "Unknown Error"))
+        raw = re.sub(r"/[A-Za-z0-9_\-\./]+/([A-Za-z0-9_\-\.]+)", r"\1", raw)
+        if len(raw) > 220:
+            raw = raw[:220] + "..."
+        return raw
+
+    @classmethod
+    def redact_member_row_for_llm(cls, row_dict: dict, include_contact_for_authorized_ui: bool = False) -> dict:
+        """Returns only the minimum necessary member fields for Gemini context."""
+        safe_fields = {
+            "Parish": str(row_dict.get("Parish", "")).strip(),
+            "Family ID": str(row_dict.get("Family ID", "")).strip(),
+            "Head of Family": str(row_dict.get("Head of Family", "")).strip(),
+            "Full Name": str(row_dict.get("Full Name", "")).strip(),
+            "Category": str(row_dict.get("Category", "")).strip(),
+            "Status": str(row_dict.get("Status", "")).strip(),
+            "Church Member": str(row_dict.get("Church Member", "")).strip(),
+            "Remarks": cls.redact_text(str(row_dict.get("Remarks", "")).strip()[:120]),
+        }
+        if include_contact_for_authorized_ui:
+            safe_fields["Barangay"] = str(row_dict.get("Barangay", "")).strip()
+            safe_fields["City/Municipality"] = str(row_dict.get("City/Municipality", "")).strip()
+        return safe_fields
+
+
+class AIPermissionsGuard:
+    """ai/security/permissions.py — Verifies authentication and enforces 5-tier server-side parish RBAC on every AI tool call."""
+
+    @staticmethod
+    def verify_authenticated_user(tool_name: str = "ai_tool") -> tuple[bool, str, dict]:
+        is_logged = bool(st.session_state.get("is_logged_in", False))
+        user_role = str(st.session_state.get("user_role") or "").strip()
+        assigned_parish = str(st.session_state.get("assigned_parish") or "").strip()
+        user_id = str(st.session_state.get("current_user_id") or assigned_parish or "anonymous").strip()
+
+        if not is_logged or not user_role:
+            try:
+                record_security_audit_event(
+                    event_type="UNAUTHORIZED_ACCESS_ATTEMPT",
+                    details=f"Unauthenticated AI tool invocation blocked: {tool_name}",
+                    severity="HIGH",
+                    outcome="FAILURE",
+                    denial_reason=f"Unauthenticated AI tool invocation blocked: {tool_name}",
+                )
+            except Exception:
+                pass
+            return False, "⛔ Unauthorized: Mangyaring mag-login muna bago gamitin ang AI Assistant.", {}
+
+        allowed_parishes = get_allowed_parishes_for_current_user()
+        ctx = {
+            "user_id": user_id,
+            "user_role": user_role,
+            "canon_role": normalize_rbac_role_display(user_role),
+            "assigned_parish": assigned_parish,
+            "allowed_parishes": allowed_parishes,
+            "is_master": normalize_rbac_role_display(user_role) == "Super Admin" or user_role == "Master Admin",
+            "is_diocese": is_current_user_diocese_admin(),
+        }
+        return True, "OK", ctx
+
+    @classmethod
+    def check_and_resolve_parish_request(cls, requested_query_or_parish: str, tool_name: str = "ai_tool") -> tuple[bool, str, list[str]]:
+        """Checks if a user query mentions a specific parish outside their authorized scope.
+        Enforces parish filtering in Python backend code, never merely in prompts."""
+        ok, msg, ctx = cls.verify_authenticated_user(tool_name)
+        if not ok:
+            return False, msg, []
+
+        allowed = [p.upper() for p in ctx["allowed_parishes"]]
+        if ctx["is_master"]:
+            allowed = list(PARISH_ORDER)
+
+        q_up = str(requested_query_or_parish or "").upper()
+        # Check if the query explicitly targets a known parish in PARISH_ORDER
+        mentioned_parishes = []
+        for p_cand in PARISH_ORDER:
+            p_short = p_cand.replace(" PARISH", "").strip()
+            if p_cand in q_up or (len(p_short) >= 4 and re.search(r"\b" + re.escape(p_short) + r"\b", q_up)):
+                mentioned_parishes.append(p_cand)
+
+        unauthorized_targets = [p for p in mentioned_parishes if p not in allowed]
+        if unauthorized_targets and not ctx["is_master"]:
+            denied_str = ", ".join(unauthorized_targets)
+            try:
+                record_security_audit_event(
+                    event_type="RBAC_CROSS_PARISH_VIOLATION",
+                    details=f"AI tool '{tool_name}' blocked cross-parish access to [{denied_str}]",
+                    severity="HIGH",
+                    outcome="FAILURE",
+                    denial_reason=f"AI tool '{tool_name}' blocked cross-parish access to [{denied_str}] by {ctx['assigned_parish']} ({ctx['user_role']})",
+                    target_parish=denied_str,
+                )
+            except Exception:
+                pass
+            return (
+                False,
+                f"⛔ Access Denied (Server-Side Parish Protection): Ang iyong account (**{ctx['assigned_parish']}** — `{ctx['user_role']}`) ay walang pahintulot na basahin o kunin ang datos ng **{denied_str}**.",
+                [],
+            )
+
+        # Log authorized AI tool execution in audit trail
+        try:
+            record_security_audit_event(
+                event_type="MASTER_ADMIN_ACTIVITY" if ctx["is_master"] else "AUTH_LOGIN_SUCCESS",
+                details=f"AI Tool Executed: {tool_name} (Scope: {', '.join(allowed[:3])}{'...' if len(allowed) > 3 else ''})",
+                severity="INFO",
+                outcome="SUCCESS",
+            )
+        except Exception:
+            pass
+
+        target_parishes = [p for p in mentioned_parishes if p in allowed] if mentioned_parishes else allowed
+        return True, "OK", target_parishes
+
+    @classmethod
+    def filter_dataframe_by_authorized_parishes(cls, df: pd.DataFrame, allowed_parishes: list[str], parish_col: str = "Parish") -> pd.DataFrame:
+        if df is None or df.empty:
+            return pd.DataFrame()
+        if parish_col not in df.columns:
+            return df.copy()
+        allowed_set = {str(p).strip().upper() for p in allowed_parishes if p}
+        mask = df[parish_col].astype(str).str.strip().str.upper().apply(
+            lambda val: (val in allowed_set) or any(normalize_parish_match(val, ap) for ap in allowed_set)
+        )
+        return df[mask].copy()
+
+
+class FreeQuotaManager:
+    """ai/usage/quota_manager.py — Tracks per-user and global Gemini API requests, token usage, rate limits, and graceful fallback."""
+    DEFAULT_USER_RPD_LIMIT = 45
+    DEFAULT_USER_RPM_LIMIT = 8
+    DEFAULT_GLOBAL_RPD_LIMIT = 220
+    DEFAULT_GLOBAL_RPM_LIMIT = 15
+
+    @classmethod
+    def _get_store(cls) -> dict:
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        store = st.session_state.get("_ctg_ai_quota_store")
+        if not isinstance(store, dict) or store.get("date_utc") != today_str:
+            store = {
+                "date_utc": today_str,
+                "global_requests_today": 0,
+                "global_tokens_today": 0,
+                "python_local_executions_today": 0,
+                "cache_hits_today": 0,
+                "quota_exhausted_until_ts": 0.0,
+                "last_quota_error": "",
+                "global_minute_timestamps": [],
+                "per_user": {},
+            }
+            st.session_state["_ctg_ai_quota_store"] = store
+        return store
+
+    @classmethod
+    def can_call_gemini(cls, user_id: str) -> tuple[bool, str]:
+        store = cls._get_store()
+        now_ts = time.time()
+
+        if store.get("quota_exhausted_until_ts", 0.0) > now_ts:
+            rem_sec = int(store["quota_exhausted_until_ts"] - now_ts)
+            return False, f"Naabot na ang pansamantalang Gemini Free Tier rate limit (cooldown: {rem_sec}s). Gumagamit ng Python-First Local Mode (₱0)."
+
+        # Clean 60-second window timestamps
+        store["global_minute_timestamps"] = [t for t in store.get("global_minute_timestamps", []) if now_ts - t < 60.0]
+        if len(store["global_minute_timestamps"]) >= cls.DEFAULT_GLOBAL_RPM_LIMIT:
+            return False, "Naabot ang Global Requests-Per-Minute (RPM) safety cap. Gumagamit ng Python-First Local Mode."
+
+        if store.get("global_requests_today", 0) >= cls.DEFAULT_GLOBAL_RPD_LIMIT:
+            return False, "Naabot ang Global Daily Free Quota cap ngayong araw. Gumagamit ng Python-First Local Mode."
+
+        uid = str(user_id or "anonymous")
+        u_rec = store["per_user"].setdefault(uid, {"requests_today": 0, "tokens_today": 0, "minute_timestamps": []})
+        u_rec["minute_timestamps"] = [t for t in u_rec.get("minute_timestamps", []) if now_ts - t < 60.0]
+
+        if len(u_rec["minute_timestamps"]) >= cls.DEFAULT_USER_RPM_LIMIT:
+            return False, "Naabot ang iyong Per-User Requests-Per-Minute limit. Gumagamit ng Python-First Local Mode."
+
+        if u_rec.get("requests_today", 0) >= cls.DEFAULT_USER_RPD_LIMIT:
+            return False, "Naabot ang iyong Per-User Daily Free Quota limit. Gumagamit ng Python-First Local Mode."
+
+        return True, "OK"
+
+    @classmethod
+    def record_gemini_call(cls, user_id: str, token_count: int = 0):
+        store = cls._get_store()
+        now_ts = time.time()
+        store["global_requests_today"] = int(store.get("global_requests_today", 0)) + 1
+        store["global_tokens_today"] = int(store.get("global_tokens_today", 0)) + max(0, int(token_count))
+        store.setdefault("global_minute_timestamps", []).append(now_ts)
+
+        uid = str(user_id or "anonymous")
+        u_rec = store["per_user"].setdefault(uid, {"requests_today": 0, "tokens_today": 0, "minute_timestamps": []})
+        u_rec["requests_today"] = int(u_rec.get("requests_today", 0)) + 1
+        u_rec["tokens_today"] = int(u_rec.get("tokens_today", 0)) + max(0, int(token_count))
+        u_rec.setdefault("minute_timestamps", []).append(now_ts)
+
+    @classmethod
+    def record_python_tool_execution(cls):
+        store = cls._get_store()
+        store["python_local_executions_today"] = int(store.get("python_local_executions_today", 0)) + 1
+
+    @classmethod
+    def record_cache_hit(cls):
+        store = cls._get_store()
+        store["cache_hits_today"] = int(store.get("cache_hits_today", 0)) + 1
+
+    @classmethod
+    def mark_quota_exhausted(cls, err_msg: str = "", cooldown_seconds: int = 60):
+        store = cls._get_store()
+        store["quota_exhausted_until_ts"] = time.time() + max(15, int(cooldown_seconds))
+        store["last_quota_error"] = AIRedactionEngine.sanitize_error_message(err_msg)
+
+    @classmethod
+    def get_usage_summary(cls, user_id: str) -> dict:
+        store = cls._get_store()
+        uid = str(user_id or "anonymous")
+        u_rec = store.get("per_user", {}).get(uid, {"requests_today": 0, "tokens_today": 0})
+        in_cooldown = store.get("quota_exhausted_until_ts", 0.0) > time.time()
+        return {
+            "date_utc": store.get("date_utc", ""),
+            "user_requests_today": int(u_rec.get("requests_today", 0)),
+            "user_rpd_limit": cls.DEFAULT_USER_RPD_LIMIT,
+            "global_requests_today": int(store.get("global_requests_today", 0)),
+            "global_rpd_limit": cls.DEFAULT_GLOBAL_RPD_LIMIT,
+            "global_tokens_today": int(store.get("global_tokens_today", 0)),
+            "python_local_executions_today": int(store.get("python_local_executions_today", 0)),
+            "cache_hits_today": int(store.get("cache_hits_today", 0)),
+            "in_cooldown": in_cooldown,
+            "last_quota_error": store.get("last_quota_error", ""),
+        }
+
+
+class ParishScopedAICache:
+    """ai/usage/cache.py — Response cache isolated strictly by (user_role, assigned_parish, allowed_parishes, mode, lang, prompt_hash).
+    Never shares sensitive cached responses between different users or parishes."""
+    TTL_SECONDS = 900  # 15 minutes
+
+    @classmethod
+    def _make_key(cls, prompt: str, pref_lang: str, assistant_mode: str) -> str:
+        role = str(st.session_state.get("user_role") or "anon").strip()
+        parish = str(st.session_state.get("assigned_parish") or "none").strip().upper()
+        allowed = ",".join(sorted(str(p).upper() for p in get_allowed_parishes_for_current_user()))
+        norm_p = re.sub(r"\s+", " ", str(prompt or "").strip().lower())
+        raw_k = f"{role}|{parish}|{allowed}|{pref_lang}|{assistant_mode}|{norm_p}"
+        return hashlib.sha256(raw_k.encode("utf-8")).hexdigest()
+
+    @classmethod
+    def get(cls, prompt: str, pref_lang: str = "Tagalog", assistant_mode: str = "All-in-One") -> str | None:
+        cache = st.session_state.get("_ctg_parish_scoped_ai_cache")
+        if not isinstance(cache, dict):
+            return None
+        key = cls._make_key(prompt, pref_lang, assistant_mode)
+        entry = cache.get(key)
+        if not isinstance(entry, dict):
+            return None
+        if time.time() - float(entry.get("ts", 0)) > cls.TTL_SECONDS:
+            cache.pop(key, None)
+            return None
+        FreeQuotaManager.record_cache_hit()
+        return str(entry.get("response", ""))
+
+    @classmethod
+    def set(cls, prompt: str, response: str, pref_lang: str = "Tagalog", assistant_mode: str = "All-in-One"):
+        if not response or len(str(response).strip()) < 15:
+            return
+        cache = st.session_state.setdefault("_ctg_parish_scoped_ai_cache", {})
+        if len(cache) > 150:
+            oldest_k = min(cache.keys(), key=lambda k: cache[k].get("ts", 0))
+            cache.pop(oldest_k, None)
+        key = cls._make_key(prompt, pref_lang, assistant_mode)
+        cache[key] = {"ts": time.time(), "response": str(response)}
+
+# =====================================================================
+# 🛠️ PYTHON-FIRST DETERMINISTIC AI TOOLS (RBAC-ENFORCED, ₱0 API COST)
+# =====================================================================
+
+def search_authorized_family_records(search_query: str = "") -> str:
+    """ai/tools/membership_tools.py — Searches authorized family/member records in CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx
+    with strict server-side 5-tier parish filtering and PII redaction."""
+    FreeQuotaManager.record_python_tool_execution()
+    ok, msg, target_parishes = AIPermissionsGuard.check_and_resolve_parish_request(search_query, "search_authorized_family_records")
+    if not ok:
+        return msg
+    if master_members_df.empty:
+        return "Walang laman o hindi pa naka-sync ang Excel Census database."
+
+    try:
+        df_scope = AIPermissionsGuard.filter_dataframe_by_authorized_parishes(master_members_df, target_parishes, "Parish")
+        if df_scope.empty:
+            return f"Walang nakitang rekord sa iyong authorized parish scope ({', '.join(target_parishes)})."
+
+        q_clean = str(search_query or "").strip()
+        # Strip common Tagalog/English query prefixes
+        q_clean = re.sub(r"^(?:hanapin\s+si|hanapin\s+ang|search\s+for|search|find|sino\s+si|family\s+id)\s+", "", q_clean, flags=re.I).strip()
+        # If query is just the parish name itself, show top records of that parish
+        for p_c in PARISH_ORDER:
+            if q_clean.upper() in (p_c, p_c.replace(" PARISH", "").strip()):
+                q_clean = ""
+                break
+
+        if q_clean:
+            match = df_scope[df_scope.astype(str).apply(lambda x: x.str.contains(re.escape(q_clean), case=False, na=False)).any(axis=1)]
+        else:
+            match = df_scope
+
+        if match.empty:
+            return f"Walang nahanap na miyembro o pamilya para sa '{AIRedactionEngine.redact_text(search_query)}' sa authorized scope ({', '.join(target_parishes)})."
+
+        results = []
+        for _, row in match.head(25).iterrows():
+            safe_r = AIRedactionEngine.redact_member_row_for_llm(row.to_dict(), include_contact_for_authorized_ui=True)
+            results.append(
+                f"• Parish: {safe_r['Parish']} | Family ID: {safe_r['Family ID'] or 'N/A'} | "
+                f"HOF: {safe_r['Head of Family'] or 'N/A'} | Full Name: {safe_r['Full Name']} | "
+                f"Category: {safe_r['Category']} | Status: {safe_r['Status']} | Church Member: {safe_r['Church Member']} | "
+                f"Brgy/City: {safe_r.get('Barangay','')} {safe_r.get('City/Municipality','')}"
+            )
+        return (
+            f"✅ May **{len(match)}** na authorized record(s) na nahanap sa CTG Excel Database "
+            f"(Ipinapakita ang unang {min(25, len(match))}):\n" + "\n".join(results)
+        )
+    except Exception as e:
+        return f"Error sa pagbasa ng Census records: {AIRedactionEngine.sanitize_error_message(e)}"
+
+
+def count_authorized_members(parish_filter: str = "") -> str:
+    """ai/tools/membership_tools.py — Performs 100% deterministic Python counting of total families, members, and age categories."""
+    FreeQuotaManager.record_python_tool_execution()
+    ok, msg, target_parishes = AIPermissionsGuard.check_and_resolve_parish_request(parish_filter, "count_authorized_members")
+    if not ok:
+        return msg
+    if master_members_df.empty:
+        return "Wala pang naka-load na rekord sa Excel Census database."
+
+    df_scope = AIPermissionsGuard.filter_dataframe_by_authorized_parishes(master_members_df, target_parishes, "Parish")
+    if df_scope.empty:
+        return f"Wala pang rekord sa Census para sa {', '.join(target_parishes)}."
+
+    tot_rows = len(df_scope)
+    tot_fam = df_scope["Family ID"].replace("", pd.NA).dropna().nunique() if "Family ID" in df_scope.columns else 0
+    df_sen, df_adu, df_you, df_kid = build_age_category_tables(df_scope)
+    tot_active = len(df_sen) + len(df_adu) + len(df_you) + len(df_kid)
+
+    scope_title = ", ".join(target_parishes) if len(target_parishes) <= 3 else f"Lahat ng {len(target_parishes)} Authorized Parishes"
+    lines = [
+        f"### 👥 Deterministic Python Census Count — **{scope_title}**",
+        f"- **Kabuuang Rehistradong Pamilya (Unique Family IDs):** `{tot_fam}`",
+        f"- **Kabuuang Rekord sa Directory (Total Rows):** `{tot_rows}`",
+        f"- **🟢 Kabuuang Active Members:** `{tot_active}`",
+        f"  - 👴 **Seniors (Active):** `{len(df_sen)}`",
+        f"  - 🧑 **Adults (Active):** `{len(df_adu)}`",
+        f"  - 👦 **Youth (Active):** `{len(df_you)}`",
+        f"  - 👶 **Kids (Active):** `{len(df_kid)}`",
+    ]
+    return "\n".join(lines)
+
+
+def count_active_inactive_members(parish_filter: str = "") -> str:
+    """ai/tools/membership_tools.py — Deterministic Python breakdown of Active, Inactive, Non-Members, and Removed/Deceased records."""
+    FreeQuotaManager.record_python_tool_execution()
+    ok, msg, target_parishes = AIPermissionsGuard.check_and_resolve_parish_request(parish_filter, "count_active_inactive_members")
+    if not ok:
+        return msg
+    if master_members_df.empty:
+        return "Wala pang naka-load na rekord sa Excel Census database."
+
+    df_scope = AIPermissionsGuard.filter_dataframe_by_authorized_parishes(master_members_df, target_parishes, "Parish")
+    if df_scope.empty:
+        return f"Wala pang rekord sa Census para sa {', '.join(target_parishes)}."
+
+    active_cnt = 0
+    inactive_cnt = 0
+    non_member_cnt = 0
+    removed_deceased_cnt = 0
+
+    for _, r in df_scope.iterrows():
+        if is_removed_or_deceased_record(r):
+            removed_deceased_cnt += 1
+        else:
+            st_cls = classify_member_status(r.get("Status", ""), r.get("Church Member", ""))
+            if st_cls == "ACTIVE":
+                active_cnt += 1
+            elif st_cls == "INACTIVE":
+                inactive_cnt += 1
+            else:
+                non_member_cnt += 1
+
+    total_living = active_cnt + inactive_cnt + non_member_cnt
+    act_pct = round((active_cnt / total_living) * 100.0, 1) if total_living > 0 else 0.0
+    scope_title = ", ".join(target_parishes) if len(target_parishes) <= 3 else f"Lahat ng {len(target_parishes)} Authorized Parishes"
+
+    return (
+        f"### 📊 Active vs. Inactive Membership Breakdown — **{scope_title}**\n"
+        f"- **🟢 Active Members:** `{active_cnt}` ({act_pct}% ng living directory)\n"
+        f"- **🟡 Inactive Members (For House Visitation Follow-up):** `{inactive_cnt}`\n"
+        f"- **⚪ Non-Members / Household Dependents:** `{non_member_cnt}`\n"
+        f"- **⚫ Removed / Transferred / Deceased:** `{removed_deceased_cnt}`\n"
+        f"- **📌 Kabuuang Rekord sa Scope:** `{len(df_scope)}`"
+    )
+
+
+def analyze_uploaded_member_encoding_quality(parish_filter: str = "") -> str:
+    """ai/tools/membership_tools.py — Audits newly uploaded member forms/Excel rows and existing parish census rows
+    for encoding accuracy, missing fields, duplicate detection, age-category alignment, and 100% Excel formula protection."""
+    FreeQuotaManager.record_python_tool_execution()
+    ok, msg, target_parishes = AIPermissionsGuard.check_and_resolve_parish_request(parish_filter, "analyze_uploaded_member_encoding_quality")
+    if not ok:
+        return msg
+
+    # 1. Check if the leader currently has staged/newly uploaded member rows in session_state
+    staged_sources = []
+    for sk in ("preview_upload_df", "staged_upload_df", "extracted_members_df", "new_members_preview_df"):
+        val = st.session_state.get(sk)
+        if isinstance(val, pd.DataFrame) and not val.empty:
+            staged_sources.append((sk, val))
+
+    df_scope = AIPermissionsGuard.filter_dataframe_by_authorized_parishes(master_members_df, target_parishes, "Parish") if not master_members_df.empty else pd.DataFrame()
+
+    report_lines = [
+        f"### 🔍 AI Encoding & Data Quality Audit ({', '.join(target_parishes[:3])})",
+        "- **🛡️ Formula & Append-Only Protection Status:** `ACTIVE` (Protected Master Cols `J–Q` & Parish Cols `H–Q` are 100% locked against overwrite; bagong rows ay idinadagdag lamang sa unang bakanteng linya sa ibaba).",
+    ]
+
+    if staged_sources:
+        sk_name, df_st = staged_sources[0]
+        tot_up = len(df_st)
+        missing_name = sum(1 for _, r in df_st.iterrows() if not str(r.get("Full Name", "")).strip())
+        missing_cat = sum(1 for _, r in df_st.iterrows() if not str(r.get("Category", "")).strip())
+        missing_fam = sum(1 for _, r in df_st.iterrows() if not str(r.get("Family ID", "")).strip())
+        dup_in_master = 0
+        existing_names = set(df_scope["Full Name"].astype(str).str.strip().str.upper()) if not df_scope.empty and "Full Name" in df_scope.columns else set()
+        for _, r in df_st.iterrows():
+            nm_u = str(r.get("Full Name", "")).strip().upper()
+            if nm_u and nm_u in existing_names:
+                dup_in_master += 1
+
+        report_lines.extend([
+            f"- **📥 Nakitang Bagong Upload sa Session (`{tot_up}` rows):**",
+            f"  - ✅ **Valid Member Names Ready to Encode:** `{tot_up - missing_name} / {tot_up}`",
+            f"  - 🏷️ **Rows na May Kumpletong Category (Seniors/Adults/Youth/Kids):** `{tot_up - missing_cat} / {tot_up}`",
+            f"  - 🆔 **Rows na May Family ID (Auto-generated kung bakante):** `{tot_up - missing_fam} / {tot_up}`",
+            f"  - ⚠️ **Posibleng Duplicate sa Master Excel (I-check bago i-save):** `{dup_in_master}`",
+        ])
+    else:
+        report_lines.append("- **📥 Kasalukuyang Staged Upload sa Session:** Walang nakabukas na uncommitted upload table sa ngayon (maaaring mag-upload ng Form Photo o Excel sa **➕ Magdagdag ng Miyembro & Litrato**).")
+
+    if not df_scope.empty:
+        tot_s = len(df_scope)
+        with_fam_id = sum(1 for _, r in df_scope.iterrows() if str(r.get("Family ID", "")).strip())
+        with_cat = sum(1 for _, r in df_scope.iterrows() if classify_category(r.get("Category", "")) in ("Seniors", "Adults", "Youth", "Kids"))
+        with_bday = sum(1 for _, r in df_scope.iterrows() if str(r.get("Birthday", "")).strip())
+        completeness_pct = round(((with_fam_id + with_cat) / max(1, 2 * tot_s)) * 100.0, 1)
+        report_lines.extend([
+            f"- **📊 Kasalukuyang Kalidad ng Na-encode na Census Database (`{tot_s}` records):**",
+            f"  - **Encoding Completeness Score:** `{completeness_pct}%`",
+            f"  - **Records with Verified Family ID:** `{with_fam_id} / {tot_s}`",
+            f"  - **Records with Standardized Age Category:** `{with_cat} / {tot_s}`",
+            f"  - **Records with Birthdate:** `{with_bday} / {tot_s}`",
+        ])
+
+    return "\n".join(report_lines)
+
+
+def calculate_attendance_percentages(parish_filter: str = "") -> str:
+    """ai/tools/reporting_tools.py — Calculates Sabado Worship Service (Mass), Pampamilya, Online Ministry,
+    Adal ti Evangelio, Youth, and Kids attendance percentages and >=75% Passing Areas in Python."""
+    FreeQuotaManager.record_python_tool_execution()
+    ok, msg, target_parishes = AIPermissionsGuard.check_and_resolve_parish_request(parish_filter, "calculate_attendance_percentages")
+    if not ok:
+        return msg
+
+    db = load_weekly_monitoring_records() or {}
+    allowed_set = {p.upper() for p in target_parishes}
+    matching_recs = []
+    for _, rec in db.items():
+        if not isinstance(rec, dict) or not rec.get("has_data"):
+            continue
+        p_n = str(rec.get("parish", "")).strip().upper()
+        if p_n in allowed_set or any(normalize_parish_match(p_n, ap) for ap in allowed_set):
+            matching_recs.append(rec)
+
+    if not matching_recs:
+        return f"Wala pang naka-save na 2027 Weekly Report para sa {', '.join(target_parishes)}. Pumunta sa **📑 Weekly Report & Parish Monitoring** upang mag-upload o mag-encode."
+
+    lines = [f"### 📈 Deterministic Sabado Attendance % & Passing Areas Analysis ({', '.join(target_parishes[:3])})"]
+    for rec in matching_recs[-10:]:
+        p_n = rec.get("parish", "")
+        m_n = rec.get("month", "")
+        w_n = rec.get("week", "")
+        base = get_parish_member_denominators(p_n)
+        say_base = max(1, int(rec.get("total_members_say", 0) or base.get("say", 1) or 1))
+        y_base = max(1, int(rec.get("total_members_y", 0) or base.get("youth", 1) or 1))
+        k_base = max(1, int(rec.get("total_members_k", 0) or base.get("kids", 1) or 1))
+
+        mass_tot = int(rec.get("mass_a", 0) or 0) + int(rec.get("mass_y", 0) or 0)
+        pamp_tot = int(rec.get("pampamilya_a", 0) or 0) + int(rec.get("pampamilya_y", 0) or 0)
+        onl_tot = int(rec.get("online_a", 0) or 0) + int(rec.get("online_y", 0) or 0)
+        adal_tot = int(rec.get("adal_a", 0) or 0) + int(rec.get("adal_y", 0) or 0)
+        youth_v = int(rec.get("youth_y", 0) or 0)
+        kids_v = int(rec.get("kids_k", 0) or 0)
+
+        mass_pct = round((mass_tot / say_base) * 100.0, 1)
+        pamp_pct = round((pamp_tot / say_base) * 100.0, 1)
+        onl_pct = round((onl_tot / say_base) * 100.0, 1)
+        adal_pct = round((adal_tot / say_base) * 100.0, 1)
+        youth_pct = round((youth_v / y_base) * 100.0, 1)
+        kids_pct = round((kids_v / k_base) * 100.0, 1)
+
+        passing_areas = sum(1 for pct in (mass_pct, pamp_pct, onl_pct, youth_pct, kids_pct, adal_pct) if pct >= 75.0)
+        lines.append(
+            f"- **{p_n} — {m_n} 2027 ({w_n} | Petsa: {rec.get('report_date','N/A')})**\n"
+            f"  - ⛪ **Sabado Mass (S+A+Y):** `{mass_tot}/{say_base}` (**{mass_pct}%**) {'✅ PASS' if mass_pct >= 75 else '⚠️ Below 75%'}\n"
+            f"  - 👨‍👩‍👧 **Pampamilya:** `{pamp_tot}/{say_base}` (**{pamp_pct}%**) | 💻 **Online:** `{onl_tot}/{say_base}` (**{onl_pct}%**)\n"
+            f"  - 📖 **Adal ti Evangelio:** `{adal_tot}/{say_base}` (**{adal_pct}%**) | 👦 **Youth:** `{youth_v}/{y_base}` (**{youth_pct}%**) | 👶 **Kids:** `{kids_v}/{k_base}` (**{kids_pct}%**)\n"
+            f"  - 🏆 **Passing Areas (≥75% Goal):** `{passing_areas} / 6 areas` | **Priest:** {rec.get('priest','N/A')} | **Sakristan:** {rec.get('sakristan','N/A')}"
+        )
+    return "\n".join(lines)
+
+
+def generate_parish_summary(parish_filter: str = "") -> str:
+    """ai/tools/reporting_tools.py — Combines authorized census counts, active/inactive breakdown, and latest Sabado Weekly Report."""
+    FreeQuotaManager.record_python_tool_execution()
+    ok, msg, target_parishes = AIPermissionsGuard.check_and_resolve_parish_request(parish_filter, "generate_parish_summary")
+    if not ok:
+        return msg
+    c_txt = count_authorized_members(parish_filter)
+    a_txt = count_active_inactive_members(parish_filter)
+    r_txt = calculate_attendance_percentages(parish_filter)
+    return f"{c_txt}\n\n{a_txt}\n\n{r_txt}"
+
+
+def retrieve_authorized_drive_documents(query_str: str = "") -> str:
+    """ai/tools/document_tools.py — Lists authorized Google Drive spreadsheets and folders for the authenticated user without exposing OAuth tokens."""
+    FreeQuotaManager.record_python_tool_execution()
+    ok, msg, target_parishes = AIPermissionsGuard.check_and_resolve_parish_request(query_str, "retrieve_authorized_drive_documents")
+    if not ok:
+        return msg
+    _, _, ctx = AIPermissionsGuard.verify_authenticated_user("retrieve_authorized_drive_documents")
+    docs = [
+        f"### 📂 Authorized Google Drive Documents & Storage Scope ({ctx['assigned_parish']} — `{ctx['user_role']}`)",
+        "- **1. Master Census Workbook (`CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx`):**",
+        f"  - Authorized Sheets: `{', '.join(target_parishes[:4])}{'...' if len(target_parishes) > 4 else ''}`",
+        "  - Encoding Mode: `Strict Append-Only & 100% Formula-Protected (Cols J–Q / H–Q Locked)`",
+        "  - [Buksan ang Master Census Spreadsheet sa Google Drive](https://docs.google.com/spreadsheets/d/1s-HWF_IxwAq2mIXe5Hs6sqJMrcZPPolj/edit?gid=980361718#gid=980361718)",
+        "- **2. 2027 Weekly Performance Report Consolidation (`CTG_PWR_2027_CONSOLIDATION.xlsx`):**",
+        "  - [Buksan ang 2027 Weekly Performance Report Consolidation sa Google Drive](https://docs.google.com/spreadsheets/d/1tOdW8FRpyESStVzQVf6RGpS-YTnexG_u/edit?usp=sharing)",
+    ]
+    if ctx["is_master"]:
+        docs.extend([
+            "- **3. Master Admin Cloud Storage Folder (`CTG Ministry Hub app_Storage`):**",
+            "  - [Buksan ang CTG Ministry Hub app_Storage Folder](https://drive.google.com/drive/folders/1MDIZBfdIGgM9gBZvG04xj2m3zJ5TCfJg)",
+            "- **4. All-Parish Members Database Folder (`CTG MEMBERS DATABASE ALL PARISH`):**",
+            "  - [Buksan ang CTG MEMBERS DATABASE ALL PARISH Folder](https://drive.google.com/drive/folders/1RXOTB6iA0jgcsOf1kE8wn3V8DHVduvH0?usp=sharing)",
+        ])
+    docs.append("- **🔒 Security Note:** Ang OAuth 2.0 credentials ay nananatili sa backend memory lamang at kailanman ay hindi ipinapadala sa Gemini AI. Walang Drive file ang binabago o binubura ng AI nang walang explicit human button approval.")
+    return "\n".join(docs)
+
+
+def _bootstrap_modular_ai_package_files():
+    """Creates the modular ai/ package directory structure on disk (if writable) so external scripts/tests
+    can import ai.orchestrator, ai.providers.gemini_provider, ai.tools.*, ai.security.*, and ai.usage.*."""
+    try:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        ai_root = os.path.join(base_dir, "ai")
+        subdirs = ["providers", "tools", "security", "usage"]
+        for sd in [""] + subdirs:
+            d_path = os.path.join(ai_root, sd) if sd else ai_root
+            os.makedirs(d_path, exist_ok=True)
+            init_p = os.path.join(d_path, "__init__.py")
+            if not os.path.exists(init_p):
+                with open(init_p, "w", encoding="utf-8") as f_i:
+                    f_i.write("# CTG Ministry Hub Modular Free-First AI Package\n")
+
+        files_map = {
+            "security/permissions.py": "from app import AIPermissionsGuard\n",
+            "security/redaction.py": "from app import AIRedactionEngine\n",
+            "usage/quota_manager.py": "from app import FreeQuotaManager\n",
+            "usage/cache.py": "from app import ParishScopedAICache\n",
+            "tools/membership_tools.py": "from app import search_authorized_family_records, count_authorized_members, count_active_inactive_members, analyze_uploaded_member_encoding_quality\n",
+            "tools/reporting_tools.py": "from app import generate_parish_summary, calculate_attendance_percentages, query_weekly_monitoring_reports as generate_monitoring_report\n",
+            "tools/document_tools.py": "from app import retrieve_authorized_drive_documents, query_notion_crm\n",
+            "providers/gemini_provider.py": "from app import get_configured_free_gemini_model, safe_generate_content\n",
+            "orchestrator.py": "from app import render_ctg_gabay_ai_assistant_section, _build_local_ministry_fallback_response\n",
+        }
+        for rel_p, content in files_map.items():
+            full_p = os.path.join(ai_root, rel_p)
+            if not os.path.exists(full_p):
+                with open(full_p, "w", encoding="utf-8") as f_m:
+                    f_m.write(content)
+    except Exception:
+        pass
+
+def query_excel_database(search_query: str) -> str:
+    """Naghahanap ng miyembro o pamilya sa CTG Excel Database (RBAC-enforced & PII-safe)."""
+    return search_authorized_family_records(search_query)
+
+# ⚡ INSTANT IN-MEMORY NOTION QUERY (0.01s SPEED, SERVER-SIDE RBAC-FILTERED)
 def query_notion_crm(search_query: str = "") -> str:
-    """Naghahanap ng Prayer Requests, Church Questions, Counselling, at Visitors sa Notion Database."""
+    """Naghahanap ng Prayer Requests, Church Questions, Counselling, at Visitors sa Notion Database (strictly scoped sa authorized parish ng user)."""
+    FreeQuotaManager.record_python_tool_execution()
+    ok, msg, target_parishes = AIPermissionsGuard.check_and_resolve_parish_request(search_query, "query_notion_crm")
+    if not ok:
+        return msg
     try:
         _ensure_notion_records_loaded()
         frames = []
@@ -8733,14 +9383,29 @@ def query_notion_crm(search_query: str = "") -> str:
         if not frames:
             return "Walang nakitang rekord sa Notion database."
         df_notion = pd.concat(frames, ignore_index=True).fillna("")
-        if search_query and search_query.strip():
-            mask = df_notion.astype(str).apply(lambda x: x.str.contains(search_query.strip(), case=False, na=False)).any(axis=1)
+        # Enforce server-side parish filtering across Parish / Assigned Parish columns
+        parish_col_found = None
+        for c_cand in ("Parish", "Assigned Parish", "parish"):
+            if c_cand in df_notion.columns:
+                parish_col_found = c_cand
+                break
+        if parish_col_found:
+            df_notion = AIPermissionsGuard.filter_dataframe_by_authorized_parishes(df_notion, target_parishes, parish_col_found)
+
+        q_clean = str(search_query or "").strip()
+        for p_c in PARISH_ORDER:
+            if q_clean.upper() in (p_c, p_c.replace(" PARISH", "").strip()):
+                q_clean = ""
+                break
+        if q_clean:
+            mask = df_notion.astype(str).apply(lambda x: x.str.contains(re.escape(q_clean), case=False, na=False)).any(axis=1)
             df_notion = df_notion[mask]
         if df_notion.empty:
-            return f"Walang nahanap sa Notion para sa '{search_query}'."
-        return "Mga rekord sa Notion:\n" + df_notion.head(20).to_csv(index=False)
+            return f"Walang nahanap sa Notion para sa '{AIRedactionEngine.redact_text(search_query)}' sa iyong authorized parish scope."
+        safe_csv = AIRedactionEngine.redact_text(df_notion.head(20).to_csv(index=False))
+        return f"Mga authorized rekord sa Notion ({', '.join(target_parishes[:3])}):\n" + safe_csv
     except Exception as e:
-        return f"Error sa Notion: {str(e)}"
+        return f"Error sa Notion: {AIRedactionEngine.sanitize_error_message(e)}"
 
 def send_email_via_gmail(recipient_email: str, subject: str, body_text: str, attachment_bytes: bytes = None, attachment_filename: str = None) -> str:
     """Nagpapadala ng opisyal na email gamit ang Gmail API."""
@@ -12024,7 +12689,7 @@ def extract_weekly_report_via_ai_vision(file_bytes: bytes, mime_type: str, model
         '"report_date": "01/02/27", "remarks": ""}'
     )
 
-    models_to_try = [model_name, "gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash", "gemini-2.5-pro"]
+    models_to_try = [get_configured_free_gemini_model(model_name), "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-2.0-flash-lite"]
     seen_models = []
     for m in models_to_try:
         if m and m not in seen_models:
@@ -18283,17 +18948,30 @@ def _compute_shared_state_signature() -> str:
 st.session_state["_last_live_sync_sig"] = _compute_shared_state_signature()
 
 def query_weekly_monitoring_reports(search_query: str = "") -> str:
-    """Naghahanap sa 2027 Weekly Reports (Attendance, Liturgical Officers, Preachers, Topics, Outreach, at Remarks) ng mga Parokya."""
+    """ai/tools/reporting_tools.py — Naghahanap sa 2027 Weekly Reports (Attendance, Liturgical Officers, Preachers, Topics, Outreach, at Remarks)
+    nang may mahigpit na server-side parish RBAC filtering."""
+    FreeQuotaManager.record_python_tool_execution()
+    ok, msg, target_parishes = AIPermissionsGuard.check_and_resolve_parish_request(search_query, "query_weekly_monitoring_reports")
+    if not ok:
+        return msg
     try:
         db = load_weekly_monitoring_records()
         if not db:
             return "Wala pang naka-save na Weekly Report sa database."
+        allowed_set = {str(p).strip().upper() for p in target_parishes if p}
         q_low = str(search_query or "").strip().lower()
+        for p_c in PARISH_ORDER:
+            if q_low.upper() in (p_c, p_c.replace(" PARISH", "").strip()):
+                q_low = ""
+                break
         lines = []
         for k, rec in db.items():
             if not isinstance(rec, dict) or not rec.get("has_data"):
                 continue
-            p_n = rec.get("parish", "")
+            p_n = str(rec.get("parish", "")).strip()
+            p_up = p_n.upper()
+            if not (p_up in allowed_set or any(normalize_parish_match(p_up, ap) for ap in allowed_set)):
+                continue
             m_n = rec.get("month", "")
             w_n = rec.get("week", "")
             summary_str = (
@@ -18305,52 +18983,81 @@ def query_weekly_monitoring_reports(search_query: str = "") -> str:
                 f"Pampamilya(A:{rec.get('pampamilya_a',0)}, Y:{rec.get('pampamilya_y',0)}) | "
                 f"Online(A:{rec.get('online_a',0)}, Y:{rec.get('online_y',0)}) | "
                 f"Youth:{rec.get('youth_y',0)} | Kids:{rec.get('kids_k',0)} | "
-                f"Remarks: {rec.get('remarks','')[:180]}"
+                f"Remarks: {AIRedactionEngine.redact_text(str(rec.get('remarks',''))[:180])}"
             )
             if not q_low or q_low in summary_str.lower():
                 lines.append(summary_str)
         if not lines:
-            return f"Walang nahanap na Weekly Report para sa '{search_query}'."
-        return "Mga 2027 Weekly Reports:\n" + "\n".join(lines[:20])
+            return f"Walang nahanap na Weekly Report para sa '{AIRedactionEngine.redact_text(search_query)}' sa iyong authorized parish scope."
+        return "Mga Authorized 2027 Weekly Reports:\n" + "\n".join(lines[:20])
     except Exception as e:
-        return f"Error sa pagbasa ng Weekly Reports: {str(e)}"
+        return f"Error sa pagbasa ng Weekly Reports: {AIRedactionEngine.sanitize_error_message(e)}"
+
+
+def _run_python_first_deterministic_router(prompt_text: str) -> tuple[bool, str]:
+    """Evaluates whether a user prompt can be answered 100% deterministically by Python tools first (₱0 API cost)
+    or if it violates cross-parish RBAC before calling Gemini."""
+    ok, msg, target_parishes = AIPermissionsGuard.check_and_resolve_parish_request(prompt_text, "ai_chat_router")
+    if not ok:
+        return True, msg
+
+    p_low = str(prompt_text or "").strip().lower()
+    if not p_low:
+        return False, ""
+
+    # 1. Encoding quality & uploaded member verification
+    if any(k in p_low for k in ["encoding quality", "suriin ang bagong upload", "bagong upload", "validate upload", "encoding audit", "check upload"]):
+        return True, analyze_uploaded_member_encoding_quality(prompt_text)
+
+    # 2. Attendance percentages & >=75% passing areas analysis
+    if any(k in p_low for k in ["attendance percentage", "passing area", "75%", "percentage", "porsyento ng attendance"]):
+        return True, calculate_attendance_percentages(prompt_text)
+
+    # 3. Active vs. Inactive membership breakdown
+    if any(k in p_low for k in ["inactive", "active and inactive", "active vs inactive"]):
+        return True, count_active_inactive_members(prompt_text)
+
+    # 4. Deterministic member / census counts
+    if any(k in p_low for k in ["ilan ang active members", "bilang ng active members", "count members", "total members sa census"]):
+        return True, count_authorized_members(prompt_text)
+
+    # 5. Google Drive document links & authorization status
+    if any(k in p_low for k in ["google drive document", "authorized drive", "drive spreadsheet", "excel file link"]):
+        return True, retrieve_authorized_drive_documents(prompt_text)
+
+    # 6. Complete parish summary
+    if any(k in p_low for k in ["parish summary", "buong buod ng parokya", "full parish report"]):
+        return True, generate_parish_summary(prompt_text)
+
+    return False, ""
 
 
 def _build_local_ministry_fallback_response(prompt_text: str, pref_lang: str, parish_scope: str) -> str:
-    """Provides an instant, accurate, data-grounded response from the live Weekly Report, Census, and Notion databases
+    """Provides an instant, accurate, data-grounded response from the live Weekly Report, Census, Drive, and Notion databases
     whenever the Gemini API is rate-limited or unreachable, ensuring 0 errors for the user."""
+    handled, direct_res = _run_python_first_deterministic_router(prompt_text)
+    if handled and direct_res:
+        return direct_res
+
+    ok, msg, target_parishes = AIPermissionsGuard.check_and_resolve_parish_request(prompt_text, "local_fallback_router")
+    if not ok:
+        return msg
+
     p_low = str(prompt_text or "").lower()
-    scope_lbl = parish_scope if parish_scope and parish_scope != "Lahat ng Parokya" else "Lahat ng 10 Parokya"
+    scope_lbl = ", ".join(target_parishes) if len(target_parishes) <= 2 else f"Lahat ng {len(target_parishes)} Authorized Parishes"
 
     if any(k in p_low for k in ["weekly report", "attendance", "liturgical", "officers", "buod ng weekly"]):
-        rep_txt = query_weekly_monitoring_reports("" if scope_lbl == "Lahat ng 10 Parokya" else scope_lbl)
+        rep_txt = query_weekly_monitoring_reports(prompt_text)
+        pct_txt = calculate_attendance_percentages(prompt_text)
         return (
             f"### 📊 Buod ng Weekly Report, Attendance at Liturgical Officers ({scope_lbl})\n\n"
-            f"Narito ang pinakahuling nakatalang datos mula sa ating **2027 Weekly Report Database**:\n\n"
+            f"{pct_txt}\n\n"
             f"```text\n{rep_txt}\n```\n\n"
             f"💡 *Tip: Maaari mong i-edit o i-sync ang buong buwan sa pahina ng **📑 Weekly Report & Parish Monitoring**.*"
         )
 
-    if any(k in p_low for k in ["active members", "census", "ilan ang", "miyembro", "family id", "hanapin"]):
-        df_c = master_members_df.copy()
-        if scope_lbl != "Lahat ng 10 Parokya" and not df_c.empty and "Parish" in df_c.columns:
-            df_c = df_c[df_c["Parish"] == scope_lbl]
-        if df_c.empty:
-            return f"Wala pang naka-load na rekord sa Census para sa **{scope_lbl}**. Pumunta sa **📊 Parish Census & Member Manager** at pindutin ang **🔄 I-sync ang Excel**."
-        tot_m = len(df_c)
-        tot_f = df_c["Family ID"].nunique() if "Family ID" in df_c.columns else 0
-        df_sen, df_adu, df_you, df_kid = build_age_category_tables(df_c)
-        tot_act = len(df_sen) + len(df_adu) + len(df_you) + len(df_kid)
-        return (
-            f"### 👥 Bilang ng Active Members sa Census ({scope_lbl})\n\n"
-            f"- **Kabuuang Pamilya / Records:** `{tot_f}`\n"
-            f"- **Kabuuang Miyembro sa Directory:** `{tot_m}`\n"
-            f"- **🟢 Total Active Members:** `{tot_act}`\n"
-            f"  - 👴 **Seniors (Active):** `{len(df_sen)}`\n"
-            f"  - 🧑 **Adults (Active):** `{len(df_adu)}`\n"
-            f"  - 👦 **Youth (Active):** `{len(df_you)}`\n"
-            f"  - 👶 **Kids (Active):** `{len(df_kid)}`"
-        )
+    if any(k in p_low for k in ["active members", "census", "ilan ang", "miyembro", "family id"]):
+        return generate_parish_summary(prompt_text)
 
     if any(k in p_low for k in ["imbitasyon", "sabado", "pagsamba", "paanyaya"]):
         return (
@@ -18373,7 +19080,7 @@ def _build_local_ministry_fallback_response(prompt_text: str, pref_lang: str, pa
         )
 
     if any(k in p_low for k in ["pending", "inbox", "requests", "notion"]):
-        not_txt = query_notion_crm("" if scope_lbl == "Lahat ng 10 Parokya" else scope_lbl)
+        not_txt = query_notion_crm(prompt_text)
         return f"### 📥 Kasalukuyang Rekord sa Parish Inbox & CRM ({scope_lbl})\n\n```text\n{not_txt}\n```"
 
     if any(k in p_low for k in ["house visitation", "outreach", "missionary"]):
@@ -18386,40 +19093,72 @@ def _build_local_ministry_fallback_response(prompt_text: str, pref_lang: str, pa
             "5. **I-record sa CTG Ministry Hub:** Ilagay ang pangalan ng pamilyang binisita at bilang ng tao sa **🏠 House Visitation, Missionary Work & Indoctrination** tab."
         )
 
-    # Generic search across Census & Weekly Reports
+    # Generic search across authorized Census & Weekly Reports
     q_clean = re.sub(r"^(?:hanapin\s+si|search|find)\s+", "", p_low, flags=re.I).strip()
-    ex_res = query_excel_database(q_clean)
+    ex_res = search_authorized_family_records(q_clean)
     return f"### 💬 Sagot mula sa CTG Ministry Hub Database ({scope_lbl})\n\n{ex_res}"
 
+
 def render_ctg_gabay_ai_assistant_section(show_top_banner: bool = True, key_prefix: str = "gabay_ai"):
-    """Renders the official '💬 CTG Gabay AI — Madaling Sundan na Ministry Assistant' interface
-    with an inline '⚡ Gemini Model (Fastest):' selector and 0-404 fault-tolerant streaming."""
+    """Renders the official '💬 CTG Gabay AI — Free-First Ministry Assistant' interface
+    with Python-First deterministic routing, 5-tier RBAC protection, secret redaction, and Free Quota Manager."""
+    _bootstrap_modular_ai_package_files()
+    ok_auth, auth_msg, auth_ctx = AIPermissionsGuard.verify_authenticated_user("render_ctg_gabay_ai_assistant_section")
+    if not ok_auth:
+        st.error(auth_msg)
+        return
+
     render_title_with_logo(
-        "💬 CTG Gabay AI — Madaling Sundan na Ministry Assistant",
-        f"Opisyal na AI Assistant ng Church of the Temple of God ({st.session_state.assigned_parish}) • 🇵🇭 {get_philippine_datetime_str()}"
+        "💬 CTG Gabay AI — Free-First Ministry & Data Analysis Assistant",
+        f"Opisyal na AI Assistant ng Church of the Temple of God ({auth_ctx['assigned_parish']} • Role: {auth_ctx['user_role']}) • 🇵🇭 {get_philippine_datetime_str()}"
     )
 
+    configured_default_model = get_configured_free_gemini_model()
+    valid_keys_now = get_valid_gemini_keys()
+    usage_info = FreeQuotaManager.get_usage_summary(auth_ctx["user_id"])
+
+    # Live Free-First AI Usage & Security Status Banner
+    provider_badge = (
+        f"🟢 **Gemini Free Tier Connected** (`{configured_default_model}`)"
+        if (valid_keys_now and not usage_info["in_cooldown"])
+        else (
+            "🟡 **Free Quota Cooldown Active — Python-First Local Mode (₱0.00)**"
+            if usage_info["in_cooldown"]
+            else "🔵 **Python-First Deterministic Mode Active (₱0.00 — Walang Gemini API Key Required para sa Census/Attendance)**"
+        )
+    )
     st.markdown(
-        "<div class='full-text-card'>"
-        "<b>🧭 Paano Gamitin ang AI Chat Assistant (3 Madaling Hakbang):</b><br>"
-        "<b>1️⃣ Pumili ng Wika, Gawain, at Gemini Model (Fastest) sa Ibaba</b> (Tagalog, Ilokano, o English).<br>"
-        "<b>2️⃣ Pindutin ang Kahit Aling 'Mabilisang Tanong' Button</b> sa ibaba kung ayaw mong mag-type, O<br>"
-        "<b>3️⃣ Mag-type sa Chat Box sa Pinakababa</b> (hal. <i>'Hanapin si Pacita Agasen'</i> o <i>'Gumawa ng mensahe para sa pagsamba sa Sabado'</i>)."
-        "</div>",
+        f"<div class='full-text-card'>"
+        f"<b>🛡️ Free-First AI Security & Quota Status (₱0 Budget Guard):</b> {provider_badge}<br>"
+        f"• <b>Authorized Parish Scope:</b> <code>{html_esc(', '.join(auth_ctx['allowed_parishes'][:4]))}{'...' if len(auth_ctx['allowed_parishes']) > 4 else ''}</code> &nbsp;|&nbsp; "
+        f"<b>Python-First Tool Runs Today:</b> <code>{usage_info['python_local_executions_today']}</code> (₱0) &nbsp;|&nbsp; "
+        f"<b>Safe Cache Hits:</b> <code>{usage_info['cache_hits_today']}</code><br>"
+        f"• <b>Your Gemini Calls Today:</b> <code>{usage_info['user_requests_today']} / {usage_info['user_rpd_limit']}</code> &nbsp;|&nbsp; "
+        f"<b>Global Gemini Calls Today:</b> <code>{usage_info['global_requests_today']} / {usage_info['global_rpd_limit']}</code> &nbsp;|&nbsp; "
+        f"<b>Tokens Logged:</b> <code>{usage_info['global_tokens_today']:,}</code>"
+        f"</div>",
         unsafe_allow_html=True
     )
+    if usage_info["in_cooldown"] and usage_info["last_quota_error"]:
+        st.info(f"ℹ️ **Friendly Quota Notice:** Naabot ang pansamantalang limit ng Google Gemini Free Tier ({usage_info['last_quota_error']}). Tuloy-tuloy pa ring gumagana ang lahat ng Census counts, Weekly Report calculations, at Member Search gamit ang ating **Python-First Tools**!")
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
     fast_model_options = [
-        "gemini-3.8-flash (Fastest)",
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-lite",
-        "gemini-3.1-pro-preview"
+        f"{configured_default_model} (Env Default • Free Tier)",
+        "gemini-2.5-flash (Free Tier Balanced)",
+        "gemini-2.5-flash-lite (Free Tier Fastest & Highest Quota)",
+        "gemini-2.0-flash (Free Tier Fallback)"
     ]
+    # Deduplicate options while preserving order
+    seen_opts = []
+    for opt in fast_model_options:
+        m_id = opt.split()[0].strip()
+        if not any(o.startswith(m_id + " ") or o == m_id for o in seen_opts):
+            seen_opts.append(opt)
 
-    col_chat_opt1, col_chat_opt2, col_chat_opt3, col_chat_opt4 = st.columns([1.0, 1.45, 1.15, 0.8])
+    col_chat_opt1, col_chat_opt2, col_chat_opt3, col_chat_opt4 = st.columns([1.0, 1.5, 1.2, 0.75])
     with col_chat_opt1:
         pref_lang = st.selectbox(
             "🌐 1. Pumili ng Wika:",
@@ -18431,7 +19170,8 @@ def render_ctg_gabay_ai_assistant_section(show_top_banner: bool = True, key_pref
         assistant_mode = st.selectbox(
             "🤖 2. Pumili ng Gawain:",
             [
-                "💬 All-in-One Assistant (Maghanap ng Miyembro, Attendance & Gabay)",
+                "💬 All-in-One Assistant (Census, Attendance, Upload Audit & Gabay)",
+                "🔍 Data & Upload Encoding Analyzer (Python-First Verification)",
                 "✍️ Gawaan ng Mensahe / Tugon sa Miyembro (AI Draft Generator)"
             ],
             index=0,
@@ -18439,12 +19179,12 @@ def render_ctg_gabay_ai_assistant_section(show_top_banner: bool = True, key_pref
         )
     with col_chat_opt3:
         chosen_fast_model_lbl = st.selectbox(
-            "⚡ Gemini Model (Fastest):",
-            fast_model_options,
+            "⚡ Gemini Free-Tier Model:",
+            seen_opts,
             index=0,
             key=f"{key_prefix}_fast_model_sel"
         )
-        active_fast_model = chosen_fast_model_lbl.split()[0].strip()
+        active_fast_model = get_configured_free_gemini_model(chosen_fast_model_lbl.split()[0].strip())
     with col_chat_opt4:
         st.write("")
         if st.button("🧹 Burahin ang Usapan", use_container_width=True, key=f"{key_prefix}_clear_btn"):
@@ -18452,114 +19192,179 @@ def render_ctg_gabay_ai_assistant_section(show_top_banner: bool = True, key_pref
             st.session_state.pop("chat_session", None)
             st.rerun()
 
-    st.markdown("##### ⚡ Mabilisang Tanong (Pindutin lang ang button para sumagot agad ang AI):")
-    qb1, qb2, qb3 = st.columns(3)
-    qb4, qb5, qb6 = st.columns(3)
+    st.markdown("##### ⚡ Mabilisang Tanong at Python-First Analysis (Pindutin lang ang button):")
+    qb1, qb2, qb3, qb4 = st.columns(4)
+    qb5, qb6, qb7, qb8 = st.columns(4)
     quick_clicked_prompt = None
     with qb1:
         if st.button("📊 Buod ng Weekly Report & Attendance", use_container_width=True, key=f"{key_prefix}_qb1"):
-            quick_clicked_prompt = f"Ipakita ang malinaw na buod ng pinakahuling Weekly Report, Attendance, at Liturgical Officers para sa {st.session_state.assigned_parish}."
+            quick_clicked_prompt = f"Ipakita ang attendance percentage at passing areas analysis ng pinakahuling Weekly Report para sa {auth_ctx['assigned_parish']}."
     with qb2:
-        if st.button("👥 Ilan ang Active Members sa Census?", use_container_width=True, key=f"{key_prefix}_qb2"):
-            quick_clicked_prompt = f"Ipakita ang bilang ng Active Members (Seniors, Adults, Youth, Kids) sa {st.session_state.assigned_parish} mula sa Excel Census."
+        if st.button("👥 Bilang ng Active & Inactive sa Census", use_container_width=True, key=f"{key_prefix}_qb2"):
+            quick_clicked_prompt = f"Ipakita ang bilang ng Active Members (Seniors, Adults, Youth, Kids) at active vs inactive breakdown sa {auth_ctx['assigned_parish']}."
     with qb3:
-        if st.button("✉️ Imbitasyon sa Pagsamba ngayong Sabado", use_container_width=True, key=f"{key_prefix}_qb3"):
-            quick_clicked_prompt = f"Gumawa ng maikli, magalang, at nakaka-inspire na mensahe ng paanyaya para sa ating pagsamba ngayong Sabado sa Church of the Temple of God ({st.session_state.assigned_parish})."
+        if st.button("🔍 Suriin ang Bagong Upload & Encoding", use_container_width=True, key=f"{key_prefix}_qb_enc"):
+            quick_clicked_prompt = f"Suriin ang bagong upload at encoding quality ng mga miyembro para sa {auth_ctx['assigned_parish']}."
     with qb4:
+        if st.button("📂 Authorized Google Drive Files", use_container_width=True, key=f"{key_prefix}_qb_drv"):
+            quick_clicked_prompt = f"Ipakita ang authorized Google Drive documents at spreadsheets para sa {auth_ctx['assigned_parish']}."
+    with qb5:
+        if st.button("✉️ Imbitasyon sa Pagsamba sa Sabado", use_container_width=True, key=f"{key_prefix}_qb3"):
+            quick_clicked_prompt = f"Gumawa ng maikli, magalang, at nakaka-inspire na mensahe ng paanyaya para sa ating pagsamba ngayong Sabado sa Church of the Temple of God ({auth_ctx['assigned_parish']})."
+    with qb6:
         if st.button("🙏 Panalangin & Comforting Bible Verse", use_container_width=True, key=f"{key_prefix}_qb4"):
             quick_clicked_prompt = "Magbigay ng isang nakaka-comfort na Bible verse at maikling panalangin para sa pamilyang dumadaan sa pagsubok."
-    with qb5:
+    with qb7:
         if st.button("📥 Tingnan ang Pending Requests sa Inbox", use_container_width=True, key=f"{key_prefix}_qb5"):
-            quick_clicked_prompt = f"Ano ang mga kasalukuyang Prayer Requests, Questions, o Counselling sa Notion CRM para sa {st.session_state.assigned_parish}?"
-    with qb6:
+            quick_clicked_prompt = f"Ano ang mga kasalukuyang Prayer Requests, Questions, o Counselling sa Notion CRM para sa {auth_ctx['assigned_parish']}?"
+    with qb8:
         if st.button("🏠 Gabay sa House Visitation & Outreach", use_container_width=True, key=f"{key_prefix}_qb6"):
             quick_clicked_prompt = "Magbigay ng 5 madaling hakbang at gabay para sa aming House Visitation (10 families requirement) at Missionary Work ngayong linggo."
 
     lang_rule = "Sumagot gamit ang wikang ginamit ng nagtatanong." if "Awto" in pref_lang else f"Sumagot nang buo sa wikang {pref_lang}."
+    allowed_scope_str = ", ".join(auth_ctx["allowed_parishes"])
     sys_inst = (
-        f"Ikaw si CTG Gabay AI, ang opisyal, magalang, at napakadaling sundan na AI assistant ng Church of the Temple of God (CTG) "
-        f"para sa parokya ng {st.session_state.assigned_parish}. Tandaan na ang opisyal na pangalan ng simbahan ay "
-        f"'Church of the Temple of God' at ang araw ng pagsamba at pangunahing pagtitipon (Worship / Sabbath Service) ay tuwing SABADO (Saturday).\n"
+        f"Ikaw si CTG Gabay AI, ang opisyal, ligtas, at matalinong AI assistant ng Church of the Temple of God (CTG) "
+        f"para sa naka-login na user ({auth_ctx['user_role']}) na may authorized parish scope: [{allowed_scope_str}]. "
+        f"Tandaan na ang opisyal na pangalan ng simbahan ay 'Church of the Temple of God' at ang araw ng pagsamba (Sabbath Worship Service) ay tuwing SABADO (Saturday).\n"
         f"- {lang_rule}\n"
-        f"- Isulat ang iyong sagot sa malinaw na bullet points o numbered steps (1, 2, 3) upang hindi mahirapan ang mga users sa pagbasa sa cellphone, tablet, o computer.\n"
-        f"- Gamitin ang `query_excel_database` kapag naghahanap ng miyembro o Family ID sa Excel Census.\n"
-        f"- Gamitin ang `query_weekly_monitoring_reports` kapag tinatanong ang 2027 Weekly Reports, Attendance, Officers, o Remarks.\n"
-        f"- Gamitin ang `query_notion_crm` kapag tinatanong ang Prayer Requests, Questions, Counselling, o Visitors sa Notion.\n"
-        f"- Gamitin ang `search_web_for_answers` para sa real-time internet facts."
+        f"- SECURITY MANDATE: Huwag kailanman maglalabas ng datos mula sa parokyang wala sa [{allowed_scope_str}], at huwag magpapakita ng passwords, API keys, o OAuth tokens.\n"
+        f"- PYTHON TOOLS FIRST: Gamitin ang `search_authorized_family_records`, `count_authorized_members`, `count_active_inactive_members`, `analyze_uploaded_member_encoding_quality`, `calculate_attendance_percentages`, `generate_parish_summary`, `query_weekly_monitoring_reports`, `retrieve_authorized_drive_documents`, at `query_notion_crm` para sa eksaktong datos.\n"
+        f"- Huwag kailanman manghuhula ng bilang; gamitin ang eksaktong numero mula sa Python tools."
     )
 
-    def resolve_callable_gemini_model(requested_model: str) -> str:
-        m_c = str(requested_model or "gemini-2.5-flash").split()[0].strip()
-        if m_c in ("gemini-3.8-flash", "gemini-2.5-pro"):
-            return "gemini-2.5-flash" if m_c == "gemini-3.8-flash" else "gemini-3.1-pro-preview"
-        return m_c or "gemini-2.5-flash"
+    safe_readonly_ai_tools = [
+        search_authorized_family_records,
+        count_authorized_members,
+        count_active_inactive_members,
+        analyze_uploaded_member_encoding_quality,
+        calculate_attendance_percentages,
+        generate_parish_summary,
+        query_weekly_monitoring_reports,
+        retrieve_authorized_drive_documents,
+        query_notion_crm,
+        search_web_for_answers,
+    ]
 
     def create_chat(api_key, model_name):
         client = genai.Client(api_key=api_key)
-        actual_m = resolve_callable_gemini_model(model_name)
+        actual_m = get_configured_free_gemini_model(model_name)
         return client.chats.create(
             model=actual_m,
             config=types.GenerateContentConfig(
                 system_instruction=sys_inst,
-                tools=[query_excel_database, query_weekly_monitoring_reports, query_notion_crm, send_email_via_gmail, search_web_for_answers],
-                temperature=0.3
+                tools=safe_readonly_ai_tools,
+                temperature=0.25
             )
         )
 
     def stream_chat_response(prompt_text: str):
+        clean_user_prompt = AIRedactionEngine.redact_text(prompt_text)
+
+        # 1. Check server-side RBAC & Python-First Deterministic Router first (₱0 API cost, 0 latency)
+        if "Gawaan ng Mensahe" not in assistant_mode:
+            handled_locally, det_result = _run_python_first_deterministic_router(clean_user_prompt)
+            if handled_locally and det_result:
+                yield det_result
+                return
+
+        # 2. Check Parish-Scoped Safe Response Cache
+        cached_ans = ParishScopedAICache.get(clean_user_prompt, pref_lang, assistant_mode)
+        if cached_ans:
+            yield cached_ans + "\n\n*(⚡ Nakuha mula sa Parish-Scoped Safe Cache — 0 API Quota Used)*"
+            return
+
+        # 3. Check Free Quota Manager & API Key availability
         valid_keys = get_valid_gemini_keys()
-        final_prompt = prompt_text
+        if not valid_keys:
+            fallback_ans = _build_local_ministry_fallback_response(clean_user_prompt, pref_lang, auth_ctx["assigned_parish"])
+            yield fallback_ans
+            return
+
+        can_call, quota_reason = FreeQuotaManager.can_call_gemini(auth_ctx["user_id"])
+        if not can_call:
+            fallback_ans = _build_local_ministry_fallback_response(clean_user_prompt, pref_lang, auth_ctx["assigned_parish"])
+            yield f"ℹ️ *{quota_reason}*\n\n{fallback_ans}"
+            return
+
+        final_prompt = clean_user_prompt
         if "Gawaan ng Mensahe" in assistant_mode or "AI Draft" in assistant_mode:
             final_prompt = (
-                f"Gumawa ng opisyal, malinaw, at magalang na AI Draft Answer / Mensahe mula sa Church of the Temple of God ({st.session_state.assigned_parish}) "
-                f"(kung saan ang araw ng pagsamba ay tuwing Sabado / Saturday) na may kasamang Bible verse at comforting message para dito ({lang_rule}):\n\n{prompt_text}"
+                f"Gumawa ng opisyal, malinaw, at magalang na AI Draft Answer / Mensahe mula sa Church of the Temple of God ({auth_ctx['assigned_parish']}) "
+                f"(kung saan ang araw ng pagsamba ay tuwing Sabado / Saturday) na may kasamang Bible verse at comforting message para dito ({lang_rule}):\n\n{clean_user_prompt}"
+            )
+        elif "Data & Upload Encoding" in assistant_mode:
+            audit_ctx = analyze_uploaded_member_encoding_quality(clean_user_prompt)
+            final_prompt = (
+                f"[{lang_rule}] Narito ang deterministic Python audit ng ating member uploads at census database:\n{audit_ctx}\n\n"
+                f"Sagutin ang tanong ng leader at magbigay ng malinaw na rekomendasyon para sa tamang pag-encode: {clean_user_prompt}"
             )
         elif "Awto" not in pref_lang:
-            final_prompt = f"[Sagutin nang malinaw at madaling sundan sa wikang {pref_lang}] {prompt_text}"
+            final_prompt = f"[Sagutin nang malinaw at madaling sundan sa wikang {pref_lang}] {clean_user_prompt}"
 
-        if valid_keys:
-            for backup_key in valid_keys:
-                for fallback_m in [resolve_callable_gemini_model(active_fast_model), "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3.1-pro-preview"]:
-                    try:
-                        st.session_state.chat_session = create_chat(backup_key, fallback_m)
-                        got_any = False
-                        for chunk in st.session_state.chat_session.send_message_stream(final_prompt):
-                            if chunk.text:
-                                got_any = True
-                                yield chunk.text
-                        if got_any:
-                            return
-                    except Exception:
-                        continue
+        # 4. Call Gemini Free Tier (Flash / Flash-Lite only) with bounded retry and immediate 429 circuit breaker
+        candidate_models = []
+        for m_c in [active_fast_model, "gemini-2.5-flash", "gemini-2.5-flash-lite"]:
+            if m_c and m_c not in candidate_models:
+                candidate_models.append(m_c)
 
-            try:
-                client = genai.Client(api_key=valid_keys[0])
-                res = safe_generate_content(client, active_fast_model, f"{sys_inst}\n\nTanong: {final_prompt}")
-                if res and getattr(res, "text", ""):
-                    yield res.text
-                    return
-            except Exception:
-                pass
+        collected_chunks = []
+        quota_hit = False
+        for backup_key in valid_keys[:2]:
+            if quota_hit:
+                break
+            for fallback_m in candidate_models:
+                try:
+                    st.session_state.chat_session = create_chat(backup_key, fallback_m)
+                    got_any = False
+                    for chunk in st.session_state.chat_session.send_message_stream(final_prompt):
+                        if chunk.text:
+                            got_any = True
+                            safe_chunk = AIRedactionEngine.redact_text(chunk.text)
+                            collected_chunks.append(safe_chunk)
+                            yield safe_chunk
+                    if got_any:
+                        full_txt = "".join(collected_chunks)
+                        est_tokens = max(1, (len(final_prompt) + len(full_txt)) // 4)
+                        FreeQuotaManager.record_gemini_call(auth_ctx["user_id"], est_tokens)
+                        ParishScopedAICache.set(clean_user_prompt, full_txt, pref_lang, assistant_mode)
+                        return
+                except Exception as ex_stream:
+                    err_s = str(ex_stream)
+                    if "429" in err_s or "RESOURCE_EXHAUSTED" in err_s or "quota" in err_s.lower():
+                        FreeQuotaManager.mark_quota_exhausted(err_s, cooldown_seconds=60)
+                        quota_hit = True
+                        break
+                    continue
 
-        # Zero-Error Local Data-Grounded Fallback
-        yield _build_local_ministry_fallback_response(prompt_text, pref_lang, st.session_state.assigned_parish)
+        # 5. Graceful deterministic fallback (never fails or leaves user without an answer)
+        fallback_ans = _build_local_ministry_fallback_response(clean_user_prompt, pref_lang, auth_ctx["assigned_parish"])
+        if quota_hit:
+            yield (
+                "ℹ️ *Naabot ang pansamantalang Google Gemini Free Tier quota limit. Narito ang eksaktong sagot mula sa ating Python-First Local Database Engine (₱0):*\n\n"
+                + fallback_ans
+            )
+        else:
+            yield fallback_ans
 
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
     typed_prompt = st.chat_input(
-        "✍️ Mag-type dito ng iyong tanong (hal. 'Hanapin si Pacita Agasen' o 'Gumawa ng panalangin')...",
+        "✍️ Mag-type dito ng iyong tanong (hal. 'Suriin ang bagong upload', 'Ilan ang active members', o 'Hanapin si Pacita Agasen')...",
         key=f"{key_prefix}_chat_input"
     )
     active_prompt = quick_clicked_prompt or typed_prompt
 
     if active_prompt:
-        st.session_state.messages.append({"role": "user", "content": active_prompt})
+        safe_display_prompt = AIRedactionEngine.redact_text(active_prompt)
+        st.session_state.messages.append({"role": "user", "content": safe_display_prompt})
         with st.chat_message("user"):
-            st.markdown(active_prompt)
+            st.markdown(safe_display_prompt)
         with st.chat_message("assistant"):
-            full_reply = st.write_stream(stream_chat_response(active_prompt))
+            with st.spinner("Sinusuri ng CTG Gabay AI (Python-First + RBAC Verified)..."):
+                full_reply = st.write_stream(stream_chat_response(safe_display_prompt))
             st.session_state.messages.append({"role": "assistant", "content": str(full_reply)})
 
 # =====================================================================
@@ -20049,7 +20854,7 @@ def _extract_single_family_from_vision_parts(
             '"remarks": "...", '
             '"interpreted_summary_text": "Concise line-by-line transcription of all handwritten text read from the image(s)"}'
         )
-        models_to_try = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-2.0-flash"]
+        models_to_try = [get_configured_free_gemini_model(), "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash"]
         vision_err_log = []
 
         for k_api in valid_keys:
@@ -20798,6 +21603,125 @@ def _extract_single_family_from_vision_parts(
         return _get_builtin_billy_paquit_6_members_pdf_family(default_parish)
     return vision_members
 
+
+def _smart_normalize_and_validate_uploaded_member_rows(rows: list[dict], default_parish: str) -> list[dict]:
+    """Post-extraction AI & Python data normalizer for leader uploads (PDF, Image, Excel/CSV).
+    Guarantees every extracted row has clean Family ID, Head of Family inheritance, standardized Age/Category
+    (Seniors, Adults, Youth, Kids), normalized Status (ACTIVE/INACTIVE), and formula-injection sanitization."""
+    if not rows:
+        return []
+    cleaned = []
+    # Discover family-level metadata from the first row that has it (typically Head of Family)
+    shared_fam_id = ""
+    shared_hof = ""
+    shared_brgy = ""
+    shared_city = ""
+    shared_prov = ""
+    shared_addr = ""
+    shared_parish = default_parish or "SAN GABRIEL PARISH"
+
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        if not shared_fam_id and str(r.get("Family ID", "")).strip():
+            shared_fam_id = str(r.get("Family ID", "")).strip()
+        if not shared_hof and str(r.get("Head of Family", "")).strip():
+            shared_hof = str(r.get("Head of Family", "")).strip()
+        rel_u = str(r.get("Relationship", "")).strip().upper()
+        if not shared_hof and rel_u in ("HEAD OF FAMILY", "HOF", "HEAD", "HUSBAND") and str(r.get("Full Name", "")).strip():
+            shared_hof = str(r.get("Full Name", "")).strip()
+        if not shared_brgy and str(r.get("Barangay", "")).strip():
+            shared_brgy = str(r.get("Barangay", "")).strip()
+        if not shared_city and str(r.get("City/Municipality", "")).strip():
+            shared_city = str(r.get("City/Municipality", "")).strip()
+        if not shared_prov and str(r.get("Province / Area", "")).strip():
+            shared_prov = str(r.get("Province / Area", "")).strip()
+        if not shared_addr and str(r.get("Complete Address", "")).strip():
+            shared_addr = str(r.get("Complete Address", "")).strip()
+
+    if not shared_hof and rows and isinstance(rows[0], dict):
+        shared_hof = str(rows[0].get("Full Name", "")).strip()
+
+    for idx, r in enumerate(rows, 1):
+        if not isinstance(r, dict):
+            continue
+        item = r.copy()
+        full_nm = str(item.get("Full Name", "")).strip()
+        if not full_nm:
+            continue
+
+        # 1. Parish normalization
+        raw_p = str(item.get("Parish", "") or shared_parish).strip()
+        matched_p = shared_parish
+        for p_cand in PARISH_ORDER:
+            if normalize_parish_match(raw_p, p_cand):
+                matched_p = p_cand
+                break
+        item["Parish"] = matched_p
+
+        # 2. Family inheritance so no dependent row lacks HOF or Address
+        if not str(item.get("Head of Family", "")).strip() and shared_hof:
+            item["Head of Family"] = shared_hof
+        if not str(item.get("Family ID", "")).strip() and shared_fam_id:
+            item["Family ID"] = shared_fam_id
+        if not str(item.get("Barangay", "")).strip() and shared_brgy:
+            item["Barangay"] = shared_brgy
+        if not str(item.get("City/Municipality", "")).strip() and shared_city:
+            item["City/Municipality"] = shared_city
+        if not str(item.get("Province / Area", "")).strip() and shared_prov:
+            item["Province / Area"] = shared_prov
+        if not str(item.get("Complete Address", "")).strip() and shared_addr:
+            item["Complete Address"] = shared_addr
+
+        # 3. Age & Category consistency (Seniors >=60, Adults 31-59, Youth 13-30, Kids 0-12)
+        age_val = item.get("Age", "")
+        age_int = None
+        try:
+            m_age = re.search(r"\d+", str(age_val or ""))
+            if m_age:
+                age_int = int(m_age.group(0))
+        except Exception:
+            age_int = None
+
+        raw_cat = str(item.get("Category", "")).strip()
+        std_cat = classify_category(raw_cat)
+        if std_cat not in ("Seniors", "Adults", "Youth", "Kids") and age_int is not None:
+            if age_int >= 60:
+                std_cat = "Seniors"
+            elif age_int >= 31:
+                std_cat = "Adults"
+            elif age_int >= 13:
+                std_cat = "Youth"
+            else:
+                std_cat = "Kids"
+        if std_cat in ("Seniors", "Adults", "Youth", "Kids"):
+            item["Category"] = std_cat
+
+        # 4. Status & Church Member normalization
+        raw_st = str(item.get("Status", "")).strip().upper()
+        raw_cm = str(item.get("Church Member", "")).strip().upper()
+        if raw_cm in ("Y", "YES", "OO", "MEMBER", "TRUE", "1", "ACTIVE"):
+            item["Church Member"] = "YES"
+        elif raw_cm in ("N", "NO", "HINDI", "NON-MEMBER", "NON MEMBER", "FALSE", "0"):
+            item["Church Member"] = "NO"
+        elif not raw_cm:
+            item["Church Member"] = "YES"
+
+        if raw_st in ("A", "ACT", "ACTIVE", "ACTVE", "REGULAR", "OO", "YES", "1"):
+            item["Status"] = "ACTIVE"
+        elif raw_st in ("I", "INACT", "INACTIVE", "IRREGULAR", "HINDI", "NO", "0"):
+            item["Status"] = "INACTIVE"
+        elif not raw_st:
+            item["Status"] = "ACTIVE" if item["Church Member"] == "YES" else "INACTIVE"
+
+        # 5. Formula-injection protection on all string fields
+        for k_f, v_f in list(item.items()):
+            if isinstance(v_f, str) and v_f and v_f[0] in ("=", "+", "-", "@"):
+                item[k_f] = sanitize_user_input_for_excel_cell(v_f)
+
+        cleaned.append(item)
+    return cleaned
+
 def extract_members_from_uploaded_files_batch(uploaded_files_list: list, default_parish: str, model_name: str = "gemini-3.8-flash") -> list[dict]:
     """
     Handles:
@@ -20913,6 +21837,8 @@ def extract_members_from_uploaded_files_batch(uploaded_files_list: list, default
         st.session_state.pop("extracted_pdf_page_previews", None)
 
     if all_extracted_members:
+        all_extracted_members = _smart_normalize_and_validate_uploaded_member_rows(all_extracted_members, default_parish)
+        st.session_state["staged_upload_df"] = pd.DataFrame(all_extracted_members)
         st.session_state["_fast_upload_extraction_memo"] = {
             batch_cache_key: {
                 "members": [m.copy() for m in all_extracted_members],
