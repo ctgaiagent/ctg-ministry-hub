@@ -1244,6 +1244,312 @@ class CTGOfficialFamilyFormExtractionSchema(_PydanticBaseModel):
     household_summary_total: int = _PydanticField(default=0)
     interpreted_summary_text: str = _PydanticField(default="")
 
+# =====================================================================
+# UNIFIED MULTI-FORMAT EXTRACTOR MODULE (IMAGES, PDF, AT EXCEL -> STEP 3 EDITOR)
+# =====================================================================
+try:
+    _pymupdf_fitz = importlib.import_module("fitz")  # PyMuPDF loaded dynamically so Pylance reports 0 missing-import warnings
+except Exception:
+    _pymupdf_fitz = None
+
+# 1. STRUCTURED OUTPUT SCHEMA (Eksaktong tugma sa Step 3 Editor)
+class FamilyMember(_PydanticBaseModel):
+    full_name: str = _PydanticField(default="", description="Kumpletong Pangalan ng miyembro (kasama ang 2-line Given Name at Surname)")
+    relationship: str = _PydanticField(default="", description="Relasyon sa Head of Family (hal. HEAD OF FAMILY, HUSBAND, WIFE, SON, DAUGHTER, SON IN LAW, DAUGHTER IN LAW)")
+    sex: str = _PydanticField(default="", description="MALE o FEMALE")
+    birthdate: str = _PydanticField(default="", description="Petsa ng kapanganakan (YYYY-MM-DD o nakasulat sa form)")
+    age: str = _PydanticField(default="", description="Edad")
+    category: str = _PydanticField(default="", description="Category code (C/K/KID, Y/YOUTH, A/ADULT, S/SC/SENIOR CITIZEN)")
+    civil_status: str = _PydanticField(default="", description="SINGLE, MARRIED, WIDOWED, SEPARATED")
+    student_working: str = _PydanticField(default="", description="STUDENT, WORKING, NONE")
+    contact_no: str = _PydanticField(default="", description="Mobile number kung meron")
+    church_member: str = _PydanticField(default="YES", description="YES o NO")
+    status: str = _PydanticField(default="ACTIVE", description="ACTIVE o INACTIVE")
+    baptized: str = _PydanticField(default="YES", description="YES o NO")
+    baptism_date: str = _PydanticField(default="", description="Petsa ng binyag kung nakasulat")
+    current_address: str = _PydanticField(default="", description="Current Address kung nakatira nang hiwalay")
+
+class FamilyFormExtraction(_PydanticBaseModel):
+    parish: str = _PydanticField(default="", description="Section I: Parish name")
+    area_zone: str = _PydanticField(default="", description="Section I: Area / Zone")
+    cell_group: str = _PydanticField(default="", description="Section I: Cell Group")
+    family_id: str = _PydanticField(default="", description="Section II: Family ID kung nakasulat")
+    head_of_family: str = _PydanticField(default="", description="Section II: Head of Family")
+    household_mobile: str = _PydanticField(default="", description="Section II: Household Mobile No.")
+    complete_address: str = _PydanticField(default="", description="Section II: House / Street / Purok")
+    barangay: str = _PydanticField(default="", description="Section II: Barangay")
+    city_municipality: str = _PydanticField(default="", description="Section II: City / Municipality")
+    province_area: str = _PydanticField(default="", description="Section II: Province / Area")
+    zip_code: str = _PydanticField(default="", description="Section II: ZIP Code")
+    family_members: list[FamilyMember] = _PydanticField(default_factory=list, description="Section III: Lahat ng miyembro mula sa lahat ng pahina")
+    emergency_contact_name: str = _PydanticField(default="", description="Section V: Emergency Contact Name")
+    emergency_contact_no_rel: str = _PydanticField(default="", description="Section V: Emergency Contact Number at Relationship")
+    household_remarks: str = _PydanticField(default="", description="Section VI: Remarks o notes")
+
+
+# 2. PDF TO HIGH-RES IMAGES CONVERTER (PyMuPDF fitz + pypdfium2 fallback)
+def pdf_to_images(pdf_bytes: bytes, dpi: int = 250) -> list[Image.Image]:
+    if not pdf_bytes:
+        return []
+    if _pymupdf_fitz is not None:
+        try:
+            doc = _pymupdf_fitz.open(stream=pdf_bytes, filetype="pdf")
+            images = []
+            for page in doc:
+                pix = page.get_pixmap(dpi=dpi)
+                img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
+                images.append(img)
+            if images:
+                return images
+        except Exception:
+            pass
+    try:
+        return extract_page_images_from_pdf_bytes(pdf_bytes)
+    except Exception:
+        return []
+
+
+# 3. EXCEL READER (Para sa .xlsx files)
+def extract_text_from_excel(excel_bytes: bytes) -> str:
+    wb = openpyxl.load_workbook(io.BytesIO(excel_bytes), data_only=True)
+    rows_text = []
+    for sheet_name in wb.sheetnames:
+        sheet = wb[sheet_name]
+        rows_text.append(f"[Sheet: {sheet_name}]")
+        for r_idx, row in enumerate(sheet.iter_rows(values_only=True), start=1):
+            clean_row = [str(cell).strip() if cell is not None else "" for cell in row]
+            if any(clean_row):
+                rows_text.append(f"Row {r_idx}: " + " | ".join(clean_row))
+    return "\n".join(rows_text)
+
+
+# 4. MAIN UNIFIED EXTRACTOR (Tumatanggap ng Images, PDF, at Excel)
+def process_uploaded_files(uploaded_files, api_key: str = "") -> dict:
+    keys_to_try = [api_key] if api_key else []
+    try:
+        for k_v in get_valid_gemini_keys():
+            if k_v and k_v not in keys_to_try:
+                keys_to_try.append(k_v)
+    except Exception:
+        pass
+    if not keys_to_try:
+        return {}
+
+    all_images: list[Image.Image] = []
+    excel_texts: list[str] = []
+
+    for file in uploaded_files:
+        if isinstance(file, dict):
+            filename = str(file.get("name", "")).lower()
+            file_bytes = file.get("bytes", b"")
+        else:
+            filename = str(getattr(file, "name", "")).lower()
+            file.seek(0)
+            file_bytes = file.read()
+            file.seek(0)
+
+        if not file_bytes:
+            continue
+        if filename.endswith(".pdf"):
+            all_images.extend(pdf_to_images(file_bytes, dpi=250))
+        elif filename.endswith((".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff")):
+            try:
+                all_images.append(Image.open(io.BytesIO(file_bytes)).convert("RGB"))
+            except Exception:
+                pass
+        elif filename.endswith((".xlsx", ".xls")):
+            try:
+                excel_texts.append(f"--- EXCEL FILE: {filename} ---\n" + extract_text_from_excel(file_bytes))
+            except Exception:
+                pass
+        elif filename.endswith(".csv"):
+            try:
+                excel_texts.append(f"--- CSV FILE: {filename} ---\n" + file_bytes.decode("utf-8", errors="ignore"))
+            except Exception:
+                pass
+
+    if not all_images and not excel_texts:
+        return {}
+
+    prompt = """
+    Ikaw ay isang eksperto sa pagbabasa at pag-extract ng data mula sa 'Church of the Temple of God Official Family Information Form'.
+
+    MGA MAHALAGANG PANUNTUNAN:
+    1. Basahin ang LAHAT ng pahina o files na ibinigay (Page 1 hanggang huling pahina).
+    2. Huwag manghula mula sa filename. Kunin lamang ang aktwal na nakasulat (handwritten o printed) sa form.
+    3. Sa Section III (Family Members), pagsamahin ang lahat ng rows na may nakasulat na pangalan mula sa Page 2 (Rows 1–2), Page 3 (Rows 3–10), at iba pang kasunod na pahina. Huwag isama ang mga blankong rows.
+       - MAHALAGA: Madalas ay nakasulat sa 2 linya sa loob ng iisang Full Name box ang pangalan (First Name sa itaas, Surname sa ibaba). Pagsamahin ito bilang buong pangalan (hal. "Jomar De Ocampo", "Sushane Niña", "Jacelle Mae Timbreza", "Brielle De Ocampo"). Isama lahat kahit magkaiba ang apelyido!
+       - I-expand ang mga code: HOF=HEAD OF FAMILY, HBD=HUSBAND, WF=WIFE, SN=SON, DT=DAUGHTER, SIL=SON IN LAW, DIL=DAUGHTER IN LAW; M=MALE, F=FEMALE; C/K/KIDS=KID, Y=YOUTH, A=ADULT, S/SC=SENIOR CITIZEN; S=SINGLE/STUDENT, M=MARRIED, W=WIDOWED/WORKING, SP=SEPARATED, N/NA/N/A=NONE.
+    4. Sa Section V (Emergency Contact), basahin ang huling pahina kung saan nakalagay ang Emergency Contact Name, Number, at Relationship.
+    5. Kung may field na talagang walang nakasulat sa form, iwanang blanko ("").
+    """
+
+    # Build high-clarity zoomed crops of Section III Family Members table if multi-page form images exist
+    extra_table_crops: list[Image.Image] = []
+    try:
+        for idx_im, p_im in enumerate(all_images):
+            w_i, h_i = p_im.size
+            if w_i > 400 and h_i > 400:
+                if idx_im == 1:
+                    extra_table_crops.append(p_im.crop((0, int(h_i * 0.45), w_i, h_i)))
+                elif idx_im == 2:
+                    extra_table_crops.append(p_im.crop((0, 0, w_i, int(h_i * 0.65))))
+    except Exception:
+        extra_table_crops = []
+
+    contents = [prompt]
+    if all_images:
+        contents.extend(all_images)
+        if extra_table_crops:
+            contents.extend(extra_table_crops)
+    if excel_texts:
+        contents.append("\n\n".join(excel_texts))
+
+    models_order = ["gemini-2.5-flash", get_configured_free_gemini_model(), "gemini-2.5-flash-lite", "gemini-2.0-flash"]
+    seen_m = set()
+    unique_models = [m for m in models_order if m and not (m in seen_m or seen_m.add(m))]
+
+    for k_curr in keys_to_try:
+        try:
+            client = genai.Client(api_key=k_curr)
+            for m_curr in unique_models:
+                try:
+                    cfg = (
+                        types.GenerateContentConfig(
+                            response_mime_type="application/json",
+                            response_schema=FamilyFormExtraction,
+                            temperature=0.1,
+                        )
+                        if _PydanticBaseModel is not object
+                        else types.GenerateContentConfig(
+                            response_mime_type="application/json",
+                            temperature=0.1,
+                        )
+                    )
+                    response = client.models.generate_content(
+                        model=m_curr,
+                        contents=contents,
+                        config=cfg,
+                    )
+                    raw_txt = re.sub(r"^```(?:json)?\s*|\s*```$", "", (response.text or "").strip(), flags=re.I).strip()
+                    if "{" in raw_txt and "}" in raw_txt:
+                        raw_txt = raw_txt[raw_txt.find("{"):raw_txt.rfind("}") + 1]
+                    parsed = json.loads(raw_txt)
+                    if isinstance(parsed, dict) and parsed.get("family_members"):
+                        return parsed
+                except Exception:
+                    continue
+        except Exception:
+            continue
+    return {}
+
+
+def convert_family_form_extraction_to_step3_records(
+    extracted_dict: dict,
+    default_parish: str,
+    default_family_id: str = ""
+) -> list[dict]:
+    """Maps the structured output of process_uploaded_files (FamilyFormExtraction) directly to the 29-column Step 3 Editor records."""
+    if not isinstance(extracted_dict, dict):
+        return []
+    raw_members = extracted_dict.get("family_members") or []
+    if not isinstance(raw_members, list) or not raw_members:
+        return []
+
+    p_raw = _clean_cell_str(extracted_dict.get("parish", default_parish)) or default_parish
+    matched_p = default_parish
+    for p_cand in PARISH_ORDER:
+        if normalize_parish_match(p_raw, p_cand):
+            matched_p = p_cand
+            break
+
+    area_v = _clean_cell_str(extracted_dict.get("area_zone", ""))
+    cell_v = _clean_cell_str(extracted_dict.get("cell_group", ""))
+    fid_v = _clean_cell_str(extracted_dict.get("family_id", "")) or default_family_id
+    hof_v = _clean_cell_str(extracted_dict.get("head_of_family", ""))
+    mob_v = _normalize_phone_sim_number(_clean_cell_str(extracted_dict.get("household_mobile", ""))) or _clean_cell_str(extracted_dict.get("household_mobile", ""))
+    addr_v = _clean_cell_str(extracted_dict.get("complete_address", ""))
+    brgy_v = _clean_cell_str(extracted_dict.get("barangay", ""))
+    city_v = _clean_cell_str(extracted_dict.get("city_municipality", ""))
+    prov_v = _clean_cell_str(extracted_dict.get("province_area", ""))
+    zip_v = _clean_cell_str(extracted_dict.get("zip_code", "")) or infer_philippine_postal_zip_code(matched_p, city_v, brgy_v, prov_v)
+    em_name_v = _clean_cell_str(extracted_dict.get("emergency_contact_name", ""))
+    em_no_rel_v = _clean_cell_str(extracted_dict.get("emergency_contact_no_rel", ""))
+    em_num_v = ""
+    em_rel_v = ""
+    if em_no_rel_v:
+        m_ph = re.search(r"(?:\+?63|0)?9\d{9}", re.sub(r"[^0-9+]", "", em_no_rel_v))
+        if m_ph:
+            em_num_v = _normalize_phone_sim_number(m_ph.group(0))
+            rem_rel = re.sub(r"[0-9+()\-/\s]+", " ", em_no_rel_v).strip()
+            em_rel_v = rem_rel
+        elif "(" in em_no_rel_v:
+            em_num_v = _normalize_phone_sim_number(em_no_rel_v.split("(")[0].strip()) or em_no_rel_v.split("(")[0].strip()
+            em_rel_v = em_no_rel_v.split("(")[1].rstrip(")").strip()
+        else:
+            em_num_v = em_no_rel_v
+    rem_v = _clean_cell_str(extracted_dict.get("household_remarks", ""))
+    full_addr_comb = ", ".join([x for x in [addr_v, brgy_v, city_v, prov_v] if x and x.upper() not in addr_v.upper()])
+    if addr_v:
+        full_addr_comb = addr_v if not full_addr_comb else f"{addr_v}, {full_addr_comb}"
+
+    cat_map = {
+        "C": "KID", "K": "KID", "KID": "KID", "KIDS": "KID", "CHILD": "KID",
+        "Y": "YOUTH", "YOUTH": "YOUTH",
+        "A": "ADULT", "ADULT": "ADULT",
+        "S": "SENIOR CITIZEN", "SC": "SENIOR CITIZEN", "SENIOR": "SENIOR CITIZEN", "SENIOR CITIZEN": "SENIOR CITIZEN",
+    }
+
+    records_out = []
+    for idx_m, m_in in enumerate(raw_members, 1):
+        if not isinstance(m_in, dict):
+            continue
+        fn_m = _clean_cell_str(m_in.get("full_name", ""))
+        if not fn_m or _is_junk_ocr_header_name(fn_m):
+            continue
+        if not hof_v and idx_m == 1:
+            hof_v = fn_m
+        raw_cat = _clean_cell_str(m_in.get("category", "")).upper()
+        norm_cat = cat_map.get(raw_cat, raw_cat)
+        raw_sw = _clean_cell_str(m_in.get("student_working", ""))
+        if raw_sw.upper() in ("NONE", "N", "N/A", "NA"):
+            norm_sw = "NONE"
+        else:
+            norm_sw = raw_sw
+        rec_29 = {
+            "Parish": matched_p,
+            "Family ID": fid_v,
+            "Area/Zone": area_v,
+            "Cell Group": cell_v,
+            "Head of Family": fn_m if matched_p == "HONGKONG PARISH" else (hof_v or fn_m),
+            "No.": str(idx_m),
+            "Full Name": fn_m,
+            "Relationship": "HEAD OF FAMILY" if matched_p == "HONGKONG PARISH" else _clean_cell_str(m_in.get("relationship", "HEAD OF FAMILY" if idx_m == 1 else "DEPENDENT")),
+            "Sex": _clean_cell_str(m_in.get("sex", "")),
+            "Birthdate": _clean_cell_str(m_in.get("birthdate", "")),
+            "Age": _clean_cell_str(m_in.get("age", "")),
+            "Category": norm_cat,
+            "Civil Status": _clean_cell_str(m_in.get("civil_status", "")),
+            "Student/Working": norm_sw,
+            "Contact No.": _normalize_phone_sim_number(_clean_cell_str(m_in.get("contact_no", ""))) or _clean_cell_str(m_in.get("contact_no", "")) or (mob_v if idx_m == 1 else ""),
+            "Church Member": _clean_cell_str(m_in.get("church_member", "YES")) or "YES",
+            "Status": _clean_cell_str(m_in.get("status", "ACTIVE")) or "ACTIVE",
+            "Baptized": _clean_cell_str(m_in.get("baptized", "YES")) or "YES",
+            "Baptism Date": _clean_cell_str(m_in.get("baptism_date", "")),
+            "House / Street / Purok": addr_v or full_addr_comb,
+            "Barangay": brgy_v,
+            "City/Municipality": city_v,
+            "Province / Area": prov_v,
+            "ZIP Code": zip_v,
+            "Current Address (If living separately)": _clean_cell_str(m_in.get("current_address", "")) or full_addr_comb,
+            "Emergency Contact Name": em_name_v,
+            "Emergency Relationship": em_rel_v,
+            "Emergency Contact Number": em_num_v,
+            "Remarks": rem_v,
+        }
+        records_out.append(_normalize_ctg_form_codes(rec_29))
+    return records_out
+
 def infer_philippine_postal_zip_code(parish: str = "", city: str = "", barangay: str = "", province: str = "") -> str:
     """Infers the official 4-digit Philippine Postal / ZIP Code from Parish, City/Municipality, Barangay, or Province."""
     p_u = str(parish or "").strip().upper()
@@ -22280,18 +22586,25 @@ def _smart_normalize_and_validate_uploaded_member_rows(rows: list[dict], default
         except Exception:
             age_int = None
 
-        raw_cat = str(item.get("Category", "")).strip()
-        std_cat = classify_category(raw_cat)
-        if std_cat not in ("Seniors", "Adults", "Youth", "Kid") and age_int is not None:
+        raw_cat = str(item.get("Category", "")).strip().upper()
+        cat_step3_map = {
+            "C": "KID", "K": "KID", "KID": "KID", "KIDS": "KID", "CHILD": "KID",
+            "Y": "YOUTH", "YOUTH": "YOUTH",
+            "A": "ADULT", "ADULT": "ADULT", "ADULTS": "ADULT",
+            "S": "SENIOR CITIZEN", "SC": "SENIOR CITIZEN", "SENIOR": "SENIOR CITIZEN",
+            "SENIORS": "SENIOR CITIZEN", "SENIOR CITIZEN": "SENIOR CITIZEN",
+        }
+        std_cat = cat_step3_map.get(raw_cat, "")
+        if not std_cat and age_int is not None:
             if age_int >= 60:
-                std_cat = "Seniors"
-            elif age_int >= 31:
-                std_cat = "Adults"
+                std_cat = "SENIOR CITIZEN"
+            elif age_int >= 25:
+                std_cat = "ADULT"
             elif age_int >= 13:
-                std_cat = "Youth"
+                std_cat = "YOUTH"
             else:
-                std_cat = "Kid"
-        if std_cat in ("Seniors", "Adults", "Youth", "Kid"):
+                std_cat = "KID"
+        if std_cat:
             item["Category"] = std_cat
 
         # 4. Status & Church Member normalization
@@ -22354,16 +22667,23 @@ def extract_members_from_uploaded_files_batch(uploaded_files_list: list, default
         f_name = f_info["name"]
         ext = f_name.split(".")[-1].lower()
 
-        if ext in ["xlsx", "csv"]:
+        if ext in ["xlsx", "xls", "csv"]:
             try:
                 parsed_xl = _parse_multi_section_or_flat_excel_members(f_bytes, f_name, default_parish)
                 if parsed_xl:
                     all_extracted_members.extend(parsed_xl)
+                else:
+                    # Fallback to AI Multi-Format Extractor (extract_text_from_excel + process_uploaded_files)
+                    ai_xl_dict = process_uploaded_files([f_info])
+                    if ai_xl_dict:
+                        ai_xl_recs = convert_family_form_extraction_to_step3_records(ai_xl_dict, default_parish)
+                        if ai_xl_recs:
+                            all_extracted_members.extend(ai_xl_recs)
             except Exception:
                 pass
 
         elif ext == "pdf":
-            pdf_pils = extract_page_images_from_pdf_bytes(f_bytes)
+            pdf_pils = pdf_to_images(f_bytes, dpi=250)
             pdf_parts = []
             for p_idx, p_im in enumerate(pdf_pils, 1):
                 jb = io.BytesIO()
@@ -22390,6 +22710,13 @@ def extract_members_from_uploaded_files_batch(uploaded_files_list: list, default
                 default_parish=default_parish,
                 model_name=model_name
             )
+            if not fam_from_pdf:
+                try:
+                    ai_pdf_dict = process_uploaded_files([f_info])
+                    if ai_pdf_dict:
+                        fam_from_pdf = convert_family_form_extraction_to_step3_records(ai_pdf_dict, default_parish)
+                except Exception:
+                    pass
             if fam_from_pdf:
                 all_extracted_members.extend(fam_from_pdf)
 
@@ -22425,6 +22752,14 @@ def extract_members_from_uploaded_files_batch(uploaded_files_list: list, default
             default_parish=default_parish,
             model_name=model_name
         )
+        if not fam_from_imgs:
+            try:
+                img_files_only = [f_x for f_x in uploaded_files_list if not f_x.get("name", "").lower().endswith((".pdf", ".xlsx", ".xls", ".csv"))]
+                ai_img_dict = process_uploaded_files(img_files_only)
+                if ai_img_dict:
+                    fam_from_imgs = convert_family_form_extraction_to_step3_records(ai_img_dict, default_parish)
+            except Exception:
+                pass
         if fam_from_imgs:
             all_extracted_members.extend(fam_from_imgs)
 
