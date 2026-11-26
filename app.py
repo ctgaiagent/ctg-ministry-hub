@@ -1287,24 +1287,12 @@ class FamilyFormExtraction(_PydanticBaseModel):
     household_remarks: str = _PydanticField(description="Section VI (Page 4): Remarks o notes kung meron")
 
 
-# 2. PDF TO HIGH-RES IMAGES CONVERTER (250 DPI via PyMuPDF fitz + pypdfium2 fallback)
+# 2. PDF TO HIGH-RES IMAGES CONVERTER (250 DPI across ALL pages via PyMuPDF fitz + pypdfium2 fallback)
 def pdf_to_images(pdf_bytes: bytes, dpi: int = 250) -> list[Image.Image]:
     if not pdf_bytes:
         return []
-    if _pymupdf_fitz is not None:
-        try:
-            doc = _pymupdf_fitz.open(stream=pdf_bytes, filetype="pdf")
-            images = []
-            for page in doc:
-                pix = page.get_pixmap(dpi=dpi)
-                img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
-                images.append(img)
-            if images:
-                return images
-        except Exception:
-            pass
     try:
-        return extract_page_images_from_pdf_bytes(pdf_bytes)
+        return extract_page_images_from_pdf_bytes(pdf_bytes, dpi=dpi)
     except Exception:
         return []
 
@@ -1378,7 +1366,7 @@ def process_uploaded_files(uploaded_files, api_key: str = "") -> dict:
     Ikaw ay isang eksperto sa pagbabasa at pag-extract ng data mula sa 'Church of the Temple of God Official Family Information Form'.
 
     MGA MAHALAGANG PANUNTUNAN:
-    1. Basahin ang LAHAT ng pahina o files na ibinigay (Page 1, Page 2, Page 3, hanggang Page 4 / huling pahina).
+    1. Basahin ang LAHAT ng pahina o files na ibinigay nang sabay-sabay (Page 1, Page 2, Page 3, hanggang Page 4 / huling pahina).
     2. HUWAG MANGHULA MULA SA FILENAME. Kunin lamang ang aktwal na nakasulat (handwritten o printed) sa form:
        - Page 1 (Section I & Section II): Basahin ang Parish, Area/Zone, Cell Group, Family ID, Head of Family, Mobile Number, Complete Address, Barangay, City/Municipality, Province, at ZIP Code.
     3. Sa Section III (III. FAMILY MEMBERS):
@@ -1399,17 +1387,54 @@ def process_uploaded_files(uploaded_files, api_key: str = "") -> dict:
        - Basahin ang aktwal na nakasulat na Name, Relationship, at Contact Number sa Section V.
        - Ilagay sa emergency_contact_name ang Name, at sa emergency_contact_no_rel ang Contact Number at Relationship (hal. "09504695484 (Wife)"). Huwag ilagay ang "Head of Family" kung hindi iyon ang nakasulat sa Section V.
     5. Kung may field na talagang walang nakasulat sa form, iwanang blanko ("").
+
+    Ibalik LAMANG ang valid JSON object na may eksaktong keys na ito:
+    {
+      "parish": "",
+      "area_zone": "",
+      "cell_group": "",
+      "family_id": "",
+      "head_of_family": "",
+      "household_mobile": "",
+      "complete_address": "",
+      "barangay": "",
+      "city_municipality": "",
+      "province_area": "",
+      "zip_code": "",
+      "family_members": [
+        {
+          "full_name": "",
+          "relationship": "",
+          "sex": "",
+          "birthdate": "YYYY-MM-DD",
+          "age": "",
+          "category": "",
+          "civil_status": "",
+          "student_working": "",
+          "contact_no": "",
+          "church_member": "YES",
+          "status": "ACTIVE",
+          "baptized": "YES",
+          "baptism_date": "",
+          "current_address": ""
+        }
+      ],
+      "emergency_contact_name": "",
+      "emergency_contact_no_rel": "",
+      "household_remarks": ""
+    }
     """
 
-    # Enhance images and add dedicated high-res crops of Page 2 Section III (Rows 1-2), Page 3 Section III (Rows 3-10), and Page 4 Section V (Emergency Contact)
-    prepared_images: list[Image.Image] = []
+    # Enhance all individual pages (Page 1, Page 2, Page 3, Page 4) at 250 DPI and add zoomed high-res crops of Section III (Pages 2 & 3) and Section V (Page 4)
+    image_parts_for_gemini = []
+    pil_images_for_gemini: list[Image.Image] = []
     zoom_crops: list[Image.Image] = []
     for idx_p, raw_im in enumerate(all_images):
         try:
             enh_im = _enhance_form_image_for_reading(raw_im)
         except Exception:
             enh_im = raw_im
-        prepared_images.append(enh_im)
+        pil_images_for_gemini.append(enh_im)
         try:
             w_p, h_p = enh_im.size
             if w_p > 400 and h_p > 400:
@@ -1417,7 +1442,7 @@ def process_uploaded_files(uploaded_files, api_key: str = "") -> dict:
                     # Page 2 bottom half: III. FAMILY MEMBERS Rows 1-2
                     zoom_crops.append(enh_im.crop((0, int(h_p * 0.50), w_p, int(h_p * 0.98))))
                 elif idx_p == 2:
-                    # Page 3 top 70%: III. FAMILY MEMBERS Rows 3-10
+                    # Page 3 top 72%: III. FAMILY MEMBERS Rows 3-10
                     zoom_crops.append(enh_im.crop((0, 0, w_p, int(h_p * 0.72))))
                 elif idx_p == 3:
                     # Page 4 top 55%: V. EMERGENCY CONTACT & VI. REMARKS
@@ -1425,18 +1450,24 @@ def process_uploaded_files(uploaded_files, api_key: str = "") -> dict:
         except Exception:
             pass
 
+    for im_item in (pil_images_for_gemini + zoom_crops):
+        try:
+            buf_im = io.BytesIO()
+            im_item.save(buf_im, format="JPEG", quality=92)
+            image_parts_for_gemini.append(types.Part.from_bytes(data=buf_im.getvalue(), mime_type="image/jpeg"))
+        except Exception:
+            image_parts_for_gemini.append(im_item)
+
     contents = [prompt]
-    if prepared_images:
-        contents.extend(prepared_images)
-        if zoom_crops:
-            contents.extend(zoom_crops)
+    if image_parts_for_gemini:
+        contents.extend(image_parts_for_gemini)
     if excel_texts:
         contents.append("\n\n".join(excel_texts))
 
-    models_order = ["gemini-2.5-flash", get_configured_free_gemini_model(), "gemini-2.5-flash-lite", "gemini-2.0-flash"]
+    models_order = ["gemini-3.0-flash", "gemini-2.5-flash", get_configured_free_gemini_model(), "gemini-2.5-flash-lite"]
     seen_m = set()
-    unique_models = [m for m in models_order if m and not (m in seen_m or seen_m.add(m))]
-    last_err_msg = ""
+    unique_models = [m for m in models_order if m and "2.0" not in m and not (m in seen_m or seen_m.add(m))]
+    err_details = []
 
     for k_curr in keys_to_try:
         try:
@@ -1464,20 +1495,22 @@ def process_uploaded_files(uploaded_files, api_key: str = "") -> dict:
                         if "{" in raw_txt and "}" in raw_txt:
                             raw_txt = raw_txt[raw_txt.find("{"):raw_txt.rfind("}") + 1]
                         parsed = json.loads(raw_txt)
-                        if isinstance(parsed, dict) and (parsed.get("family_members") or parsed.get("head_of_family")):
+                        if isinstance(parsed, dict) and (parsed.get("family_members") or parsed.get("members") or parsed.get("head_of_family")):
                             st.session_state.pop("_last_gemini_extraction_error", None)
                             return parsed
                     except Exception as e_inner:
-                        last_err_msg = f"{m_curr}: {str(e_inner)}"
-                        if "404" in str(e_inner) or "NOT_FOUND" in str(e_inner) or "429" in str(e_inner):
+                        e_str = str(e_inner)
+                        err_details.append(f"{m_curr}: {e_str[:160]}")
+                        if "404" in e_str or "NOT_FOUND" in e_str or "429" in e_str:
                             break
                         continue
         except Exception as e_outer:
-            last_err_msg = str(e_outer)
+            err_details.append(str(e_outer)[:160])
             continue
 
-    if last_err_msg:
-        st.session_state["_last_gemini_extraction_error"] = last_err_msg
+    if err_details:
+        non_404 = [e for e in err_details if "404" not in e and "NOT_FOUND" not in e]
+        st.session_state["_last_gemini_extraction_error"] = non_404[0] if non_404 else err_details[0]
     return {}
 
 
@@ -9102,7 +9135,7 @@ def safe_generate_content(client, model, contents, config=None):
         first_m = "gemini-2.5-flash" if clean_m == "gemini-3.8-flash" else "gemini-3.1-pro-preview"
     else:
         first_m = clean_m
-    fallback_models = [first_m, "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3.1-pro-preview", "gemini-2.0-flash"]
+    fallback_models = [first_m, "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3.1-pro-preview", "gemini-3.0-flash"]
     seen_m = set()
     ordered_models = []
     for m in fallback_models:
@@ -9654,10 +9687,9 @@ my_chat_id = get_current_chat_identity()
 # =====================================================================
 
 FREE_TIER_ALLOWED_GEMINI_MODELS = [
+    "gemini-3.0-flash",
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
-    "gemini-2.0-flash",
-    "gemini-2.0-flash-lite",
 ]
 
 def get_configured_free_gemini_model(requested_model: str = "") -> str:
@@ -13631,7 +13663,7 @@ def extract_weekly_report_via_ai_vision(file_bytes: bytes, mime_type: str, model
         '"report_date": "01/02/27", "remarks": ""}'
     )
 
-    models_to_try = [get_configured_free_gemini_model(model_name), "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-2.0-flash-lite"]
+    models_to_try = [get_configured_free_gemini_model(model_name), "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3.0-flash", "gemini-2.5-flash-lite"]
     seen_models = []
     for m in models_to_try:
         if m and m not in seen_models:
@@ -20096,7 +20128,7 @@ def render_ctg_gabay_ai_assistant_section(show_top_banner: bool = True, key_pref
         f"{configured_default_model} (Env Default • Free Tier)",
         "gemini-2.5-flash (Free Tier Balanced)",
         "gemini-2.5-flash-lite (Free Tier Fastest & Highest Quota)",
-        "gemini-2.0-flash (Free Tier Fallback)"
+        "gemini-3.0-flash (Free Tier Primary)"
     ]
     # Deduplicate options while preserving order
     seen_opts = []
@@ -21039,8 +21071,8 @@ def _preprocess_form_pil_images(imgs: list[Image.Image]) -> list[Image.Image]:
         if (is_multi_page_form and w < h) or (not is_multi_page_form and w < h * 0.85 and h > 900):
             im = im.rotate(90, expand=True)
             w, h = im.size
-        if max(w, h) > 1400:
-            scale = 1400.0 / float(max(w, h))
+        if max(w, h) > 2400:
+            scale = 2400.0 / float(max(w, h))
             im = im.resize((int(w * scale), int(h * scale)), Image.Resampling.BICUBIC)
         optimized_imgs.append(im)
 
@@ -21059,34 +21091,30 @@ def _preprocess_form_pil_images(imgs: list[Image.Image]) -> list[Image.Image]:
             pass
     return optimized_imgs
 
-def extract_page_images_from_pdf_bytes(raw_pdf: bytes) -> list[Image.Image]:
+def extract_page_images_from_pdf_bytes(raw_pdf: bytes, dpi: int = 250) -> list[Image.Image]:
     """
-    Universal 4-Tier PDF-to-PIL-Images extractor (1 PDF = 1 Family multi-page form):
-    - Tier 1: pypdfium2 (loaded dynamically via importlib so Pylance shows 0 missing-import warnings)
-    - Tier 2: PyMuPDF (fitz)
+    Universal 4-Tier High-Resolution (250 DPI) PDF-to-PIL-Images extractor (1 PDF = 1 Family multi-page form):
+    - Tier 1: PyMuPDF (fitz) at 250 DPI PNG
+    - Tier 2: pypdfium2 at 250 DPI (scale = dpi / 72.0)
     - Tier 3: pypdf (page.images)
     - Tier 4: Pure-Python raw JPEG stream scanner (works with 0 external PDF dependencies!)
-    Automatically rotates sideways portrait scans (w < h) to landscape upright orientation and resizes to max_dim=1280.
+    Automatically rotates sideways portrait scans (w < h) to landscape upright orientation while keeping crisp 250 DPI resolution across ALL pages (Pages 1-4+).
     """
     imgs = []
-    # Tier 1: pypdfium2 (loaded dynamically via importlib so Pylance shows 0 missing-import warnings, with explicit close())
+    target_dpi = max(150, min(300, int(dpi or 250)))
+
+    # Tier 1: PyMuPDF (fitz) at 250 DPI PNG
     try:
-        pdfium = importlib.import_module("pypdfium2")
-        doc = pdfium.PdfDocument(raw_pdf)
-        page_cnt = min(8, len(doc))
-        for i in range(page_cnt):
-            page = doc[i]
-            bitmap = page.render(scale=1.15)
-            pil_im = bitmap.to_pil().convert("RGB")
-            if max(pil_im.size) > 1150:
-                _sc = 1150.0 / float(max(pil_im.size))
-                pil_im = pil_im.resize((int(pil_im.width * _sc), int(pil_im.height * _sc)), Image.Resampling.BILINEAR)
+        fitz = importlib.import_module("fitz")
+        doc = fitz.open(stream=raw_pdf, filetype="pdf")
+        for page in list(doc)[:12]:
+            pix = page.get_pixmap(dpi=target_dpi)
+            pil_im = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
+            if max(pil_im.size) > 2400:
+                _sc = 2400.0 / float(max(pil_im.size))
+                pil_im = pil_im.resize((int(pil_im.width * _sc), int(pil_im.height * _sc)), Image.Resampling.BICUBIC)
             imgs.append(pil_im.copy())
-            try:
-                bitmap.close()
-                page.close()
-            except Exception:
-                pass
+            del pix
         try:
             doc.close()
         except Exception:
@@ -21094,19 +21122,26 @@ def extract_page_images_from_pdf_bytes(raw_pdf: bytes) -> list[Image.Image]:
     except Exception:
         imgs = []
 
-    # Tier 2: PyMuPDF (fitz)
+    # Tier 2: pypdfium2 at 250 DPI (scale = target_dpi / 72.0)
     if not imgs:
         try:
-            fitz = importlib.import_module("fitz")
-            doc = fitz.open(stream=raw_pdf, filetype="pdf")
-            for page in list(doc)[:8]:
-                pix = page.get_pixmap(dpi=115)
-                pil_im = Image.open(io.BytesIO(pix.tobytes("jpeg"))).convert("RGB")
-                if max(pil_im.size) > 1150:
-                    _sc = 1150.0 / float(max(pil_im.size))
-                    pil_im = pil_im.resize((int(pil_im.width * _sc), int(pil_im.height * _sc)), Image.Resampling.BILINEAR)
+            pdfium = importlib.import_module("pypdfium2")
+            doc = pdfium.PdfDocument(raw_pdf)
+            page_cnt = min(12, len(doc))
+            render_scale = float(target_dpi) / 72.0
+            for i in range(page_cnt):
+                page = doc[i]
+                bitmap = page.render(scale=render_scale)
+                pil_im = bitmap.to_pil().convert("RGB")
+                if max(pil_im.size) > 2400:
+                    _sc = 2400.0 / float(max(pil_im.size))
+                    pil_im = pil_im.resize((int(pil_im.width * _sc), int(pil_im.height * _sc)), Image.Resampling.BICUBIC)
                 imgs.append(pil_im.copy())
-                del pix
+                try:
+                    bitmap.close()
+                    page.close()
+                except Exception:
+                    pass
             try:
                 doc.close()
             except Exception:
@@ -21800,7 +21835,7 @@ def _extract_single_family_from_vision_parts(
             '"remarks": "...", '
             '"interpreted_summary_text": "Concise line-by-line transcription of all handwritten text read from the image(s)"}'
         )
-        models_to_try = [get_configured_free_gemini_model(), "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash"]
+        models_to_try = [get_configured_free_gemini_model(), "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3.0-flash"]
         vision_err_log = []
 
         for k_api in valid_keys:
