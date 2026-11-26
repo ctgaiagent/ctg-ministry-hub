@@ -1,19 +1,8 @@
 """
 baptismal/migrations.py — Idempotent Database Schema & Migrations
 =================================================================
-Creates and upgrades all tables required by the CTG Baptismal Role-Based System:
-1. baptismal_accounts (with fixed server-side `assigned_parish`)
-2. baptismal_roles_permissions
-3. historical_records
-4. new_baptism_registrations (with `verification_status`, `verified_by`, `verified_at`, `verification_notes`)
-5. drive_file_mappings
-6. historical_image_associations
-7. certificate_requests (supporting both `HISTORICAL_RECORD` and `CERTIFIED_CERTIFICATE` requests with full genealogy fields)
-8. temporary_access_grants
-9. generated_certificates (with `request_id`, `authorized_account_id`, `assigned_parish`, `approval_status`, `is_released_to_requester`)
-10. baptismal_audit_logs
-11. workbook_update_logs
-12. schema_migrations
+Includes `staged_registration_files` so Parish Leader Admin uploads are staged
+for Master Admin confirmation before encoding into Google Drive Excel and Drive folders.
 """
 
 from datetime import datetime, timezone
@@ -121,6 +110,21 @@ MIGRATIONS: List[Tuple[str, List[str]]] = [
             """,
             "CREATE INDEX IF NOT EXISTS idx_new_bap_year ON new_baptism_registrations(baptism_year)",
             "CREATE INDEX IF NOT EXISTS idx_new_bap_parish ON new_baptism_registrations(parish)",
+            """
+            CREATE TABLE IF NOT EXISTS staged_registration_files (
+                staged_id TEXT PRIMARY KEY,
+                record_id TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                file_b64 TEXT NOT NULL,
+                file_size_bytes INTEGER NOT NULL,
+                uploaded_by TEXT NOT NULL,
+                is_pushed_to_drive INTEGER NOT NULL DEFAULT 0,
+                drive_file_id TEXT,
+                created_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_staged_rec ON staged_registration_files(record_id)",
             """
             CREATE TABLE IF NOT EXISTS drive_file_mappings (
                 mapping_id TEXT PRIMARY KEY,
@@ -254,7 +258,6 @@ MIGRATIONS: List[Tuple[str, List[str]]] = [
     ),
 ]
 
-# Columns to ensure on existing databases upgraded from earlier schema
 _UPGRADE_COLUMNS: List[Tuple[str, str, str]] = [
     ("baptismal_accounts", "assigned_parish", "TEXT NOT NULL DEFAULT ''"),
     ("new_baptism_registrations", "verification_status", "TEXT NOT NULL DEFAULT 'Pending Verification'"),
@@ -283,7 +286,7 @@ _UPGRADE_COLUMNS: List[Tuple[str, str, str]] = [
 
 
 def run_migrations(db: DatabaseManager) -> List[str]:
-    """Applies any unapplied database migrations and column upgrades idempotently."""
+    """Applies any unapplied database migrations and column/table upgrades idempotently."""
     db.execute(
         """
         CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -308,7 +311,24 @@ def run_migrations(db: DatabaseManager) -> List[str]:
             )
         newly_applied.append(version)
 
-    # Idempotently add any new columns on pre-existing tables
+    # Ensure staged_registration_files exists even on older databases
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS staged_registration_files (
+            staged_id TEXT PRIMARY KEY,
+            record_id TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            mime_type TEXT NOT NULL,
+            file_b64 TEXT NOT NULL,
+            file_size_bytes INTEGER NOT NULL,
+            uploaded_by TEXT NOT NULL,
+            is_pushed_to_drive INTEGER NOT NULL DEFAULT 0,
+            drive_file_id TEXT,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+
     for tbl, col, col_def in _UPGRADE_COLUMNS:
         try:
             db.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {col_def}")

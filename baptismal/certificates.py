@@ -1,20 +1,17 @@
 """
-baptismal/certificates.py — Master-Admin-Controlled Certificate Issuance & Release
-==================================================================================
-Enforces Section 7 (Certified Baptismal Certificate Requests):
-- Parish Leader Admins can NEVER generate, modify, approve, or issue official
-  certified certificates independently.
-- Only Master Admin (or a specific temporary grant explicitly holding `generate_certificate`)
-  can generate a certificate.
-- Master Admin alone can approve, issue, and release an official certificate to a
-  requesting Parish Leader Admin account (`approve_and_release_certificate_for_request`).
-- A Parish Leader Admin can ONLY download certificates where:
-  `is_released_to_requester == 1` AND `authorized_account_id == actor_account_id`
-  AND `assigned_parish == actor_parish`.
+baptismal/certificates.py — Master-Admin-Controlled Certificate Issuance, Release & Direct User Sharing
+=======================================================================================================
+Supports:
+1. Official Certificate Generation & Print (A4 Portrait / Landscape)
+2. 7-Step Request Approval & Release (`approve_and_release_certificate_for_request`)
+3. 1-Click Direct Sharing to Any Username (`share_record_and_certificate_with_username`) so
+   Master Admin can share any record & printable certificate directly with any Parish Leader Admin
+   username for them to view, download, and print.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
+import json
 import secrets
 from typing import Any, Dict, List, Optional
 
@@ -24,11 +21,11 @@ from .audit_logs import AuditLogger
 from .authorization import AuthorizationError, AuthorizationService
 from .database import DatabaseManager
 from .google_drive import GoogleDriveManager
-from .historical_records import HistoricalRecordsService
+from .historical_records import HistoricalRecordsService, resolve_quick_record_id
 
 
 class CertificateService:
-    """Manages Master-Admin-controlled Certificate of Baptism generation, issuance, release, and download gating."""
+    """Manages Master-Admin-controlled Certificate of Baptism generation, issuance, release, and username sharing."""
 
     def __init__(
         self,
@@ -58,24 +55,24 @@ class CertificateService:
         assigned_parish: str = "",
         release_to_requester: bool = False,
     ) -> Dict[str, Any]:
-        # Parish Leader Admins are strictly forbidden from generating/issuing certificates independently
+        resolved_rec_id = resolve_quick_record_id(record_id)
         if self.authz.is_parish_leader_admin(actor_account_id):
             self.audit.log_event(
                 actor_account_id,
                 "ACCESS_DENIED",
                 "FAILURE",
-                related_record_id=record_id,
+                related_record_id=resolved_rec_id,
                 metadata={"reason": "parish_admin_cannot_generate_or_issue_certificates"},
             )
             raise AuthorizationError(
                 "Access denied: Parish Leader Admins cannot generate or issue official certificates independently."
             )
 
-        self.authz.require_record_permission(actor_account_id, record_id, "generate_certificate")
+        self.authz.require_record_permission(actor_account_id, resolved_rec_id, "generate_certificate")
 
-        record = self.records_svc.get_record_by_id(record_id)
+        record = self.records_svc.get_record_by_id(resolved_rec_id)
         if not record:
-            raise ValueError(f"Baptismal record '{record_id}' not found.")
+            raise ValueError(f"Baptismal record '{resolved_rec_id}' not found.")
 
         if is_reissue and not str(reissue_reason or "").strip():
             raise ValueError("Reissue reason is required when reissuing a certificate.")
@@ -106,7 +103,7 @@ class CertificateService:
             if cert_folder_id:
                 up_res = self.drive.upload_private_file(
                     pdf_bytes,
-                    f"{cert_id}_{record_id}.pdf",
+                    f"{cert_id}_{resolved_rec_id}.pdf",
                     "application/pdf",
                     cert_folder_id,
                 )
@@ -126,7 +123,7 @@ class CertificateService:
             """,
             (
                 cert_id,
-                record_id,
+                resolved_rec_id,
                 request_id.strip() or None,
                 authorized_account_id.strip() or None,
                 eff_parish,
@@ -148,18 +145,88 @@ class CertificateService:
             actor_account_id,
             "CERTIFICATE_REISSUED" if is_reissue else "CERTIFICATE_GENERATED",
             "SUCCESS",
-            related_record_id=record_id,
+            related_record_id=resolved_rec_id,
             metadata={"certificate_id": cert_id, "status": issuance_status, "released": bool(rel_flag)},
         )
         return {
             "certificate_id": cert_id,
-            "record_id": record_id,
+            "record_id": resolved_rec_id,
             "issuance_date": issuance_date,
             "issuance_status": issuance_status,
             "is_released_to_requester": bool(rel_flag),
             "drive_file_id": drive_file_id,
             "pdf_sha256": pdf_sha256,
             "pdf_bytes": pdf_bytes,
+        }
+
+    def share_record_and_certificate_with_username(
+        self,
+        admin_account_id: str,
+        record_id: str,
+        target_username: str,
+        duration_hours: float = 72.0,
+        orientation: str = "portrait",
+        upload_to_drive: bool = False,
+    ) -> Dict[str, Any]:
+        """Allows Master Admin to directly share/release any record and its official printable
+        certificate with another username (such as any Parish Leader Admin) so they can view & print it."""
+        self.authz.require_master_admin(admin_account_id, action="share_certificate_with_username")
+        resolved_rec_id = resolve_quick_record_id(record_id)
+        uname_clean = str(target_username or "").strip().lower()
+        target_acc = self.db.fetch_one(
+            "SELECT account_id, username, assigned_parish FROM baptismal_accounts WHERE username = %s AND is_active = 1",
+            (uname_clean,),
+        )
+        if not target_acc:
+            raise ValueError(f"Target username '{target_username}' not found or inactive.")
+
+        cert_res = self.generate_certificate(
+            actor_account_id=admin_account_id,
+            record_id=resolved_rec_id,
+            orientation=orientation,
+            upload_to_drive=upload_to_drive,
+            authorized_account_id=target_acc["account_id"],
+            assigned_parish=str(target_acc.get("assigned_parish") or ""),
+            release_to_requester=True,
+        )
+
+        now = datetime.now(timezone.utc)
+        expires_at = (now + timedelta(hours=float(duration_hours))).isoformat()
+        grant_id = f"GRANT-{secrets.token_hex(5).upper()}"
+        perms = ["view_record", "view_image", "download_certificate", "print_certificate"]
+        self.db.execute(
+            """
+            INSERT INTO temporary_access_grants (
+                grant_id, request_id, account_id, record_id, permissions_json,
+                expires_at, is_revoked, revoked_by, revoked_at, granted_by, created_at
+            ) VALUES (%s, NULL, %s, %s, %s, %s, 0, NULL, NULL, %s, %s)
+            """,
+            (
+                grant_id,
+                target_acc["account_id"],
+                resolved_rec_id,
+                json.dumps(perms),
+                expires_at,
+                admin_account_id,
+                now.isoformat(),
+            ),
+        )
+        self.audit.log_event(
+            admin_account_id,
+            "CERTIFICATE_SHARED_WITH_USERNAME",
+            "SUCCESS",
+            related_record_id=resolved_rec_id,
+            metadata={
+                "certificate_id": cert_res["certificate_id"],
+                "grant_id": grant_id,
+                "target_username": target_acc["username"],
+            },
+        )
+        return {
+            **cert_res,
+            "grant_id": grant_id,
+            "target_username": target_acc["username"],
+            "expires_at": expires_at,
         }
 
     def approve_and_release_certificate_for_request(
@@ -171,17 +238,15 @@ class CertificateService:
         review_notes: str = "",
         upload_to_drive: bool = False,
     ) -> Dict[str, Any]:
-        """Executes Steps 4-7 of the Certified Baptismal Certificate workflow:
-        Master Admin verifies the historical record, approves the request, generates the official
-        certificate, and releases it exclusively to the requesting Parish Leader Admin account."""
         self.authz.require_master_admin(admin_account_id, action="approve_and_release_certificate")
         req = self.db.fetch_one("SELECT * FROM certificate_requests WHERE request_id = %s", (request_id,))
         if not req:
             raise ValueError(f"Certificate request '{request_id}' not found.")
 
+        resolved_rec_id = resolve_quick_record_id(record_id)
         cert_res = self.generate_certificate(
             actor_account_id=admin_account_id,
-            record_id=record_id,
+            record_id=resolved_rec_id,
             orientation=orientation,
             upload_to_drive=upload_to_drive,
             request_id=request_id,
@@ -198,7 +263,7 @@ class CertificateService:
             WHERE request_id = %s
             """,
             (
-                record_id,
+                resolved_rec_id,
                 cert_res["certificate_id"],
                 admin_account_id,
                 now_iso,
@@ -211,7 +276,7 @@ class CertificateService:
             admin_account_id,
             "CERTIFICATE_APPROVED_AND_RELEASED",
             "SUCCESS",
-            related_record_id=record_id,
+            related_record_id=resolved_rec_id,
             metadata={
                 "request_id": request_id,
                 "certificate_id": cert_res["certificate_id"],
@@ -222,7 +287,6 @@ class CertificateService:
         return cert_res
 
     def download_released_certificate(self, actor_account_id: str, certificate_id: str) -> bytes:
-        """Verifies server-side that the requesting account is authorized to download this specific released certificate."""
         cert = self.db.fetch_one(
             "SELECT * FROM generated_certificates WHERE certificate_id = %s",
             (certificate_id,),
@@ -285,6 +349,6 @@ class CertificateService:
         if record_id:
             return self.db.fetch_all(
                 "SELECT * FROM generated_certificates WHERE record_id = %s ORDER BY created_at DESC",
-                (record_id,),
+                (resolve_quick_record_id(record_id),),
             )
         return self.db.fetch_all("SELECT * FROM generated_certificates ORDER BY created_at DESC")

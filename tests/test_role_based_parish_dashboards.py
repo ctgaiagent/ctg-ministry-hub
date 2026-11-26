@@ -184,5 +184,37 @@ class TestRoleBasedTenAccountsAndHongKongExclusion(unittest.TestCase):
             self.certs.download_released_certificate(lipay_admin["account_id"], released_cert["certificate_id"])
 
 
+
+    def test_quick_id_last_number_search_stage_confirm_and_share_print(self):
+        from baptismal.historical_records import resolve_quick_record_id
+        self.assertEqual(resolve_quick_record_id("1"), "HIST-00001")
+        self.assertEqual(resolve_quick_record_id("743"), "HIST-00743")
+        self.assertEqual(resolve_quick_record_id("HIST-15"), "HIST-00015")
+
+        # Parish Leader Admin uploads new baptism -> staged awaiting Master Admin confirmation
+        caba_admin = next(p for p in self.parish_admins if p["assigned_parish"] == "Caba Parish")
+        payload = {c: "" for c in HISTORICAL_27_COLUMNS}
+        payload.update({
+            "Name of the Child": "Staged Baptism Child",
+            "Date of Baptism": "2026-09-12",
+            "Year of Baptism": "2026",
+        })
+        reg_res = self.reg.register_new_baptism(caba_admin["account_id"], payload, sync_to_drive_excel=False)
+        self.assertEqual(reg_res["verification_status"], "Pending Verification")
+        self.assertEqual(reg_res["workbook_update_status"], "AWAITING_ADMIN_CONFIRMATION")
+
+        # Master Admin confirms the staged submission
+        conf_res = self.reg.confirm_and_sync_submission_to_drive(self.master_id, reg_res["record_id"], sync_to_drive=False)
+        self.assertEqual(conf_res["verification_status"], "Approved")
+
+        # Master Admin shares printable certificate directly with another username (e.g. santiago_bap_admin)
+        santiago_admin = next(p for p in self.parish_admins if p["assigned_parish"] == "Santiago Parish")
+        sh_res = self.certs.share_record_and_certificate_with_username(
+            self.master_id, reg_res["record_id"], santiago_admin["username"], duration_hours=48.0
+        )
+        pdf_b = self.certs.download_released_certificate(santiago_admin["account_id"], sh_res["certificate_id"])
+        self.assertTrue(pdf_b.startswith(b"%PDF-"))
+
+
 if __name__ == "__main__":
     unittest.main()

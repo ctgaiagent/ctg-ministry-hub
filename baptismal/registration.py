@@ -1,16 +1,19 @@
 """
-baptismal/registration.py — Parish-Scoped New Baptism Registration & Verification
-=================================================================================
-- Supports both Master Admin and the 9 Parish Leader Admins.
-- For Parish Leader Admins, `Parish` is automatically obtained from the authenticated
-  database account (`authz.get_authenticated_parish(actor_account_id)`) — NEVER from
-  browser input, URL parameters, or session-state manipulation.
-- Hong Kong Parish is strictly rejected.
-- Parish Leader Admins can edit their own submission ONLY while its `verification_status`
-  is in `EDITABLE_REGISTRATION_STATUSES` (`Pending Verification` / `Additional Information Required`).
-- Master Admin verifies, approves, or rejects submissions across all 9 parishes.
+baptismal/registration.py — Stage-Then-Confirm Parish Baptism Registration & Drive Sync
+=======================================================================================
+Workflow:
+1. When a Parish Leader Admin submits a new baptism + uploads baptismal images/files:
+   - The record and uploaded files are staged in the database (`Pending Verification`,
+     `workbook_update_status = 'AWAITING_ADMIN_CONFIRMATION'`).
+   - It does NOT write to the Google Drive Master Excel or Drive folder yet!
+2. When the Master Admin reviews the submission and clicks Confirm (`confirm_and_sync_submission_to_drive`):
+   - The submission is marked `Approved`.
+   - Staged images/files are uploaded to private Google Drive (`NEW BAPTISM IMAGES/<year>`).
+   - The 27-column record is encoded/appended into `NEW BAPTISMS - <year>` inside
+     `OVERALL BAPTISMAL CERTIFICATE LIST.xlsx` on Google Drive!
 """
 
+import base64
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -50,7 +53,7 @@ def compute_registration_fingerprint(data: Dict[str, Any]) -> str:
 
 
 class RegistrationService:
-    """Coordinates validated new baptism registrations, parish isolation, edit locking, and Master Admin verification."""
+    """Coordinates staged Parish Leader Admin submissions and Master Admin confirmation & Google Drive encoding."""
 
     REQUIRED_FIELDS = [
         "Parish",
@@ -74,8 +77,6 @@ class RegistrationService:
         self.backup = backup or BackupManager(db, audit=self.audit)
 
     def _resolve_authoritative_parish(self, actor_account_id: str, requested_parish: str = "") -> str:
-        """Obtains the parish strictly from the authenticated database account for Parish Leader Admins,
-        or validates the selected official parish for Master Admin. Rejects Hong Kong Parish."""
         acc = self.authz.get_live_account(actor_account_id)
         if not acc:
             raise AuthorizationError("Access denied: unauthenticated or inactive account.")
@@ -104,6 +105,146 @@ class RegistrationService:
         if is_excluded_parish(data.get("Parish", "")):
             missing.append("Parish (Hong Kong Parish is excluded)")
         return len(missing) == 0, missing
+
+    def _push_images_and_encode_to_drive(
+        self,
+        actor_account_id: str,
+        record_id: str,
+        bap_year: str,
+        ws_name: str,
+        clean_payload: Dict[str, str],
+        validated_imgs: List[Dict[str, Any]],
+    ) -> Tuple[List[str], str]:
+        """Uploads images/files to Google Drive `NEW BAPTISM IMAGES/<year>` and encodes the 27-col row into `OVERALL BAPTISMAL CERTIFICATE LIST.xlsx`."""
+        uploaded_drive_ids: List[str] = []
+        workbook_status = "LOCAL_ONLY"
+        if self.drive is None:
+            return uploaded_drive_ids, workbook_status
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        try:
+            folder_tree = self.drive.ensure_baptismal_folder_tree()
+            img_folder_id = folder_tree.get(f"NEW BAPTISM IMAGES/{bap_year}") or folder_tree.get("NEW BAPTISM IMAGES", "")
+            for v_img in validated_imgs:
+                created_f = self.drive.upload_private_file(
+                    v_img["bytes"],
+                    v_img["filename"],
+                    v_img["mime_type"],
+                    img_folder_id,
+                )
+                d_fid = str(created_f["id"])
+                uploaded_drive_ids.append(d_fid)
+                self.db.execute(
+                    """
+                    INSERT INTO drive_file_mappings (
+                        mapping_id, record_id, category, original_filename,
+                        drive_file_id, drive_folder_id, year_folder, mime_type,
+                        file_size_bytes, upload_status, uploaded_by, created_at
+                    ) VALUES (%s, %s, 'NEW_BAPTISM_IMAGE', %s, %s, %s, %s, %s, %s, 'UPLOADED', %s, %s)
+                    """,
+                    (
+                        f"drv_{secrets.token_hex(6)}",
+                        record_id,
+                        v_img["filename"],
+                        d_fid,
+                        img_folder_id,
+                        bap_year,
+                        v_img["mime_type"],
+                        len(v_img["bytes"]),
+                        actor_account_id,
+                        now_iso,
+                    ),
+                )
+                self.audit.log_event(
+                    actor_account_id,
+                    "IMAGE_UPLOADED",
+                    "SUCCESS",
+                    related_record_id=record_id,
+                    metadata={"drive_file_id": d_fid, "year": bap_year},
+                )
+
+            wb_file_id = str(self.drive.config.get("workbook_file_id") or "").strip()
+            if wb_file_id:
+                meta = self.drive.verify_workbook_write_access(wb_file_id)
+                before_rev = str(meta.get("headRevisionId") or "")
+                wb_bytes = self.drive.download_file_bytes(wb_file_id)
+                self.backup.save_local_workbook_backup(wb_bytes, label=f"before_{record_id}", actor_id=actor_account_id)
+                bk_folder_id = folder_tree.get("BACKUPS", "")
+                bk_drive_id = ""
+                if bk_folder_id:
+                    bk_res = self.drive.upload_private_file(
+                        wb_bytes,
+                        f"BACKUP_before_{record_id}.xlsx",
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        bk_folder_id,
+                    )
+                    bk_drive_id = str(bk_res.get("id", ""))
+
+                updated_wb_bytes, used_ws = append_new_baptism_to_workbook_bytes(
+                    wb_bytes, clean_payload, record_id, bap_year
+                )
+                upd_res = self.drive.update_existing_file_bytes(
+                    wb_file_id,
+                    updated_wb_bytes,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    expected_revision_id=before_rev,
+                )
+                after_rev = str(upd_res.get("headRevisionId") or "")
+                workbook_status = "SYNCED"
+                self.db.execute(
+                    """
+                    INSERT INTO workbook_update_logs (
+                        update_id, record_id, worksheet_name, drive_file_id,
+                        before_revision_id, after_revision_id, backup_drive_file_id,
+                        status, error_message, actor_account_id, created_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'SUCCESS', '', %s, %s)
+                    """,
+                    (
+                        f"wb_upd_{secrets.token_hex(6)}",
+                        record_id,
+                        used_ws,
+                        wb_file_id,
+                        before_rev,
+                        after_rev,
+                        bk_drive_id,
+                        actor_account_id,
+                        now_iso,
+                    ),
+                )
+                self.audit.log_event(
+                    actor_account_id,
+                    "WORKBOOK_UPDATE_SUCCESS",
+                    "SUCCESS",
+                    related_record_id=record_id,
+                    metadata={"worksheet": used_ws, "drive_file_id": wb_file_id},
+                )
+        except Exception as sync_ex:
+            workbook_status = "SYNC_FAILED"
+            self.db.execute(
+                """
+                INSERT INTO workbook_update_logs (
+                    update_id, record_id, worksheet_name, drive_file_id,
+                    before_revision_id, after_revision_id, backup_drive_file_id,
+                    status, error_message, actor_account_id, created_at
+                ) VALUES (%s, %s, %s, '', '', '', '', 'FAILED', %s, %s, %s)
+                """,
+                (
+                    f"wb_upd_{secrets.token_hex(6)}",
+                    record_id,
+                    ws_name,
+                    str(sync_ex)[:300],
+                    actor_account_id,
+                    now_iso,
+                ),
+            )
+            self.audit.log_event(
+                actor_account_id,
+                "WORKBOOK_UPDATE_FAILED",
+                "FAILURE",
+                related_record_id=record_id,
+                metadata={"error": str(sync_ex)[:180]},
+            )
+        return uploaded_drive_ids, workbook_status
 
     def register_new_baptism(
         self,
@@ -153,6 +294,30 @@ class RegistrationService:
         record_id = generate_stable_record_id(bap_year)
         now_iso = datetime.now(timezone.utc).isoformat()
 
+        # Store staged files in DB so Master Admin can review & push them upon confirmation
+        for v_img in validated_imgs:
+            self.db.execute(
+                """
+                INSERT INTO staged_registration_files (
+                    staged_id, record_id, filename, mime_type, file_b64,
+                    file_size_bytes, uploaded_by, is_pushed_to_drive, drive_file_id, created_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, 0, NULL, %s)
+                """,
+                (
+                    f"stg_{secrets.token_hex(6)}",
+                    record_id,
+                    v_img["filename"],
+                    v_img["mime_type"],
+                    base64.b64encode(v_img["bytes"]).decode("ascii"),
+                    len(v_img["bytes"]),
+                    actor_account_id,
+                    now_iso,
+                ),
+            )
+
+        initial_up_status = "STAGED_FOR_ADMIN_CONFIRMATION" if (validated_imgs and not is_master) else ("PENDING" if validated_imgs else "NONE")
+        initial_wb_status = "AWAITING_ADMIN_CONFIRMATION" if not is_master else ("PENDING" if sync_to_drive_excel else "LOCAL_ONLY")
+
         self.db.execute(
             """
             INSERT INTO new_baptism_registrations (
@@ -173,8 +338,8 @@ class RegistrationService:
                 ver_status,
                 actor_account_id if is_master else None,
                 now_iso if is_master else None,
-                "PENDING" if validated_imgs else "NONE",
-                "PENDING" if sync_to_drive_excel else "LOCAL_ONLY",
+                initial_up_status,
+                initial_wb_status,
                 clean_payload["Parish"],
                 clean_payload["Name of the Child"],
                 clean_payload["Date of Baptism"],
@@ -197,145 +362,28 @@ class RegistrationService:
             metadata={"parish": clean_payload["Parish"], "worksheet": ws_name, "verification_status": ver_status},
         )
 
+        # ONLY encode immediately to Google Drive if submitted by Master Admin!
+        # Parish Leader Admin submissions wait for Master Admin confirmation.
         uploaded_drive_ids: List[str] = []
-        workbook_status = "LOCAL_ONLY"
-        if sync_to_drive_excel and self.drive is not None:
-            try:
-                folder_tree = self.drive.ensure_baptismal_folder_tree()
-                img_folder_id = folder_tree.get(f"NEW BAPTISM IMAGES/{bap_year}") or folder_tree.get("NEW BAPTISM IMAGES", "")
-                for v_img in validated_imgs:
-                    created_f = self.drive.upload_private_file(
-                        v_img["bytes"],
-                        v_img["filename"],
-                        v_img["mime_type"],
-                        img_folder_id,
-                    )
-                    d_fid = str(created_f["id"])
-                    uploaded_drive_ids.append(d_fid)
-                    self.db.execute(
-                        """
-                        INSERT INTO drive_file_mappings (
-                            mapping_id, record_id, category, original_filename,
-                            drive_file_id, drive_folder_id, year_folder, mime_type,
-                            file_size_bytes, upload_status, uploaded_by, created_at
-                        ) VALUES (%s, %s, 'NEW_BAPTISM_IMAGE', %s, %s, %s, %s, %s, %s, 'UPLOADED', %s, %s)
-                        """,
-                        (
-                            f"drv_{secrets.token_hex(6)}",
-                            record_id,
-                            v_img["filename"],
-                            d_fid,
-                            img_folder_id,
-                            bap_year,
-                            v_img["mime_type"],
-                            len(v_img["bytes"]),
-                            actor_account_id,
-                            now_iso,
-                        ),
-                    )
-                    self.audit.log_event(
-                        actor_account_id,
-                        "IMAGE_UPLOADED",
-                        "SUCCESS",
-                        related_record_id=record_id,
-                        metadata={"drive_file_id": d_fid, "year": bap_year},
-                    )
+        workbook_status = initial_wb_status
+        if is_master and sync_to_drive_excel:
+            uploaded_drive_ids, workbook_status = self._push_images_and_encode_to_drive(
+                actor_account_id, record_id, bap_year, ws_name, clean_payload, validated_imgs
+            )
+            self.db.execute(
+                """
+                UPDATE new_baptism_registrations
+                SET upload_status = %s, workbook_update_status = %s, updated_at = %s
+                WHERE record_id = %s
+                """,
+                (
+                    "UPLOADED" if uploaded_drive_ids else ("NONE" if not validated_imgs else "PENDING"),
+                    workbook_status,
+                    datetime.now(timezone.utc).isoformat(),
+                    record_id,
+                ),
+            )
 
-                wb_file_id = str(self.drive.config.get("workbook_file_id") or "").strip()
-                if wb_file_id:
-                    meta = self.drive.verify_workbook_write_access(wb_file_id)
-                    before_rev = str(meta.get("headRevisionId") or "")
-                    wb_bytes = self.drive.download_file_bytes(wb_file_id)
-                    self.backup.save_local_workbook_backup(wb_bytes, label=f"before_{record_id}", actor_id=actor_account_id)
-                    bk_folder_id = folder_tree.get("BACKUPS", "")
-                    bk_drive_id = ""
-                    if bk_folder_id:
-                        bk_res = self.drive.upload_private_file(
-                            wb_bytes,
-                            f"BACKUP_before_{record_id}.xlsx",
-                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            bk_folder_id,
-                        )
-                        bk_drive_id = str(bk_res.get("id", ""))
-
-                    updated_wb_bytes, used_ws = append_new_baptism_to_workbook_bytes(
-                        wb_bytes, clean_payload, record_id, bap_year
-                    )
-                    upd_res = self.drive.update_existing_file_bytes(
-                        wb_file_id,
-                        updated_wb_bytes,
-                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        expected_revision_id=before_rev,
-                    )
-                    after_rev = str(upd_res.get("headRevisionId") or "")
-                    workbook_status = "SYNCED"
-                    self.db.execute(
-                        """
-                        INSERT INTO workbook_update_logs (
-                            update_id, record_id, worksheet_name, drive_file_id,
-                            before_revision_id, after_revision_id, backup_drive_file_id,
-                            status, error_message, actor_account_id, created_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'SUCCESS', '', %s, %s)
-                        """,
-                        (
-                            f"wb_upd_{secrets.token_hex(6)}",
-                            record_id,
-                            used_ws,
-                            wb_file_id,
-                            before_rev,
-                            after_rev,
-                            bk_drive_id,
-                            actor_account_id,
-                            now_iso,
-                        ),
-                    )
-                    self.audit.log_event(
-                        actor_account_id,
-                        "WORKBOOK_UPDATE_SUCCESS",
-                        "SUCCESS",
-                        related_record_id=record_id,
-                        metadata={"worksheet": used_ws, "drive_file_id": wb_file_id},
-                    )
-            except Exception as sync_ex:
-                workbook_status = "SYNC_FAILED"
-                self.db.execute(
-                    """
-                    INSERT INTO workbook_update_logs (
-                        update_id, record_id, worksheet_name, drive_file_id,
-                        before_revision_id, after_revision_id, backup_drive_file_id,
-                        status, error_message, actor_account_id, created_at
-                    ) VALUES (%s, %s, %s, '', '', '', '', 'FAILED', %s, %s, %s)
-                    """,
-                    (
-                        f"wb_upd_{secrets.token_hex(6)}",
-                        record_id,
-                        ws_name,
-                        str(sync_ex)[:300],
-                        actor_account_id,
-                        now_iso,
-                    ),
-                )
-                self.audit.log_event(
-                    actor_account_id,
-                    "WORKBOOK_UPDATE_FAILED",
-                    "FAILURE",
-                    related_record_id=record_id,
-                    metadata={"error": str(sync_ex)[:180]},
-                )
-
-        self.db.execute(
-            """
-            UPDATE new_baptism_registrations
-            SET upload_status = %s, workbook_update_status = %s, updated_at = %s
-            WHERE record_id = %s
-            """,
-            (
-                "UPLOADED" if uploaded_drive_ids else ("NONE" if not validated_imgs else "PENDING"),
-                workbook_status,
-                datetime.now(timezone.utc).isoformat(),
-                record_id,
-            ),
-        )
         return {
             "record_id": record_id,
             "parish": clean_payload["Parish"],
@@ -345,14 +393,98 @@ class RegistrationService:
             "workbook_update_status": workbook_status,
         }
 
+    def get_staged_files_for_record(self, record_id: str) -> List[Dict[str, Any]]:
+        rows = self.db.fetch_all(
+            "SELECT * FROM staged_registration_files WHERE record_id = %s ORDER BY created_at ASC",
+            (record_id,),
+        )
+        out = []
+        for r in rows:
+            item = dict(r)
+            try:
+                item["bytes"] = base64.b64decode(str(r.get("file_b64", "")).encode("ascii"))
+            except Exception:
+                item["bytes"] = b""
+            out.append(item)
+        return out
+
+    def confirm_and_sync_submission_to_drive(
+        self,
+        admin_account_id: str,
+        record_id: str,
+        notes: str = "",
+        sync_to_drive: bool = True,
+    ) -> Dict[str, Any]:
+        """Master-Admin-only confirmation: approves a Parish Leader Admin submission,
+        uploads all staged images/files to Google Drive, and encodes the 27-col record into
+        `NEW BAPTISMS - YYYY` inside `OVERALL BAPTISMAL CERTIFICATE LIST.xlsx` on Google Drive."""
+        self.authz.require_master_admin(admin_account_id, action="confirm_and_sync_submission_to_drive")
+        row = self.db.fetch_one("SELECT * FROM new_baptism_registrations WHERE record_id = %s", (record_id,))
+        if not row:
+            raise ValueError(f"Submission '{record_id}' not found.")
+
+        clean_payload = json.loads(row["payload_json"])
+        bap_year = str(row["baptism_year"])
+        ws_name = str(row["worksheet_name"])
+        staged_files = [
+            {"bytes": sf["bytes"], "filename": sf["filename"], "mime_type": sf["mime_type"], "staged_id": sf["staged_id"]}
+            for sf in self.get_staged_files_for_record(record_id)
+            if not int(sf.get("is_pushed_to_drive", 0)) and sf.get("bytes")
+        ]
+
+        uploaded_ids: List[str] = []
+        wb_status = "APPROVED_LOCAL"
+        if sync_to_drive and self.drive is not None:
+            uploaded_ids, wb_status = self._push_images_and_encode_to_drive(
+                admin_account_id, record_id, bap_year, ws_name, clean_payload, staged_files
+            )
+            if uploaded_ids:
+                self.db.execute(
+                    "UPDATE staged_registration_files SET is_pushed_to_drive = 1 WHERE record_id = %s",
+                    (record_id,),
+                )
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        up_st = "UPLOADED" if uploaded_ids else ("NONE" if not staged_files else row.get("upload_status", "STAGED"))
+        self.db.execute(
+            """
+            UPDATE new_baptism_registrations
+            SET verification_status = 'Approved', verified_by = %s, verified_at = %s,
+                verification_notes = %s, upload_status = %s, workbook_update_status = %s,
+                updated_at = %s
+            WHERE record_id = %s
+            """,
+            (
+                admin_account_id,
+                now_iso,
+                notes.strip() or "Confirmed and encoded to Google Drive by Master Admin.",
+                up_st,
+                wb_status,
+                now_iso,
+                record_id,
+            ),
+        )
+        self.audit.log_event(
+            admin_account_id,
+            "SUBMISSION_CONFIRMED_AND_ENCODED_TO_DRIVE",
+            "SUCCESS",
+            related_record_id=record_id,
+            metadata={"parish": row["parish"], "workbook_status": wb_status, "uploaded_files": len(uploaded_ids)},
+        )
+        return {
+            "record_id": record_id,
+            "parish": row["parish"],
+            "verification_status": "Approved",
+            "uploaded_drive_file_ids": uploaded_ids,
+            "workbook_update_status": wb_status,
+        }
+
     def update_own_submission(
         self,
         actor_account_id: str,
         record_id: str,
         updated_payload: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """Allows a Parish Leader Admin to edit their own submission ONLY while its
-        verification_status allows editing (`Pending Verification` or `Additional Information Required`)."""
         row = self.db.fetch_one("SELECT * FROM new_baptism_registrations WHERE record_id = %s", (record_id,))
         if not row:
             raise ValueError(f"Submission '{record_id}' not found.")
@@ -415,7 +547,6 @@ class RegistrationService:
         new_status: str,
         notes: str = "",
     ) -> None:
-        """Master-Admin-only verification/approval/rejection of a new baptism registration."""
         self.authz.require_master_admin(admin_account_id, action="verify_registration")
         if new_status not in REGISTRATION_VERIFICATION_STATUSES:
             raise ValueError(f"Invalid verification status '{new_status}'. Allowed: {REGISTRATION_VERIFICATION_STATUSES}")
@@ -438,8 +569,6 @@ class RegistrationService:
         )
 
     def list_submissions_for_actor(self, actor_account_id: str, parish_filter: str = "") -> List[Dict[str, Any]]:
-        """Returns all 9 parishes' submissions for Master Admin, or ONLY the authenticated
-        parish's submissions for a Parish Leader Admin (filtered in SQL)."""
         if self.authz.is_master_admin(actor_account_id):
             if parish_filter and parish_filter != "ALL":
                 norm_p = normalize_official_nine_parish(parish_filter)
@@ -458,7 +587,6 @@ class RegistrationService:
         )
 
     def list_uploaded_images_for_actor(self, actor_account_id: str) -> List[Dict[str, Any]]:
-        """Returns uploaded baptismal images scoped strictly to the actor's parish (or all 9 parishes for Master Admin)."""
         if self.authz.is_master_admin(actor_account_id):
             return self.db.fetch_all(
                 """
@@ -482,7 +610,6 @@ class RegistrationService:
         )
 
     def get_parish_dashboard_statistics(self, actor_account_id: str) -> Dict[str, Any]:
-        """Returns the 6 real parish-scoped statistics for a Parish Leader Admin's assigned parish."""
         actor_parish = self.authz.get_authenticated_parish(actor_account_id)
         tot_my_regs = int((self.db.fetch_one(
             "SELECT COUNT(*) AS c FROM new_baptism_registrations WHERE parish = %s",
@@ -505,8 +632,8 @@ class RegistrationService:
             (actor_parish,),
         ) or {}).get("c", 0))
         appr_certs = int((self.db.fetch_one(
-            "SELECT COUNT(*) AS c FROM generated_certificates WHERE assigned_parish = %s AND is_released_to_requester = 1",
-            (actor_parish,),
+            "SELECT COUNT(*) AS c FROM generated_certificates WHERE (assigned_parish = %s OR authorized_account_id = %s) AND is_released_to_requester = 1",
+            (actor_parish, actor_account_id),
         ) or {}).get("c", 0))
 
         return {

@@ -3,10 +3,10 @@ baptismal/historical_records.py — Master-Admin-Only Read-Only Historical Recor
 ======================================================================================
 - Loads `Historical Records` or `Sheet1` from `OVERALL BAPTISMAL CERTIFICATE LIST.xlsx`
   preserving all 27 original column names, spelling, and historical values verbatim.
+- Supports searching by Record ID (`HIST-00743`) OR by typing ONLY the last digits/number
+  (e.g. `743` -> `HIST-00743`), as well as any of the 27 columns.
 - Excludes Hong Kong Parish records from operational search and dashboard statistics
   by default (without deleting any data from the source workbook).
-- Strictly prohibits Parish Leader Admins from searching or loading the global
-  historical archive into their sessions.
 """
 
 from datetime import date, datetime
@@ -31,6 +31,21 @@ def _format_cell_verbatim(val: Any) -> str:
     return str(val).strip()
 
 
+def resolve_quick_record_id(number_or_id: str) -> str:
+    """Converts a short number like '1', '25', or '743' into 'HIST-00001', 'HIST-00025', 'HIST-00743'."""
+    s = str(number_or_id or "").strip().upper()
+    if not s:
+        return ""
+    if s.startswith("HIST-"):
+        tail = s[5:].strip()
+        if tail.isdigit():
+            return f"HIST-{int(tail):05d}"
+        return s
+    if s.isdigit():
+        return f"HIST-{int(s):05d}"
+    return s
+
+
 class HistoricalRecordsService:
     """Manages ingestion and Master-Admin-only search over the 4,093 historical records."""
 
@@ -39,8 +54,6 @@ class HistoricalRecordsService:
         self.authz = authz or AuthorizationService(db)
 
     def import_sheet1_from_excel_bytes(self, excel_bytes: bytes) -> int:
-        """Imports historical records from `Historical Records` or `Sheet1` idempotently
-        without altering original spelling or values."""
         wb = openpyxl.load_workbook(io.BytesIO(excel_bytes), read_only=True, data_only=True)
         if "Historical Records" in wb.sheetnames:
             ws = wb["Historical Records"]
@@ -167,9 +180,10 @@ class HistoricalRecordsService:
         page_size: int = 50,
         actor_account_id: str = "",
         include_excluded_source_records: bool = False,
+        record_id_query: str = "",
     ) -> Tuple[List[Dict[str, Any]], int]:
-        """Master-Admin-only case-insensitive search across all 27 historical columns.
-        Excludes Hong Kong Parish records from operational scope by default."""
+        """Master-Admin-only case-insensitive search across Record ID (including short last-digits like '743' -> 'HIST-00743')
+        and all 27 historical columns. Excludes Hong Kong Parish records from operational scope by default."""
         if actor_account_id:
             self.authz.require_master_admin(actor_account_id, action="search_historical_archive")
 
@@ -182,13 +196,21 @@ class HistoricalRecordsService:
             where_clauses.append("LOWER(COALESCE(parish, '')) NOT LIKE %s")
             params.append("%hongkong%")
 
+        rid_q = str(record_id_query or "").strip()
+        if rid_q:
+            resolved_rid = resolve_quick_record_id(rid_q).lower()
+            where_clauses.append("(LOWER(record_id) = %s OR LOWER(record_id) LIKE %s)")
+            params.extend([resolved_rid, f"%{rid_q.lower()}%"])
+
         kw = str(keyword or "").strip().lower()
         if kw:
+            resolved_kw_id = resolve_quick_record_id(kw).lower()
             like_kw = f"%{kw}%"
-            where_clauses.append("LOWER(raw_json) LIKE %s")
-            params.append(like_kw)
+            where_clauses.append("(LOWER(raw_json) LIKE %s OR LOWER(record_id) LIKE %s OR LOWER(record_id) = %s)")
+            params.extend([like_kw, like_kw, resolved_kw_id])
 
         field_to_col = {
+            "Record ID": "record_id",
             "Parish": "parish",
             "Address": "address",
             "Province": "province",
@@ -248,11 +270,12 @@ class HistoricalRecordsService:
         return results, total_cnt
 
     def get_record_by_id(self, record_id: str, actor_account_id: str = "") -> Optional[Dict[str, Any]]:
+        resolved_id = resolve_quick_record_id(record_id)
         if actor_account_id:
-            self.authz.require_record_permission(actor_account_id, record_id, "view_record")
+            self.authz.require_record_permission(actor_account_id, resolved_id, "view_record")
         row = self.db.fetch_one(
             "SELECT record_id, source_row_number, raw_json FROM historical_records WHERE record_id = %s",
-            (record_id,),
+            (resolved_id,),
         )
         if row:
             parsed = json.loads(row["raw_json"])
@@ -261,7 +284,7 @@ class HistoricalRecordsService:
             return parsed
         new_row = self.db.fetch_one(
             "SELECT record_id, payload_json FROM new_baptism_registrations WHERE record_id = %s",
-            (record_id,),
+            (resolved_id,),
         )
         if new_row:
             parsed = json.loads(new_row["payload_json"])
