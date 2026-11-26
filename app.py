@@ -1183,19 +1183,134 @@ def filter_dataframe_by_server_side_parish_rls(df: pd.DataFrame) -> pd.DataFrame
     mask = df["Parish"].astype(str).apply(lambda p: any(normalize_parish_match(p, ap) for ap in allowed_set))
     return df[mask].copy()
 
+import sqlite3
+try:
+    from pydantic import BaseModel as _PydanticBaseModel, Field as _PydanticField
+except Exception:
+    _PydanticBaseModel = object
+    def _PydanticField(default=None, **kwargs):
+        return default
+
+class CTGParishInfoSchema(_PydanticBaseModel):
+    parish: str = _PydanticField(default="", description="Parish name, e.g., LIPAY NORTE PARISH")
+    area_zone: str = _PydanticField(default="", description="Area or Zone number/name")
+    cell_group: str = _PydanticField(default="", description="Cell Group name if written")
+    collected_by: str = _PydanticField(default="", description="Collected by (Leader/Worker)")
+    date_accomplished: str = _PydanticField(default="", description="Date Accomplished")
+
+class CTGHouseholdInfoSchema(_PydanticBaseModel):
+    family_id: str = _PydanticField(default="", description="Family ID if written")
+    head_of_family: str = _PydanticField(default="", description="Full Name of the Head of Family")
+    household_mobile: str = _PydanticField(default="", description="Household Mobile Number (09XXXXXXXXX)")
+    complete_address: str = _PydanticField(default="", description="Complete Street/Purok/Sitio Address")
+    barangay: str = _PydanticField(default="", description="Barangay name")
+    city_municipality: str = _PydanticField(default="", description="City or Municipality name")
+    province_area: str = _PydanticField(default="", description="Province or Area name")
+    zip_code: str = _PydanticField(default="", description="Postal / ZIP Code, e.g., 2513")
+
+class CTGFamilyMemberSchema(_PydanticBaseModel):
+    no: int = _PydanticField(default=1, description="Row number in III. Family Members Table (1 to 10+)")
+    full_name: str = _PydanticField(default="", description="Complete verbatim Full Name of the family member (including 2-line wrapped Given Name + Surname)")
+    relationship: str = _PydanticField(default="", description="HEAD OF FAMILY, HUSBAND, WIFE, SON, DAUGHTER, SON IN LAW, DAUGHTER IN LAW, FATHER, MOTHER, BROTHER, SISTER, GRANDFATHER, GRANDMOTHER, GRANDSON, GRANDDAUGHTER, OTHER")
+    birthdate: str = _PydanticField(default="", description="Birthdate formatted as YYYY-MM-DD")
+    age: str = _PydanticField(default="", description="Age in years")
+    gender: str = _PydanticField(default="", description="Sex/Gender: MALE or FEMALE")
+    category: str = _PydanticField(default="", description="Category: KID, YOUTH, ADULT, or SENIOR CITIZEN")
+    civil_status: str = _PydanticField(default="", description="Civil Status: SINGLE, MARRIED, WIDOWED, or SEPARATED")
+    occupation: str = _PydanticField(default="", description="Student/Working status: STUDENT, WORKING, or NONE")
+    contact_no: str = _PydanticField(default="", description="Contact / Cellphone / SIM Number")
+    church_member: str = _PydanticField(default="YES", description="Church Member: YES or NO")
+    status: str = _PydanticField(default="ACTIVE", description="Church Membership Status: ACTIVE or INACTIVE")
+    baptism_status: str = _PydanticField(default="YES", description="Baptized: YES or NO")
+    baptism_date: str = _PydanticField(default="", description="Date of Baptism if written")
+    current_address: str = _PydanticField(default="", description="Current Address if living separately (expand ditto marks from row above)")
+    ministry_involvement: str = _PydanticField(default="", description="Optional Ministry involvement or remarks")
+
+class CTGEmergencyContactSchema(_PydanticBaseModel):
+    contact_name: str = _PydanticField(default="", description="V. Emergency Contact Full Name")
+    contact_no_rel: str = _PydanticField(default="", description="Emergency Contact Number and Relationship combined")
+    relationship: str = _PydanticField(default="", description="Emergency Contact Relationship")
+    contact_number: str = _PydanticField(default="", description="Emergency Contact Phone/Mobile Number")
+
+class CTGRemarksSchema(_PydanticBaseModel):
+    household_remarks: str = _PydanticField(default="", description="VI. Remarks or VII. Certification notes")
+
+class CTGOfficialFamilyFormExtractionSchema(_PydanticBaseModel):
+    parish_info: CTGParishInfoSchema = _PydanticField(default_factory=CTGParishInfoSchema)
+    household_info: CTGHouseholdInfoSchema = _PydanticField(default_factory=CTGHouseholdInfoSchema)
+    family_members: list[CTGFamilyMemberSchema] = _PydanticField(default_factory=list)
+    emergency_contact: CTGEmergencyContactSchema = _PydanticField(default_factory=CTGEmergencyContactSchema)
+    remarks: CTGRemarksSchema = _PydanticField(default_factory=CTGRemarksSchema)
+    household_summary_total: int = _PydanticField(default=0)
+    interpreted_summary_text: str = _PydanticField(default="")
+
+def infer_philippine_postal_zip_code(parish: str = "", city: str = "", barangay: str = "", province: str = "") -> str:
+    """Infers the official 4-digit Philippine Postal / ZIP Code from Parish, City/Municipality, Barangay, or Province."""
+    p_u = str(parish or "").strip().upper()
+    c_u = str(city or "").strip().upper()
+    b_u = str(barangay or "").strip().upper()
+    pr_u = str(province or "").strip().upper()
+    combined = f"{p_u} | {c_u} | {b_u} | {pr_u}"
+    if "HONGKONG" in combined or "HONG KONG" in combined:
+        return "999077"
+    zip_lookup = [
+        (("SAN GABRIEL", "LIPAY NORTE", "LIPAY", "POBLACION PARISH", "MALANAS", "DUPLAS", "LON-OY", "BUCAO", "BUMBUNEG", "DAKILAN"), "2513"),
+        (("SANTOL", "MANGAAN", "RAMOT", "CORROOY", "PAAGAN", "LETTAC"), "2516"),
+        (("CABA", "GANA", "SOBREDab", "SAN CARLOS", "LAS-UD"), "2502"),
+        (("BAGUIO", "IRISAN", "ASIN", "CAMP 7", "BURNHAM"), "2600"),
+        (("LA TRINIDAD", "PICO", "BETAG"), "2601"),
+        (("TUBA",), "2603"),
+        (("SABLAN",), "2614"),
+        (("BALAOAN",), "2517"),
+        (("BACNOTAN",), "2515"),
+        (("SAN JUAN",), "2514"),
+        (("SAN FERNANDO",), "2500"),
+        (("BAUANG",), "2501"),
+        (("ARINGAY",), "2503"),
+        (("AGOO",), "2504"),
+        (("STO. TOMAS", "SANTO TOMAS"), "2505"),
+        (("ROSARIO",), "2506"),
+        (("PUGO",), "2508"),
+        (("TUBAO",), "2509"),
+        (("BURGOS",), "2510"),
+        (("NAGUILIAN",), "2511"),
+        (("BAGULIN",), "2512"),
+        (("LUNA",), "2518"),
+        (("BANGAR",), "2519"),
+        (("SUDIPEN",), "2520"),
+        (("TAGUDIN",), "2714"),
+        (("SUYO",), "2715"),
+        (("ALILEM",), "2716"),
+        (("SUGPON",), "2717"),
+        (("CERVANTES",), "2718"),
+    ]
+    for keys_tup, z_code in zip_lookup:
+        if any(k in combined for k in keys_tup):
+            return z_code
+    if "LA UNION" in pr_u:
+        return "2513"
+    if "BENGUET" in pr_u:
+        return "2600"
+    return ""
+
 LOCAL_ENCRYPTED_ACCOUNTS_FILE = "ctg_encrypted_user_accounts.json"
 LOCAL_LEADERSHIP_PROFILES_FILE = "ctg_leadership_and_priests_profiles.json"
 LOCAL_SECURITY_AUDIT_LOG_FILE = "ctg_security_audit_log.json"
+LOCAL_SECURITY_SQLITE_DB = "ctg_security_siem.db"
 SECURE_BACKUP_DIR = "ctg_secure_backups"
 _LOGIN_RATE_LIMIT_TRACKER = {}  # Keyed by (session_corr_id, username) to prevent global account-lockout DoS
 _IDS_SESSION_ACTIVITY_WINDOWS = {}  # Tracks sliding-window events per session/source for Intrusion Detection
 
 CANONICAL_SECURITY_EVENT_TYPES = [
+    "LOGIN_SUCCESS",
     "AUTH_LOGIN_SUCCESS",
     "AUTH_LOGIN_FAILED",
     "AUTH_ACCOUNT_LOCKOUT",
     "AUTH_LOGOUT",
     "AUTH_PASSWORD_RESET",
+    "FILE_EXTRACTED",
+    "RECORD_SAVED_TO_DRIVE",
+    "UNAUTHORIZED_ACCESS",
     "UNAUTHORIZED_ACCESS_ATTEMPT",
     "RBAC_CROSS_PARISH_VIOLATION",
     "FILE_UPLOAD",
@@ -1551,6 +1666,51 @@ def record_security_audit_event(
         with open(LOCAL_SECURITY_AUDIT_LOG_FILE, "w", encoding="utf-8") as f:
             json.dump(events, f, ensure_ascii=False, indent=2)
 
+        # Persist to live SQLite database (ctg_security_siem.db) for real-time SIEM queries
+        try:
+            with sqlite3.connect(LOCAL_SECURITY_SQLITE_DB, timeout=5.0) as conn_sq:
+                conn_sq.execute(
+                    """CREATE TABLE IF NOT EXISTS ctg_security_audit_logs (
+                        event_id TEXT PRIMARY KEY,
+                        utc_timestamp TEXT,
+                        timestamp TEXT,
+                        user_id TEXT,
+                        attempted_username TEXT,
+                        user_role TEXT,
+                        assigned_parish TEXT,
+                        event_type TEXT,
+                        outcome TEXT,
+                        denial_reason TEXT,
+                        risk_level TEXT,
+                        correlation_id TEXT,
+                        client_info TEXT,
+                        source_ip TEXT,
+                        ids_rule TEXT,
+                        details TEXT,
+                        prev_hash TEXT,
+                        entry_hash TEXT
+                    )"""
+                )
+                conn_sq.execute(
+                    """INSERT OR REPLACE INTO ctg_security_audit_logs (
+                        event_id, utc_timestamp, timestamp, user_id, attempted_username,
+                        user_role, assigned_parish, event_type, outcome, denial_reason,
+                        risk_level, correlation_id, client_info, source_ip, ids_rule,
+                        details, prev_hash, entry_hash
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        record_obj["event_id"], record_obj["utc_timestamp"], record_obj["timestamp"],
+                        record_obj["user_id"], record_obj["attempted_username"], record_obj["user_role"],
+                        record_obj["assigned_parish"], record_obj["event_type"], record_obj["outcome"],
+                        record_obj["denial_reason"], record_obj["risk_level"], record_obj["correlation_id"],
+                        record_obj["client_info"], record_obj["source_ip"], record_obj["ids_rule"],
+                        record_obj["details"], record_obj["prev_hash"], record_obj["entry_hash"]
+                    )
+                )
+                conn_sq.commit()
+        except Exception:
+            pass
+
         # Mirror audit log to External Hard Drive if mounted
         try:
             base_hdd, is_mnt = get_active_external_hard_drive_backup_dir()
@@ -1563,6 +1723,40 @@ def record_security_audit_event(
             pass
     except Exception:
         pass
+
+def load_live_security_audit_events() -> list[dict]:
+    """Loads live security audit logs from both SQLite (ctg_security_siem.db) and JSON (ctg_security_audit_log.json)."""
+    events_by_id = {}
+    ordered_events = []
+    if os.path.exists(LOCAL_SECURITY_AUDIT_LOG_FILE):
+        try:
+            with open(LOCAL_SECURITY_AUDIT_LOG_FILE, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, list):
+                for ev in loaded:
+                    if isinstance(ev, dict):
+                        eid = str(ev.get("event_id") or f"idx_{len(ordered_events)}")
+                        events_by_id[eid] = ev
+                        ordered_events.append(ev)
+        except Exception:
+            pass
+    if os.path.exists(LOCAL_SECURITY_SQLITE_DB):
+        try:
+            with sqlite3.connect(LOCAL_SECURITY_SQLITE_DB, timeout=5.0) as conn_sq:
+                conn_sq.row_factory = sqlite3.Row
+                cur = conn_sq.execute("SELECT * FROM ctg_security_audit_logs ORDER BY utc_timestamp ASC")
+                for row in cur.fetchall():
+                    d_row = dict(row)
+                    d_row["actor"] = d_row.get("attempted_username", "")
+                    d_row["role"] = d_row.get("user_role", "")
+                    d_row["severity"] = str(d_row.get("risk_level", "INFO")).upper()
+                    eid = str(d_row.get("event_id") or "")
+                    if eid and eid not in events_by_id:
+                        events_by_id[eid] = d_row
+                        ordered_events.append(d_row)
+        except Exception:
+            pass
+    return ordered_events
 
 def encrypt_password_pbkdf2(plain_password: str, salt_hex: str = "", iterations: int = 260000) -> str:
     """Encrypts a password using OWASP-recommended PBKDF2-HMAC-SHA256 (260,000 iterations) with a 128-bit cryptographic salt."""
@@ -4880,6 +5074,75 @@ def build_family_info_form_excel_template_bytes(default_parish: str = "LIPAY NOR
     wb.save(buf)
     return buf.getvalue()
 
+def build_populated_family_info_form_excel_bytes(family_rows: list[dict]) -> bytes:
+    """Generates a clean, populated Official Family Information Form (.xlsx) using openpyxl
+    mapped to the official multi-section template (Sections I, II including ZIP Code, III Family Members, V Emergency Contact, VI Remarks)
+    plus a 29-Column Upload_Batch_Data sheet for Google Drive archival."""
+    if not family_rows:
+        return build_family_info_form_excel_template_bytes()
+    first = family_rows[0]
+    p_name = str(first.get("Parish", "LIPAY NORTE PARISH")).strip()
+    tpl_bytes = build_family_info_form_excel_template_bytes(p_name)
+    wb = openpyxl.load_workbook(io.BytesIO(tpl_bytes))
+    ws = wb.active
+    thin_side = openpyxl.styles.Side(style="thin", color="000000")
+    grid_border = openpyxl.styles.Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+
+    # Populate I. PARISH INFORMATION & II. HOUSEHOLD INFORMATION (with ZIP Code)
+    ws.cell(6, 2, sanitize_user_input_for_excel_cell(p_name))
+    ws.cell(6, 5, sanitize_user_input_for_excel_cell(first.get("Area/Zone", "")))
+    ws.cell(7, 2, sanitize_user_input_for_excel_cell(first.get("Cell Group", "")))
+    ws.cell(8, 2, get_philippine_datetime_str())
+    ws.cell(11, 2, sanitize_user_input_for_excel_cell(first.get("Family ID", "")))
+    ws.cell(12, 2, sanitize_user_input_for_excel_cell(first.get("Head of Family", first.get("Full Name", ""))))
+    ws.cell(12, 5, sanitize_user_input_for_excel_cell(first.get("Contact No.", "")))
+    ws.cell(13, 2, sanitize_user_input_for_excel_cell(first.get("House / Street / Purok", "")))
+    ws.cell(14, 2, sanitize_user_input_for_excel_cell(first.get("Barangay", "")))
+    ws.cell(14, 5, sanitize_user_input_for_excel_cell(first.get("City/Municipality", "")))
+    ws.cell(15, 2, sanitize_user_input_for_excel_cell(first.get("Province / Area", "")))
+    ws.cell(15, 5, sanitize_user_input_for_excel_cell(first.get("ZIP Code", "")))
+
+    # Populate III. FAMILY MEMBERS
+    sec3_keys = [
+        "No.", "Full Name", "Relationship", "Sex", "Birthdate", "Age",
+        "Category", "Civil Status", "Student/Working", "Contact No.",
+        "Church Member", "Status", "Baptized", "Baptism Date",
+        "Current Address (If living separately)"
+    ]
+    for idx_m, m_row in enumerate(family_rows[:15], 1):
+        r_excel = 18 + idx_m
+        ws.cell(r_excel, 1, idx_m).border = grid_border
+        for c_i, k_col in enumerate(sec3_keys[1:], 2):
+            cell_v = ws.cell(r_excel, c_i, sanitize_user_input_for_excel_cell(m_row.get(k_col, "")))
+            cell_v.border = grid_border
+
+    # Populate V. EMERGENCY CONTACT & VI. REMARKS
+    em_row_base = max(30, 20 + len(family_rows))
+    ws.cell(em_row_base + 1, 2, sanitize_user_input_for_excel_cell(first.get("Emergency Contact Name", "")))
+    ws.cell(em_row_base + 1, 5, sanitize_user_input_for_excel_cell(first.get("Emergency Relationship", "")))
+    ws.cell(em_row_base + 1, 8, sanitize_user_input_for_excel_cell(first.get("Emergency Contact Number", "")))
+    ws.cell(em_row_base + 4, 1, sanitize_user_input_for_excel_cell(first.get("Remarks", "")))
+
+    # Add 29-column structured sheet
+    ws29 = wb.create_sheet(title="Upload_Batch_Data")
+    flat_headers_29 = [
+        "Parish", "Family ID", "Head of Family", "No.", "Full Name", "Relationship",
+        "Sex", "Birthdate", "Age", "Category", "Civil Status", "Student/Working",
+        "Contact No.", "Church Member", "Status", "Baptized", "Baptism Date",
+        "Current Address (If living separately)", "Remarks", "Area/Zone", "Cell Group",
+        "House / Street / Purok", "Barangay", "City/Municipality", "Province / Area",
+        "ZIP Code", "Emergency Contact Name", "Emergency Relationship", "Emergency Contact Number"
+    ]
+    for c_i, h_t in enumerate(flat_headers_29, 1):
+        ws29.cell(1, c_i, h_t)
+    for r_i, m_row in enumerate(family_rows, 2):
+        for c_i, h_t in enumerate(flat_headers_29, 1):
+            ws29.cell(r_i, c_i, sanitize_user_input_for_excel_cell(m_row.get(h_t, "")))
+
+    out_b = io.BytesIO()
+    wb.save(out_b)
+    return out_b.getvalue()
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def build_flat_29col_batch_upload_excel_template_bytes(default_parish: str = "LIPAY NORTE PARISH") -> bytes:
     """Builds the 29-column Batch Upload Excel Template (.xlsx) matching Screenshot 2026-11-22 at 10.04.24 PM.png:
@@ -7279,8 +7542,8 @@ def _auto_clean_and_complete_family_records(records: list[dict], default_parish:
             def_city = "San Gabriel"
         if not def_prov and matched_p in ("LIPAY NORTE PARISH", "POBLACION PARISH", "MALANAS PARISH", "DUPLAS PARISH", "CABA PARISH"):
             def_prov = "La Union"
-        if not def_zip and matched_p in ("LIPAY NORTE PARISH", "POBLACION PARISH", "MALANAS PARISH", "DUPLAS PARISH"):
-            def_zip = "2513"
+        if not def_zip:
+            def_zip = infer_philippine_postal_zip_code(matched_p, def_city, def_brgy, def_prov) or "2513"
 
     def_house = _clean_ocr_place_names(first.get("House / Street / Purok", ""), matched_p)
     if not def_house and not is_hk:
@@ -21173,13 +21436,18 @@ def _extract_single_family_from_vision_parts(
         for k_api in valid_keys:
             client = genai.Client(api_key=k_api)
             for m_try in models_to_try:
-                for use_json_mime in (True, False):
+                for use_mode in ("pydantic_schema", "json_mime", "plain"):
                     try:
-                        cfg_v = (
-                            types.GenerateContentConfig(temperature=0.0, response_mime_type="application/json")
-                            if use_json_mime
-                            else types.GenerateContentConfig(temperature=0.0)
-                        )
+                        if use_mode == "pydantic_schema" and _PydanticBaseModel is not object:
+                            cfg_v = types.GenerateContentConfig(
+                                temperature=0.0,
+                                response_mime_type="application/json",
+                                response_schema=CTGOfficialFamilyFormExtractionSchema,
+                            )
+                        elif use_mode == "json_mime":
+                            cfg_v = types.GenerateContentConfig(temperature=0.0, response_mime_type="application/json")
+                        else:
+                            cfg_v = types.GenerateContentConfig(temperature=0.0)
                         res = client.models.generate_content(
                             model=m_try,
                             contents=enhanced_vision_parts + [strict_vision_prompt],
@@ -21193,9 +21461,10 @@ def _extract_single_family_from_vision_parts(
                             parsed_json = {"members": parsed_json}
                         if isinstance(parsed_json, dict):
                             p_info = parsed_json.get("parish_info", {}) or {}
-                            h_info = parsed_json.get("household", {}) or {}
+                            h_info = parsed_json.get("household") or parsed_json.get("household_info") or {}
                             e_info = parsed_json.get("emergency_contact", {}) or {}
-                            rem_val = _clean_cell_str(parsed_json.get("remarks", ""))
+                            rem_raw_obj = parsed_json.get("remarks", "")
+                            rem_val = _clean_cell_str(rem_raw_obj.get("household_remarks", "") if isinstance(rem_raw_obj, dict) else rem_raw_obj)
                             p_raw = _clean_cell_str(p_info.get("parish", parsed_json.get("Parish", default_parish))) or default_parish
                             matched_p = default_parish
                             for p_cand in PARISH_ORDER:
@@ -21209,9 +21478,9 @@ def _extract_single_family_from_vision_parts(
                             house_st = _clean_cell_str(h_info.get("address") or h_info.get("complete_address") or parsed_json.get("House / Street / Purok") or "")
                             brgy_v = _clean_cell_str(h_info.get("barangay") or parsed_json.get("Barangay") or "")
                             city_v = _clean_cell_str(h_info.get("city") or h_info.get("city_municipality") or parsed_json.get("City/Municipality") or "")
-                            prov_v = _clean_cell_str(h_info.get("province") or parsed_json.get("Province / Area") or "")
-                            zip_v = _clean_cell_str(h_info.get("zip_code") or parsed_json.get("ZIP Code") or "")
-                            mob_v = _clean_cell_str(h_info.get("mobile_number") or h_info.get("contact_no") or parsed_json.get("Contact No.") or "")
+                            prov_v = _clean_cell_str(h_info.get("province") or h_info.get("province_area") or parsed_json.get("Province / Area") or "")
+                            zip_v = _clean_cell_str(h_info.get("zip_code") or parsed_json.get("ZIP Code") or "") or infer_philippine_postal_zip_code(matched_p, city_v, brgy_v, prov_v)
+                            mob_v = _clean_cell_str(h_info.get("mobile_number") or h_info.get("household_mobile") or h_info.get("contact_no") or parsed_json.get("Contact No.") or "")
                             full_addr_str = ", ".join([x for x in [house_st, brgy_v, city_v, prov_v] if x])
 
                             raw_mem_list = (
@@ -21257,25 +21526,28 @@ def _extract_single_family_from_vision_parts(
                                 if not hof_name and idx_m == 1:
                                     hof_name = fn_m
                                 no_str = str(idx_m)
+                                _em_no_rel = _clean_cell_str(e_info.get("contact_no_rel", ""))
+                                _em_rel_v = _clean_cell_str(e_info.get("relationship", "")) or (_em_no_rel.split("(")[1].rstrip(")").strip() if "(" in _em_no_rel else "")
+                                _em_num_v = _clean_cell_str(e_info.get("contact_number", "")) or (_em_no_rel.split("(")[0].strip() if _em_no_rel else "")
                                 raw_item = {
                                     "Parish": matched_p,
                                     "Family ID": fam_id_v,
-                                    "Area/Zone": _clean_cell_str(p_info.get("area", "")),
+                                    "Area/Zone": _clean_cell_str(p_info.get("area") or p_info.get("area_zone") or ""),
                                     "Cell Group": _clean_cell_str(p_info.get("cell_group", "")),
                                     "Head of Family": fn_m if matched_p == "HONGKONG PARISH" else (hof_name or fn_m),
                                     "No.": no_str,
                                     "Full Name": fn_m,
                                     "Relationship": "HEAD OF FAMILY" if matched_p == "HONGKONG PARISH" else _clean_cell_str(m_obj.get("relationship", m_obj.get("Relationship", "HEAD OF FAMILY" if idx_m == 1 else "DEPENDENT"))),
-                                    "Sex": _clean_cell_str(m_obj.get("sex", m_obj.get("Sex", "MALE"))),
+                                    "Sex": _clean_cell_str(m_obj.get("sex") or m_obj.get("gender") or m_obj.get("Sex") or "MALE"),
                                     "Birthdate": _clean_cell_str(m_obj.get("birthdate", m_obj.get("Birthdate", ""))),
                                     "Age": _clean_cell_str(m_obj.get("age", m_obj.get("Age", ""))),
                                     "Category": _clean_cell_str(m_obj.get("category", m_obj.get("Category", ""))),
                                     "Civil Status": _clean_cell_str(m_obj.get("civil_status", m_obj.get("Civil Status", "SINGLE"))),
-                                    "Student/Working": _clean_cell_str(m_obj.get("student_working", m_obj.get("Student/Working", ""))),
+                                    "Student/Working": _clean_cell_str(m_obj.get("student_working") or m_obj.get("occupation") or m_obj.get("Student/Working") or ""),
                                     "Contact No.": _clean_cell_str(m_obj.get("contact_no", m_obj.get("Contact No.", mob_v if idx_m == 1 else ""))),
                                     "Church Member": _clean_cell_str(m_obj.get("church_member", m_obj.get("Church Member", "YES"))),
                                     "Status": _clean_cell_str(m_obj.get("status", m_obj.get("Status", "ACTIVE"))),
-                                    "Baptized": _clean_cell_str(m_obj.get("baptized", m_obj.get("Baptized", "YES"))),
+                                    "Baptized": _clean_cell_str(m_obj.get("baptized") or m_obj.get("baptism_status") or m_obj.get("Baptized") or "YES"),
                                     "Baptism Date": _clean_cell_str(m_obj.get("baptism_date", m_obj.get("Baptism Date", ""))),
                                     "House / Street / Purok": house_st or full_addr_str,
                                     "Barangay": brgy_v,
@@ -21283,10 +21555,10 @@ def _extract_single_family_from_vision_parts(
                                     "Province / Area": prov_v,
                                     "ZIP Code": zip_v,
                                     "Current Address (If living separately)": _clean_cell_str(m_obj.get("current_address", m_obj.get("Current Address (If living separately)", ""))) or full_addr_str,
-                                    "Emergency Contact Name": _clean_cell_str(e_info.get("name", "")),
-                                    "Emergency Relationship": _clean_cell_str(e_info.get("relationship", "")),
-                                    "Emergency Contact Number": _clean_cell_str(e_info.get("contact_number", "")),
-                                    "Remarks": rem_val,
+                                    "Emergency Contact Name": _clean_cell_str(e_info.get("name") or e_info.get("contact_name") or ""),
+                                    "Emergency Relationship": _em_rel_v,
+                                    "Emergency Contact Number": _em_num_v,
+                                    "Remarks": rem_val or _clean_cell_str(m_obj.get("ministry_involvement", "")),
                                 }
                                 vision_members.append(_normalize_ctg_form_codes(raw_item))
                             interp_txt = _clean_cell_str(parsed_json.get("interpreted_summary_text", ""))
@@ -22483,6 +22755,12 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                             st.session_state["extracted_members_batch"] = ext_members
                             st.session_state["staged_upload_df"] = pd.DataFrame(ext_members)
                             st.session_state["add_form_refresh_counter"] = st.session_state.get("add_form_refresh_counter", 0) + 1
+                            record_security_audit_event(
+                                "FILE_EXTRACTED",
+                                f"IDP extracted {len(ext_members)} member record(s) from '{auto_mem_files[0].name}' for '{target_p}' (Head: '{ext_members[0].get('Head of Family', '')}')",
+                                "INFO",
+                                target_parish=target_p
+                            )
                             st.session_state["_last_auto_save_banner"] = (
                                 True,
                                 f"✅ **Nabasa ang {len(ext_members)} Miyembro at nailagay sa App (Step 3 Editor sa ibaba) para sa {target_p}!** "
@@ -22523,7 +22801,7 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                     def_brgy_m = "" if is_hk_add_mode else def_p_auto.replace("PARISH", "").strip().title()
                     def_city_m = "Hong Kong" if is_hk_add_mode else ("San Gabriel" if any(k in def_p_auto for k in ["LIPAY", "POBLACION", "MALANAS", "DUPLAS"]) else "")
                     def_prov_m = "Hong Kong SAR" if is_hk_add_mode else ("La Union" if any(k in def_p_auto for k in ["LIPAY", "POBLACION", "MALANAS", "DUPLAS", "CABA"]) else "")
-                    def_zip_m = "" if is_hk_add_mode else ("2513" if any(k in def_p_auto for k in ["LIPAY", "POBLACION", "MALANAS", "DUPLAS"]) else "")
+                    def_zip_m = infer_philippine_postal_zip_code(def_p_auto)
                     def_addr_m = ", ".join([x for x in [def_brgy_m, def_city_m, def_prov_m] if x])
                     blank_batch = []
                     for r_i in range(1, int(init_rows_cnt) + 1):
@@ -22672,7 +22950,7 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
         _def_brgy_init = "" if is_hk_add_mode else def_p_auto.replace("PARISH", "").strip().title()
         _def_city_init = "Hong Kong" if is_hk_add_mode else ("San Gabriel" if any(k in def_p_auto for k in ["LIPAY", "POBLACION", "MALANAS", "DUPLAS"]) else "")
         _def_prov_init = "Hong Kong SAR" if is_hk_add_mode else ("La Union" if any(k in def_p_auto for k in ["LIPAY", "POBLACION", "MALANAS", "DUPLAS", "CABA"]) else "")
-        _def_zip_init = "" if is_hk_add_mode else ("2513" if any(k in def_p_auto for k in ["LIPAY", "POBLACION", "MALANAS", "DUPLAS"]) else "")
+        _def_zip_init = infer_philippine_postal_zip_code(def_p_auto)
         _def_addr_init = ", ".join([x for x in [_def_brgy_init, _def_city_init, _def_prov_init] if x])
         _default_10_rows = []
         for _ri in range(1, (2 if is_hk_add_mode else 11)):
@@ -22725,6 +23003,12 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
             )
 
             # Live Data Completeness Audit Badge
+            _init_zip_meta = _clean_cell_str(first_rec_meta.get("ZIP Code", "")) or infer_philippine_postal_zip_code(
+                parish=str(first_rec_meta.get("Parish", def_p_auto)),
+                city=str(first_rec_meta.get("City/Municipality", "")),
+                barangay=str(first_rec_meta.get("Barangay", "")),
+                province=str(first_rec_meta.get("Province / Area", ""))
+            )
             missing_notes = []
             if not _clean_cell_str(first_rec_meta.get("Head of Family", first_rec_meta.get("Full Name", ""))):
                 missing_notes.append("Head of Family")
@@ -22732,6 +23016,8 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                 missing_notes.append("Area/Zone")
             if not _clean_cell_str(first_rec_meta.get("Contact No.", "")):
                 missing_notes.append("Household Mobile No.")
+            if not _init_zip_meta and not is_hk_add_mode:
+                missing_notes.append("ZIP Code")
             if not _clean_cell_str(first_rec_meta.get("Emergency Contact Name", "")) and not is_hk_add_mode:
                 missing_notes.append("Emergency Contact Name")
             named_members_cnt = sum(1 for m_x in ext_batch_cur if _clean_cell_str(m_x.get("Full Name", "")))
@@ -22739,7 +23025,7 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                 missing_notes.append("Walang nakalistang Full Name sa III. Family Members Table")
 
             if not missing_notes:
-                st.success(f"✅ **Data Validation Check: Kumpleto ang Household Info at {named_members_cnt} Miyembro sa Family Members Table!**")
+                st.success(f"✅ **Data Validation Check: Kumpleto ang Household Info (kasama ang ZIP Code) at {named_members_cnt} Miyembro sa Family Members Table!**")
             else:
                 st.warning(f"ℹ️ **Data Completeness Check ({named_members_cnt} Miyembro):** Pakisuri o punan ang: `{', '.join(missing_notes)}` (o pindutin ang **✨ Auto-Ayusin & Kumpletuhin ang Fields** sa ibaba).")
 
@@ -22770,7 +23056,11 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                 pv_brgy = st.text_input("Barangay:", value=str(first_rec_meta.get("Barangay", "")), key=f"pv_meta_brgy_{pv_rev_k}")
                 pv_city = st.text_input("City/Municipality:", value=str(first_rec_meta.get("City/Municipality", "")), key=f"pv_meta_city_{pv_rev_k}")
             with pv_h4:
-                pv_prov = st.text_input("Province / Area:", value=str(first_rec_meta.get("Province / Area", "")), key=f"pv_meta_prov_{pv_rev_k}")
+                pv_prov_c, pv_zip_c = st.columns([1.35, 0.85])
+                with pv_prov_c:
+                    pv_prov = st.text_input("Province / Area:", value=str(first_rec_meta.get("Province / Area", "")), key=f"pv_meta_prov_{pv_rev_k}")
+                with pv_zip_c:
+                    pv_zip = st.text_input("ZIP Code:", value=_init_zip_meta, placeholder="Hal. 2513", key=f"pv_meta_zip_{pv_rev_k}")
                 pv_em_name = st.text_input("V. Emergency Contact Name:", value=str(first_rec_meta.get("Emergency Contact Name", "")), key=f"pv_meta_em_n_{pv_rev_k}")
                 em_rel_cur = str(first_rec_meta.get("Emergency Relationship", "")).strip()
                 em_num_cur = str(first_rec_meta.get("Emergency Contact Number", "")).strip()
@@ -22943,7 +23233,7 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                     "Barangay": pv_brgy.strip(),
                     "City/Municipality": pv_city.strip(),
                     "Province / Area": pv_prov.strip(),
-                    "ZIP Code": str(first_rec_meta.get("ZIP Code", "2513")),
+                    "ZIP Code": pv_zip.strip() or infer_philippine_postal_zip_code(pv_parish, pv_city, pv_brgy, pv_prov) or "2513",
                     "Emergency Contact Name": pv_em_name.strip(),
                     "Emergency Relationship": _em_rel_29,
                     "Emergency Contact Number": _em_num_29,
@@ -22951,42 +23241,51 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                     "Day Off": _clean_cell_str(_r29.get("Day Off", "")) if pv_parish == "HONGKONG PARISH" else "",
                 })
 
-            with st.expander("📋 Tingnan ang Buong 29-Column Master Upload Format (Parish • Family ID • Head of Family • III. Family Members • Address • Emergency Contact)", expanded=True):
-                st.caption("Ito ang eksaktong 29-column final records (awtomatikong naka-sync sa bawat edit mo sa III. Family Members Table sa itaas) na direktang ipapasok sa Google Drive Excel kapag pinindot mo ang Confirm & I-save:")
+            with st.expander("📋 Tingnan ang Buong 29-Column Master Upload Format (Parish • Family ID • Head of Family • III. Family Members • Address • ZIP Code • Emergency Contact)", expanded=True):
+                st.caption("Ito ang eksaktong 29-column final records (awtomatikong naka-sync sa bawat edit mo sa III. Family Members Table at ZIP Code sa itaas) na direktang ipapasok sa Google Drive Excel kapag pinindot mo ang Confirm & I-save:")
                 st.dataframe(pd.DataFrame(_rows_29), use_container_width=True, hide_index=True)
 
             pv_btn_c1, pv_btn_c2, pv_btn_c3 = st.columns([1.8, 1.25, 1.05])
             with pv_btn_c2:
                 if st.button("✨ Auto-Ayusin & Kumpletuhin ang Lahat ng Fields", use_container_width=True, key="btn_auto_fix_preview_fields"):
                     raw_to_fix = []
-                    em_num_parsed = pv_em_num.split("(")[0].strip()
+                    em_num_parsed = _normalize_phone_sim_number(pv_em_num.split("(")[0].strip()) or pv_em_num.split("(")[0].strip()
                     em_rel_parsed = pv_em_num.split("(")[1].rstrip(")").strip() if "(" in pv_em_num else str(first_rec_meta.get("Emergency Relationship", ""))
+                    inferred_zip_fx = pv_zip.strip() or infer_philippine_postal_zip_code(pv_parish, pv_city.strip(), pv_brgy.strip(), pv_prov.strip()) or "2513"
                     for idx_fx, erow in edited_preview_df.iterrows():
                         fn_ed = _clean_cell_str(erow.get("Full Name", ""))
                         if not fn_ed:
                             continue
+                        if fn_ed.isupper() or fn_ed.islower():
+                            fn_ed = fn_ed.title()
                         d_fx = first_rec_meta.copy()
                         for c_k in preview_cols:
                             d_fx[c_k] = _clean_cell_str(erow.get(c_k, ""))
+                        d_fx["Full Name"] = fn_ed
                         d_fx["Parish"] = pv_parish
                         d_fx["Family ID"] = pv_fid.strip()
-                        d_fx["Head of Family"] = pv_hof.strip() or fn_ed
+                        d_fx["Head of Family"] = (pv_hof.strip().title() if (pv_hof.strip().isupper() or pv_hof.strip().islower()) else pv_hof.strip()) or fn_ed
                         d_fx["Area/Zone"] = pv_area.strip()
                         d_fx["Cell Group"] = pv_cell.strip()
                         d_fx["House / Street / Purok"] = pv_house.strip()
                         d_fx["Barangay"] = pv_brgy.strip()
                         d_fx["City/Municipality"] = pv_city.strip()
                         d_fx["Province / Area"] = pv_prov.strip()
-                        d_fx["Emergency Contact Name"] = pv_em_name.strip()
+                        d_fx["ZIP Code"] = inferred_zip_fx
+                        d_fx["Contact No."] = _normalize_phone_sim_number(d_fx.get("Contact No.", "")) or (_normalize_phone_sim_number(pv_mob.strip()) if idx_fx == 0 else d_fx.get("Contact No.", ""))
+                        d_fx["Emergency Contact Name"] = pv_em_name.strip().title() if (pv_em_name.strip().isupper() or pv_em_name.strip().islower()) else pv_em_name.strip()
                         d_fx["Emergency Relationship"] = em_rel_parsed
                         d_fx["Emergency Contact Number"] = em_num_parsed
                         d_fx["Remarks"] = pv_rem.strip()
                         raw_to_fix.append(d_fx)
                     fixed_batch = _auto_clean_and_complete_family_records(raw_to_fix, pv_parish)
                     if fixed_batch:
+                        for fb_r in fixed_batch:
+                            if not _clean_cell_str(fb_r.get("ZIP Code", "")):
+                                fb_r["ZIP Code"] = inferred_zip_fx
                         st.session_state["extracted_members_batch"] = fixed_batch
                         st.session_state["add_form_refresh_counter"] = st.session_state.get("add_form_refresh_counter", 0) + 1
-                        st.success("✨ Awtomatikong naayos at nakumpleto ang lahat ng fields, Age, Category, at Address!")
+                        st.success("✨ Awtomatikong naayos at nakumpleto ang lahat ng fields, Age, Category, Mobile No., Address, at ZIP Code!")
                         st.rerun()
             with pv_btn_c3:
                 if st.button("🆕 Susunod na Pamilya (Reset)", use_container_width=True, key="btn_reset_for_next_family"):
@@ -23068,6 +23367,29 @@ if app_mode == "➕ Magdagdag ng Miyembro & Litrato":
                                 for vr in valid_edited_rows:
                                     vr["Family ID"] = saved_fid_now
                                 st.session_state["extracted_members_batch"] = valid_edited_rows
+                                # Generate clean formatted Family Form .xlsx using openpyxl and upload to Parish Google Drive folder
+                                try:
+                                    fam_xlsx_bytes = build_populated_family_info_form_excel_bytes(valid_edited_rows)
+                                    safe_hof_fn = re.sub(r"[^A-Za-z0-9_-]+", "_", (_resolved_hof_29 or "Family").strip()).strip("_")
+                                    xlsx_drive_fn = f"CTG_Family_Form_{pv_parish.replace(' ', '_')}_{saved_fid_now}_{safe_hof_fn}.xlsx"
+                                    x_lnk, _ = upload_member_image_to_parish_database_folder(
+                                        fam_xlsx_bytes,
+                                        xlsx_drive_fn,
+                                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                        pv_parish
+                                    )
+                                    if x_lnk:
+                                        cur_lnks = list(st.session_state.get("_last_uploaded_drive_links") or [])
+                                        cur_lnks.append((xlsx_drive_fn, x_lnk))
+                                        st.session_state["_last_uploaded_drive_links"] = cur_lnks
+                                except Exception:
+                                    pass
+                                record_security_audit_event(
+                                    "RECORD_SAVED_TO_DRIVE",
+                                    f"Saved family '{saved_fid_now}' ({len(valid_edited_rows)} members, Head: '{_resolved_hof_29}', ZIP: '{pv_zip.strip()}') to Google Drive & Master Excel in '{pv_parish}'",
+                                    "INFO",
+                                    target_parish=pv_parish
+                                )
                                 if st.session_state.get("user_role") == "Master Admin":
                                     try:
                                         sync_all_app_data_to_external_hard_drive()
@@ -23367,15 +23689,7 @@ elif app_mode == "🛠️ App Settings":
             # =====================================================================
             # 🛡️ CTG SECURITY MONITORING & INTRUSION DETECTION DASHBOARD (MASTER ADMIN)
             # =====================================================================
-            aud_events_all = []
-            if os.path.exists(LOCAL_SECURITY_AUDIT_LOG_FILE):
-                try:
-                    with open(LOCAL_SECURITY_AUDIT_LOG_FILE, "r", encoding="utf-8") as fa:
-                        loaded_aud = json.load(fa)
-                    if isinstance(loaded_aud, list):
-                        aud_events_all = [e for e in loaded_aud if isinstance(e, dict)]
-                except Exception:
-                    aud_events_all = []
+            aud_events_all = load_live_security_audit_events()
 
             now_ts_dash = time.time()
             active_lockouts = [
@@ -23388,7 +23702,7 @@ elif app_mode == "🛠️ App Settings":
             ]
             locked_total_cnt = len(active_lockouts) + len(disabled_reg_accs)
 
-            succ_logins_cnt = sum(1 for e in aud_events_all if str(e.get("event_type", "")) == "AUTH_LOGIN_SUCCESS")
+            succ_logins_cnt = sum(1 for e in aud_events_all if str(e.get("event_type", "")) in ("AUTH_LOGIN_SUCCESS", "LOGIN_SUCCESS"))
             fail_logins_cnt = sum(1 for e in aud_events_all if str(e.get("event_type", "")) in ("AUTH_LOGIN_FAILED", "AUTH_ACCOUNT_LOCKOUT", "AUTH_LOCKOUT_BLOCKED"))
             suspicious_cnt = sum(
                 1 for e in aud_events_all
@@ -23406,7 +23720,7 @@ elif app_mode == "🛠️ App Settings":
             )
             file_activity_cnt = sum(
                 1 for e in aud_events_all
-                if any(k in str(e.get("event_type", "")) for k in ("FILE_UPLOAD", "FILE_DOWNLOAD", "UPLOAD_"))
+                if any(k in str(e.get("event_type", "")) for k in ("FILE_UPLOAD", "FILE_DOWNLOAD", "FILE_EXTRACTED", "RECORD_SAVED_TO_DRIVE", "UPLOAD_"))
             )
 
             chain_ok, chain_cnt, chain_msg = verify_audit_log_hash_chain(aud_events_all)
