@@ -1,12 +1,13 @@
 """
-baptismal/authentication.py — Server-Side PBKDF2 Authentication & Session Security
-==================================================================================
+baptismal/authentication.py — Server-Side PBKDF2 Authentication & 10-Account Provisioning
+=========================================================================================
+Supports the 10 canonical account types:
+1. One Master Admin (`role = 'Master Admin'`, `assigned_parish = 'ALL_NINE_PARISHES'`)
+2. Nine Parish Leader Admins (`role = 'Parish Leader Admin'`, fixed `assigned_parish` from `OFFICIAL_NINE_PARISHES`)
+   - Hong Kong Parish is strictly rejected.
 - PBKDF2-HMAC-SHA256 (310,000 iterations, 16-byte random salt)
-- Constant-time hmac.compare_digest verification
 - Rate limiting & 15-minute lockout after 5 failed attempts
-- Generic authentication error messages (prevents username enumeration)
-- No hardcoded default credentials
-- Initial Master Admin provisioning via environment/secrets or interactive setup
+- Server-side session re-validation reloads `role` and `assigned_parish` from the database on every request.
 """
 
 import base64
@@ -14,17 +15,23 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import secrets
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .audit_logs import AuditLogger
 from .config import (
+    DEFAULT_NINE_PARISH_ADMIN_USERNAMES,
     LOCKOUT_DURATION_SECONDS,
     MAX_FAILED_LOGIN_ATTEMPTS,
+    OFFICIAL_NINE_PARISHES,
     PBKDF2_ITERATIONS,
     SESSION_TIMEOUT_SECONDS,
     get_config_value,
+    is_excluded_parish,
+    normalize_official_nine_parish,
 )
 from .database import DatabaseManager
+
+VALID_ROLES = ("Master Admin", "Parish Leader Admin", "Temporary Requester")
 
 
 def hash_password_pbkdf2(plain_password: str, iterations: int = PBKDF2_ITERATIONS) -> str:
@@ -55,7 +62,7 @@ def verify_password_pbkdf2(plain_password: str, stored_hash: str) -> bool:
 
 
 class AuthService:
-    """Handles server-side authentication, lockout, session validation, and account provisioning."""
+    """Handles server-side authentication, lockout, session validation, and 10-account provisioning."""
 
     def __init__(self, db: DatabaseManager, audit: Optional[AuditLogger] = None):
         self.db = db
@@ -69,9 +76,6 @@ class AuthService:
         return row is not None
 
     def ensure_initial_master_admin_from_env(self) -> bool:
-        """Provisions initial Master Admin ONLY from secure env/secrets (BAPTISMAL_INITIAL_ADMIN_USER +
-        BAPTISMAL_INITIAL_ADMIN_PASSWORD_HASH or BAPTISMAL_INITIAL_ADMIN_PASSWORD). Never hardcodes credentials
-        and never logs secrets."""
         if self.has_master_admin():
             return True
         init_user = get_config_value("BAPTISMAL_INITIAL_ADMIN_USER")
@@ -84,6 +88,7 @@ class AuthService:
             username=init_user,
             full_name="CTG Baptismal Master Admin",
             role="Master Admin",
+            assigned_parish="ALL_NINE_PARISHES",
             password_hash=pw_hash,
             email=get_config_value("BAPTISMAL_INITIAL_ADMIN_EMAIL"),
         )
@@ -97,27 +102,110 @@ class AuthService:
         plain_password: str = "",
         password_hash: str = "",
         email: str = "",
+        assigned_parish: str = "",
     ) -> str:
         uname = str(username or "").strip().lower()
         if not uname:
             raise ValueError("Username is required.")
-        if role not in ("Master Admin", "Temporary Requester"):
-            raise ValueError("Invalid role specified.")
+        if role not in VALID_ROLES:
+            raise ValueError(f"Invalid role '{role}'. Allowed: {VALID_ROLES}")
+
+        if is_excluded_parish(assigned_parish):
+            raise ValueError("Hong Kong Parish is excluded from the CTG Baptismal System.")
+
+        if role == "Master Admin":
+            norm_parish = "ALL_NINE_PARISHES"
+        elif role == "Parish Leader Admin":
+            norm_parish = normalize_official_nine_parish(assigned_parish)
+        else:
+            norm_parish = normalize_official_nine_parish(assigned_parish) if assigned_parish.strip() else ""
+
         final_hash = password_hash if password_hash.startswith("pbkdf2_sha256$") else hash_password_pbkdf2(plain_password)
         account_id = f"bap_acc_{secrets.token_hex(8)}"
         now_iso = datetime.now(timezone.utc).isoformat()
         self.db.execute(
             """
             INSERT INTO baptismal_accounts (
-                account_id, username, full_name, email, role, password_hash,
-                is_active, failed_attempts, locked_until, must_change_password,
-                created_at, updated_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, 1, 0, NULL, 0, %s, %s)
+                account_id, username, full_name, email, role, assigned_parish,
+                password_hash, is_active, failed_attempts, locked_until,
+                must_change_password, created_at, updated_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, 1, 0, NULL, 0, %s, %s)
             """,
-            (account_id, uname, str(full_name or uname).strip(), str(email or "").strip(), role, final_hash, now_iso, now_iso),
+            (
+                account_id,
+                uname,
+                str(full_name or uname).strip(),
+                str(email or "").strip(),
+                role,
+                norm_parish,
+                final_hash,
+                now_iso,
+                now_iso,
+            ),
         )
-        self.audit.log_event(account_id, "ACCOUNT_CREATED", "SUCCESS", metadata={"role": role})
+        self.audit.log_event(
+            account_id,
+            "ACCOUNT_CREATED",
+            "SUCCESS",
+            metadata={"role": role, "assigned_parish": norm_parish},
+        )
         return account_id
+
+    def provision_nine_parish_leader_admins(
+        self,
+        actor_account_id: str,
+        initial_password: str,
+        custom_usernames: Optional[Dict[str, str]] = None,
+    ) -> List[Dict[str, str]]:
+        """Creates or updates the 9 separate Parish Leader Admin accounts (one for each of the 9 official parishes;
+        Hong Kong Parish is never included)."""
+        created_or_existing: List[Dict[str, str]] = []
+        uname_map = {**DEFAULT_NINE_PARISH_ADMIN_USERNAMES, **(custom_usernames or {})}
+        for parish in OFFICIAL_NINE_PARISHES:
+            uname = str(uname_map[parish]).strip().lower()
+            existing = self.db.fetch_one(
+                "SELECT account_id, username, assigned_parish FROM baptismal_accounts WHERE username = %s OR (role = 'Parish Leader Admin' AND assigned_parish = %s)",
+                (uname, parish),
+            )
+            if existing:
+                created_or_existing.append({
+                    "account_id": existing["account_id"],
+                    "username": existing["username"],
+                    "assigned_parish": parish,
+                    "status": "EXISTING",
+                })
+            else:
+                aid = self.create_account(
+                    username=uname,
+                    full_name=f"{parish} Baptismal Leader Admin",
+                    role="Parish Leader Admin",
+                    assigned_parish=parish,
+                    plain_password=initial_password,
+                )
+                created_or_existing.append({
+                    "account_id": aid,
+                    "username": uname,
+                    "assigned_parish": parish,
+                    "status": "CREATED",
+                })
+        self.audit.log_event(
+            actor_account_id,
+            "NINE_PARISH_ADMINS_PROVISIONED",
+            "SUCCESS",
+            metadata={"count": len(created_or_existing)},
+        )
+        return created_or_existing
+
+    def list_parish_admin_accounts(self) -> List[Dict[str, Any]]:
+        return self.db.fetch_all(
+            """
+            SELECT account_id, username, full_name, email, role, assigned_parish,
+                   is_active, failed_attempts, locked_until, created_at
+            FROM baptismal_accounts
+            WHERE role = 'Parish Leader Admin'
+            ORDER BY assigned_parish ASC
+            """
+        )
 
     def authenticate(self, username: str, plain_password: str) -> Tuple[bool, Optional[Dict[str, Any]], str]:
         """Verifies credentials server-side with lockout protection and generic error messages."""
@@ -132,6 +220,10 @@ class AuthService:
         )
         if not acc or not int(acc.get("is_active", 0)):
             self.audit.log_event("anonymous", "LOGIN_FAILED", "FAILURE", metadata={"reason": "unknown_or_inactive"})
+            return False, None, generic_err
+
+        if is_excluded_parish(acc.get("assigned_parish", "")):
+            self.audit.log_event(acc["account_id"], "LOGIN_BLOCKED_EXCLUDED_PARISH", "FAILURE")
             return False, None, generic_err
 
         now = datetime.now(timezone.utc)
@@ -169,14 +261,20 @@ class AuthService:
             "full_name": acc["full_name"],
             "email": acc.get("email", ""),
             "role": acc["role"],
+            "assigned_parish": acc.get("assigned_parish", ""),
             "authenticated_at": now.isoformat(),
             "session_token": secrets.token_urlsafe(32),
         }
-        self.audit.log_event(acc["account_id"], "LOGIN_SUCCESS", "SUCCESS", metadata={"role": acc["role"]})
+        self.audit.log_event(
+            acc["account_id"],
+            "LOGIN_SUCCESS",
+            "SUCCESS",
+            metadata={"role": acc["role"], "assigned_parish": acc.get("assigned_parish", "")},
+        )
         return True, safe_user, "OK"
 
     def validate_session(self, session_user: Optional[Dict[str, Any]]) -> Tuple[bool, Optional[Dict[str, Any]]]:
-        """Re-verifies session expiration and active account status directly against the database."""
+        """Re-verifies session expiration and reloads role & assigned_parish directly from the database."""
         if not session_user or not isinstance(session_user, dict):
             return False, None
         acc_id = str(session_user.get("account_id", "")).strip()
@@ -191,14 +289,17 @@ class AuthService:
             return False, None
 
         acc = self.db.fetch_one(
-            "SELECT account_id, username, full_name, email, role, is_active FROM baptismal_accounts WHERE account_id = %s",
+            "SELECT account_id, username, full_name, email, role, assigned_parish, is_active FROM baptismal_accounts WHERE account_id = %s",
             (acc_id,),
         )
         if not acc or not int(acc.get("is_active", 0)):
             return False, None
+        if is_excluded_parish(acc.get("assigned_parish", "")):
+            return False, None
         return True, {
             **session_user,
             "role": acc["role"],
+            "assigned_parish": acc.get("assigned_parish", ""),
             "username": acc["username"],
             "full_name": acc["full_name"],
         }

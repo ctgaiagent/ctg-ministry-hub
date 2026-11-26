@@ -1,27 +1,27 @@
 """
 baptismal/migrations.py — Idempotent Database Schema & Migrations
 =================================================================
-Creates and indexes all tables required by the CTG Baptismal System:
-1. baptismal_accounts
+Creates and upgrades all tables required by the CTG Baptismal Role-Based System:
+1. baptismal_accounts (with fixed server-side `assigned_parish`)
 2. baptismal_roles_permissions
 3. historical_records
-4. new_baptism_registrations
+4. new_baptism_registrations (with `verification_status`, `verified_by`, `verified_at`, `verification_notes`)
 5. drive_file_mappings
 6. historical_image_associations
-7. certificate_requests
+7. certificate_requests (supporting both `HISTORICAL_RECORD` and `CERTIFIED_CERTIFICATE` requests with full genealogy fields)
 8. temporary_access_grants
-9. generated_certificates
+9. generated_certificates (with `request_id`, `authorized_account_id`, `assigned_parish`, `approval_status`, `is_released_to_requester`)
 10. baptismal_audit_logs
 11. workbook_update_logs
 12. schema_migrations
 """
 
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Tuple
 
 from .database import DatabaseManager
 
-MIGRATIONS: List[tuple] = [
+MIGRATIONS: List[Tuple[str, List[str]]] = [
     (
         "001_initial_schema",
         [
@@ -38,6 +38,7 @@ MIGRATIONS: List[tuple] = [
                 full_name TEXT NOT NULL,
                 email TEXT,
                 role TEXT NOT NULL,
+                assigned_parish TEXT NOT NULL DEFAULT '',
                 password_hash TEXT NOT NULL,
                 is_active INTEGER NOT NULL DEFAULT 1,
                 failed_attempts INTEGER NOT NULL DEFAULT 0,
@@ -98,9 +99,13 @@ MIGRATIONS: List[tuple] = [
                 baptism_year TEXT NOT NULL,
                 worksheet_name TEXT NOT NULL,
                 registration_status TEXT NOT NULL,
+                verification_status TEXT NOT NULL DEFAULT 'Pending Verification',
+                verified_by TEXT,
+                verified_at TEXT,
+                verification_notes TEXT,
                 upload_status TEXT NOT NULL,
                 workbook_update_status TEXT NOT NULL,
-                parish TEXT,
+                parish TEXT NOT NULL,
                 child_name TEXT NOT NULL,
                 date_of_baptism TEXT,
                 father_name TEXT,
@@ -115,6 +120,7 @@ MIGRATIONS: List[tuple] = [
             )
             """,
             "CREATE INDEX IF NOT EXISTS idx_new_bap_year ON new_baptism_registrations(baptism_year)",
+            "CREATE INDEX IF NOT EXISTS idx_new_bap_parish ON new_baptism_registrations(parish)",
             """
             CREATE TABLE IF NOT EXISTS drive_file_mappings (
                 mapping_id TEXT PRIMARY KEY,
@@ -153,11 +159,22 @@ MIGRATIONS: List[tuple] = [
             """
             CREATE TABLE IF NOT EXISTS certificate_requests (
                 request_id TEXT PRIMARY KEY,
+                request_type TEXT NOT NULL DEFAULT 'CERTIFIED_CERTIFICATE',
                 requester_account_id TEXT NOT NULL,
                 requester_username TEXT NOT NULL,
+                assigned_parish TEXT NOT NULL DEFAULT '',
                 target_record_id TEXT,
                 requested_person_name TEXT NOT NULL,
+                father_name TEXT,
+                mother_name TEXT,
+                approx_baptism_date TEXT,
+                approx_birth_date TEXT,
+                book_hint TEXT,
+                page_hint TEXT,
                 purpose TEXT NOT NULL,
+                supporting_doc_filename TEXT,
+                supporting_doc_drive_id TEXT,
+                approved_certificate_id TEXT,
                 status TEXT NOT NULL,
                 reviewed_by TEXT,
                 reviewed_at TEXT,
@@ -187,9 +204,16 @@ MIGRATIONS: List[tuple] = [
             CREATE TABLE IF NOT EXISTS generated_certificates (
                 certificate_id TEXT PRIMARY KEY,
                 record_id TEXT NOT NULL,
+                request_id TEXT,
+                authorized_account_id TEXT,
+                assigned_parish TEXT,
                 issued_by TEXT NOT NULL,
                 issuance_date TEXT NOT NULL,
                 issuance_status TEXT NOT NULL,
+                approval_status TEXT NOT NULL DEFAULT 'ISSUED',
+                approved_by TEXT,
+                approved_at TEXT,
+                is_released_to_requester INTEGER NOT NULL DEFAULT 0,
                 reissue_reason TEXT,
                 drive_file_id TEXT,
                 pdf_sha256 TEXT NOT NULL,
@@ -230,9 +254,36 @@ MIGRATIONS: List[tuple] = [
     ),
 ]
 
+# Columns to ensure on existing databases upgraded from earlier schema
+_UPGRADE_COLUMNS: List[Tuple[str, str, str]] = [
+    ("baptismal_accounts", "assigned_parish", "TEXT NOT NULL DEFAULT ''"),
+    ("new_baptism_registrations", "verification_status", "TEXT NOT NULL DEFAULT 'Pending Verification'"),
+    ("new_baptism_registrations", "verified_by", "TEXT"),
+    ("new_baptism_registrations", "verified_at", "TEXT"),
+    ("new_baptism_registrations", "verification_notes", "TEXT"),
+    ("certificate_requests", "request_type", "TEXT NOT NULL DEFAULT 'CERTIFIED_CERTIFICATE'"),
+    ("certificate_requests", "assigned_parish", "TEXT NOT NULL DEFAULT ''"),
+    ("certificate_requests", "father_name", "TEXT"),
+    ("certificate_requests", "mother_name", "TEXT"),
+    ("certificate_requests", "approx_baptism_date", "TEXT"),
+    ("certificate_requests", "approx_birth_date", "TEXT"),
+    ("certificate_requests", "book_hint", "TEXT"),
+    ("certificate_requests", "page_hint", "TEXT"),
+    ("certificate_requests", "supporting_doc_filename", "TEXT"),
+    ("certificate_requests", "supporting_doc_drive_id", "TEXT"),
+    ("certificate_requests", "approved_certificate_id", "TEXT"),
+    ("generated_certificates", "request_id", "TEXT"),
+    ("generated_certificates", "authorized_account_id", "TEXT"),
+    ("generated_certificates", "assigned_parish", "TEXT"),
+    ("generated_certificates", "approval_status", "TEXT NOT NULL DEFAULT 'ISSUED'"),
+    ("generated_certificates", "approved_by", "TEXT"),
+    ("generated_certificates", "approved_at", "TEXT"),
+    ("generated_certificates", "is_released_to_requester", "INTEGER NOT NULL DEFAULT 0"),
+]
+
 
 def run_migrations(db: DatabaseManager) -> List[str]:
-    """Applies any unapplied database migrations idempotently."""
+    """Applies any unapplied database migrations and column upgrades idempotently."""
     db.execute(
         """
         CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -257,16 +308,29 @@ def run_migrations(db: DatabaseManager) -> List[str]:
             )
         newly_applied.append(version)
 
-    # Seed canonical role permissions idempotently
+    # Idempotently add any new columns on pre-existing tables
+    for tbl, col, col_def in _UPGRADE_COLUMNS:
+        try:
+            db.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {col_def}")
+        except Exception:
+            pass
+
     role_perms = [
         ("Master Admin", "full_system_access"),
         ("Master Admin", "view_historical"),
         ("Master Admin", "view_book_archive"),
         ("Master Admin", "register_new_baptism"),
+        ("Master Admin", "verify_registrations"),
         ("Master Admin", "manage_temporary_access"),
         ("Master Admin", "generate_certificate"),
+        ("Master Admin", "approve_and_issue_certificate"),
         ("Master Admin", "view_audit_logs"),
         ("Master Admin", "manage_backups"),
+        ("Parish Leader Admin", "register_own_parish_baptism"),
+        ("Parish Leader Admin", "edit_pending_own_parish_baptism"),
+        ("Parish Leader Admin", "request_historical_record"),
+        ("Parish Leader Admin", "request_certified_certificate"),
+        ("Parish Leader Admin", "download_released_certificate"),
         ("Temporary Requester", "view_approved_record_only"),
     ]
     for role_n, perm_k in role_perms:

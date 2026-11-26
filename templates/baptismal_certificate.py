@@ -5,22 +5,84 @@ templates/baptismal_certificate.py — Professional CTG Certificate of Baptism P
 - Supports A4 Portrait and A4 Landscape layouts.
 - Double border, church logo area, certificate heading, typography, signature blocks,
   official seal area, certificate number, and issuance date.
+- Uses ReportLab when installed, and automatically falls back to a built-in PIL/pure-Python
+  PDF generator if ReportLab is not installed in the current virtualenv.
 - NEVER invents missing historical information; leaves missing fields blank or marked
   for administrator completion without altering the source record.
 """
 
+import importlib
 import io
 import os
-from typing import Any, Dict, Optional
-
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4, landscape, portrait
-from reportlab.lib.units import mm
-from reportlab.pdfgen import canvas
+from typing import Any, Dict
 
 NAVY_HEX = "#0F2C59"
 GOLD_HEX = "#D4AF37"
 SLATE_HEX = "#334155"
+
+
+def _render_via_pillow_pdf(
+    record: Dict[str, Any],
+    certificate_id: str,
+    issuance_date: str,
+    is_land: bool,
+    custom_heading: str,
+    custom_wording: str,
+    blank_marker: str,
+) -> bytes:
+    """Zero-ReportLab fallback that generates a valid A4 PDF (%PDF-) using Pillow (PIL)."""
+    from PIL import Image, ImageDraw
+
+    w, h = (1754, 1240) if is_land else (1240, 1754)
+    im = Image.new("RGB", (w, h), (255, 255, 255))
+    dr = ImageDraw.Draw(im)
+
+    navy_rgb = (15, 44, 89)
+    gold_rgb = (212, 175, 55)
+    slate_rgb = (51, 65, 85)
+
+    # Outer navy & inner gold border
+    dr.rectangle([45, 45, w - 45, h - 45], outline=navy_rgb, width=6)
+    dr.rectangle([62, 62, w - 62, h - 62], outline=gold_rgb, width=3)
+
+    dr.text((w // 2 - 180, 100), "CHURCH OF THE TEMPLE OF GOD", fill=navy_rgb)
+    parish_val = str(record.get("Parish") or "").strip() or blank_marker
+    dr.text((w // 2 - 140, 135), f"Parish: {parish_val}", fill=slate_rgb)
+    dr.text((w // 2 - 170, 185), custom_heading.upper(), fill=gold_rgb)
+    dr.text((120, 235), custom_wording[:115], fill=slate_rgb)
+
+    def _val(key: str) -> str:
+        v = str(record.get(key) or "").strip()
+        return v if v else blank_marker
+
+    fields = [
+        ("Name of Baptized Person:", _val("Name of the Child")),
+        ("Date of Baptism:", _val("Date of Baptism")),
+        ("Date of Birth:", _val("Date of Birth")),
+        ("Place of Baptism:", _val("Place of Baptism")),
+        ("Name of Father:", _val("Name of the Father")),
+        ("Name of Mother:", _val("Name of the Mother")),
+        ("Sponsors:", _val("Sponsors")),
+        ("Officiating Priest:", _val("Officiating Priest")),
+        ("Book Number:", _val("Book Number")),
+        ("Page Number:", _val("Page Number")),
+        ("Certificate No.:", certificate_id),
+        ("Date Issued:", issuance_date),
+    ]
+
+    y = 300
+    for lbl, val in fields:
+        dr.text((130, y), f"{lbl}  {val}", fill=navy_rgb)
+        y += 55 if is_land else 75
+
+    dr.line([(130, h - 140), (460, h - 140)], fill=navy_rgb, width=2)
+    dr.text((180, h - 125), "Parish Priest / Cura Parocco", fill=navy_rgb)
+    dr.line([(w - 460, h - 140), (w - 130, h - 140)], fill=navy_rgb, width=2)
+    dr.text((w - 410, h - 125), "Master Admin / Archivist", fill=navy_rgb)
+
+    buf = io.BytesIO()
+    im.save(buf, format="PDF", resolution=150.0)
+    return buf.getvalue()
 
 
 def render_baptismal_certificate_pdf(
@@ -35,18 +97,33 @@ def render_baptismal_certificate_pdf(
 ) -> bytes:
     """Generates a print-ready A4 PDF Certificate of Baptism in Portrait or Landscape."""
     is_land = str(orientation).strip().lower() == "landscape"
+
+    try:
+        colors = importlib.import_module("reportlab.lib.colors")
+        pagesizes = importlib.import_module("reportlab.lib.pagesizes")
+        units = importlib.import_module("reportlab.lib.units")
+        pdf_canvas = importlib.import_module("reportlab.pdfgen.canvas")
+    except Exception:
+        return _render_via_pillow_pdf(
+            record, certificate_id, issuance_date, is_land, custom_heading, custom_wording, blank_marker
+        )
+
+    A4 = pagesizes.A4
+    landscape = pagesizes.landscape
+    portrait = pagesizes.portrait
+    mm = units.mm
+
     page_size = landscape(A4) if is_land else portrait(A4)
     width, height = page_size
 
     buf = io.BytesIO()
-    c = canvas.Canvas(buf, pagesize=page_size)
+    c = pdf_canvas.Canvas(buf, pagesize=page_size)
     c.setTitle(f"CTG Certificate of Baptism - {certificate_id}")
 
     navy = colors.HexColor(NAVY_HEX)
     gold = colors.HexColor(GOLD_HEX)
     slate = colors.HexColor(SLATE_HEX)
 
-    # Outer & inner ceremonial borders
     margin = 14 * mm
     c.setStrokeColor(navy)
     c.setLineWidth(3.0)
@@ -56,7 +133,6 @@ def render_baptismal_certificate_pdf(
     c.setLineWidth(1.4)
     c.rect(margin + 3.5 * mm, margin + 3.5 * mm, width - 2 * (margin + 3.5 * mm), height - 2 * (margin + 3.5 * mm))
 
-    # Header & optional logo area
     top_y = height - margin - 14 * mm
     if logo_path and os.path.exists(logo_path):
         try:
@@ -89,7 +165,6 @@ def render_baptismal_certificate_pdf(
         v = str(record.get(key) or "").strip()
         return v if v else blank_marker
 
-    # Certificate Body Fields (never inventing missing historical info)
     fields_left = [
         ("Name of Baptized Person:", _val("Name of the Child")),
         ("Date of Baptism:", _val("Date of Baptism")),
@@ -141,7 +216,6 @@ def render_baptismal_certificate_pdf(
             c.setFont("Times-Roman", 11)
             c.drawString(col_x + 52 * mm, y_pos, val[:58])
 
-    # Signature & Official Seal Area
     sig_y = margin + 28 * mm
     c.setStrokeColor(navy)
     c.setLineWidth(0.8)
@@ -153,7 +227,6 @@ def render_baptismal_certificate_pdf(
     c.drawCentredString(margin + 45 * mm, sig_y - 5 * mm, "Parish Priest / Cura Parocco")
     c.drawCentredString(width - margin - 45 * mm, sig_y - 5 * mm, "Master Admin / Archivist")
 
-    # Official Seal Circle
     c.setStrokeColor(gold)
     c.setLineWidth(1.2)
     c.circle(width / 2, sig_y - 1 * mm, 13 * mm)

@@ -1,9 +1,8 @@
 """
-baptismal/image_archive.py — BOOK 1–9 Visual Archive & Image Manipulation
-=========================================================================
-Supports image thumbnails, full-size preview, rotation (0/90/180/270),
-zoom, original filename & book folder display, and multi-image / multi-record
-associations without auto-trusting filename page numbers.
+baptismal/image_archive.py — Master-Admin-Only BOOK 1–9 Visual Archive
+======================================================================
+- Strictly restricted to Master Admin (`authz.require_master_admin`).
+- Parish Leader Admins CANNOT access BOOK 1–9.
 """
 
 import io
@@ -11,6 +10,7 @@ import os
 from typing import Any, Dict, List, Optional
 from PIL import Image
 
+from .authorization import AuthorizationService
 from .database import DatabaseManager
 
 
@@ -33,12 +33,15 @@ def render_image_preview_bytes(
 
 
 class ImageArchiveService:
-    """Manages BOOK 1–9 scanned archive listings and record-to-image links."""
+    """Manages Master-Admin-only BOOK 1–9 scanned archive listings and record-to-image links."""
 
-    def __init__(self, db: DatabaseManager):
+    def __init__(self, db: DatabaseManager, authz: Optional[AuthorizationService] = None):
         self.db = db
+        self.authz = authz or AuthorizationService(db)
 
-    def list_associations_for_record(self, record_id: str) -> List[Dict[str, Any]]:
+    def list_associations_for_record(self, record_id: str, actor_account_id: str = "") -> List[Dict[str, Any]]:
+        if actor_account_id and not self.authz.is_master_admin(actor_account_id):
+            self.authz.require_record_permission(actor_account_id, record_id, "view_image")
         return self.db.fetch_all(
             """
             SELECT association_id, record_id, book_folder, image_filename, drive_file_id,
@@ -51,8 +54,9 @@ class ImageArchiveService:
             (record_id,),
         )
 
-    def list_records_for_image(self, book_folder: str, image_filename: str) -> List[Dict[str, Any]]:
-        """Supports multiple historical records linked to a single scanned page."""
+    def list_records_for_image(self, book_folder: str, image_filename: str, actor_account_id: str = "") -> List[Dict[str, Any]]:
+        if actor_account_id:
+            self.authz.require_master_admin(actor_account_id, action="access_book_archive")
         return self.db.fetch_all(
             """
             SELECT a.*, h.child_name, h.date_of_baptism, h.book_number, h.page_number
@@ -64,7 +68,9 @@ class ImageArchiveService:
             (book_folder, image_filename),
         )
 
-    def list_by_book(self, book_folder: str, status_filter: str = "ALL") -> List[Dict[str, Any]]:
+    def list_by_book(self, book_folder: str, status_filter: str = "ALL", actor_account_id: str = "") -> List[Dict[str, Any]]:
+        if actor_account_id:
+            self.authz.require_master_admin(actor_account_id, action="access_book_archive")
         if status_filter and status_filter != "ALL":
             return self.db.fetch_all(
                 """

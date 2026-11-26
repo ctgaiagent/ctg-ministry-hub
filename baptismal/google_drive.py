@@ -1,24 +1,26 @@
 """
 baptismal/google_drive.py — Least-Privilege Private Google Drive Integration
 ============================================================================
-- Reuses Google OAuth Refresh Token or Service Account credentials from st.secrets / env.
+- Reuses Google OAuth Refresh Token or Service Account credentials from st.secrets / env / CTG Ministry Hub.
 - Verifies Editor permission (`capabilities.canEdit`) on the designated Excel workbook BEFORE writing.
+- Lists and downloads historical records (`OVERALL BAPTISMAL CERTIFICATE LIST.xlsx`) and
+  `BOOK 1`–`BOOK 9` images directly from the `CTG BAPTISMAL RECORDS` Google Drive folder.
 - Never enables public sharing ("Anyone with the link").
-- Never invents Drive file IDs or credentials.
-- Organizes private folders:
-  CTG BAPTISMAL SYSTEM/
-    HISTORICAL RECORDS/
-    NEW BAPTISM IMAGES/2026..2028/
-    GENERATED CERTIFICATES/2026..2028/
-    BACKUPS/
 """
 
 import io
 import json
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-from .config import DRIVE_ROOT_FOLDER_NAME, DRIVE_SUBFOLDERS_TREE, get_google_drive_config
+from .config import (
+    DEFAULT_BAPTISMAL_ROOT_FOLDER_ID,
+    DEFAULT_BAPTISMAL_WORKBOOK_FILE_ID,
+    DRIVE_ROOT_FOLDER_NAME,
+    DRIVE_SUBFOLDERS_TREE,
+    KNOWN_BAPTISMAL_SUBFOLDER_IDS,
+    get_google_drive_config,
+)
 
 
 class GoogleDrivePermissionError(PermissionError):
@@ -72,8 +74,21 @@ class GoogleDriveManager:
             except Exception as ex:
                 raise GoogleDrivePermissionError(f"Failed to initialize Google Drive OAuth client: {ex}")
 
+        # Try reusing active Google Drive service from main CTG Ministry Hub app if running in unified mode
+        try:
+            import sys
+            for mod_name in ("__main__", "app"):
+                mod = sys.modules.get(mod_name)
+                if mod and hasattr(mod, "get_all_candidate_google_drive_services"):
+                    svcs = mod.get_all_candidate_google_drive_services()
+                    if svcs:
+                        self._service = svcs[0]
+                        return self._service
+        except Exception:
+            pass
+
         raise GoogleDrivePermissionError(
-            "Google Drive credentials are not configured. Set BAPTISMAL_GOOGLE_SERVICE_ACCOUNT_JSON or OAuth credentials in Streamlit Secrets."
+            "Google Drive credentials are not configured. Set Google Drive OAuth or Service Account credentials in App Settings / Streamlit Secrets."
         )
 
     def _execute_with_retry(self, request_callable, max_retries: int = 3):
@@ -90,15 +105,16 @@ class GoogleDriveManager:
                     time.sleep(0.8 * (attempt + 1))
         raise RuntimeError(f"Google Drive API request failed after {max_retries} attempts: {last_err}")
 
-    def verify_workbook_write_access(self, file_id: str) -> Dict[str, Any]:
+    def verify_workbook_write_access(self, file_id: str = "") -> Dict[str, Any]:
         """Verifies that the backend OAuth/Service Account has Editor permission on the designated workbook."""
-        if not file_id:
+        target_id = str(file_id or self.config.get("workbook_file_id") or DEFAULT_BAPTISMAL_WORKBOOK_FILE_ID).strip()
+        if not target_id:
             raise GoogleDrivePermissionError("BAPTISMAL_WORKBOOK_FILE_ID is not configured.")
         svc = self.get_service()
         meta = self._execute_with_retry(
             lambda: svc.files()
             .get(
-                fileId=file_id,
+                fileId=target_id,
                 fields="id, name, mimeType, capabilities(canEdit, canDownload), headRevisionId",
                 supportsAllDrives=True,
             )
@@ -107,12 +123,14 @@ class GoogleDriveManager:
         caps = meta.get("capabilities") or {}
         if not caps.get("canEdit", False):
             raise GoogleDrivePermissionError(
-                f"Insufficient Google Drive permissions on workbook '{meta.get('name', file_id)}': backend account is Viewer-only (canEdit=False). Write operation aborted."
+                f"Insufficient Google Drive permissions on workbook '{meta.get('name', target_id)}': backend account is Viewer-only (canEdit=False). Write operation aborted."
             )
         return meta
 
     def ensure_private_folder(self, folder_name: str, parent_id: str = "") -> str:
         """Finds or creates a private folder without any public 'anyone' permission."""
+        if folder_name in KNOWN_BAPTISMAL_SUBFOLDER_IDS and parent_id in ("", DEFAULT_BAPTISMAL_ROOT_FOLDER_ID):
+            return KNOWN_BAPTISMAL_SUBFOLDER_IDS[folder_name]
         svc = self.get_service()
         safe_q_name = folder_name.replace("'", "\\'")
         q = f"name = '{safe_q_name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
@@ -137,22 +155,56 @@ class GoogleDriveManager:
         return str(created["id"])
 
     def ensure_baptismal_folder_tree(self) -> Dict[str, str]:
-        """Ensures the private CTG BAPTISMAL SYSTEM folder hierarchy exists and returns folder ID mappings."""
-        root_id = str(self.config.get("root_folder_id") or "").strip()
+        """Ensures the private CTG BAPTISMAL RECORDS folder hierarchy exists and returns folder ID mappings."""
+        root_id = str(self.config.get("root_folder_id") or DEFAULT_BAPTISMAL_ROOT_FOLDER_ID).strip()
         if not root_id:
             root_id = self.ensure_private_folder(DRIVE_ROOT_FOLDER_NAME)
-        folder_map: Dict[str, str] = {"ROOT": root_id}
+        folder_map: Dict[str, str] = {"ROOT": root_id, **KNOWN_BAPTISMAL_SUBFOLDER_IDS}
         for sub_name, years in DRIVE_SUBFOLDERS_TREE.items():
-            sub_id = self.ensure_private_folder(sub_name, parent_id=root_id)
+            sub_id = KNOWN_BAPTISMAL_SUBFOLDER_IDS.get(sub_name) or self.ensure_private_folder(sub_name, parent_id=root_id)
             folder_map[sub_name] = sub_id
             for yr in years:
                 yr_id = self.ensure_private_folder(yr, parent_id=sub_id)
                 folder_map[f"{sub_name}/{yr}"] = yr_id
         return folder_map
 
-    def download_file_bytes(self, file_id: str) -> bytes:
+    def list_files_in_folder(self, folder_id: str, page_size: int = 200) -> List[Dict[str, Any]]:
+        """Lists files inside a specific Google Drive folder (such as BOOK 1..9 or CTG BAPTISMAL RECORDS)."""
+        if not folder_id:
+            return []
         svc = self.get_service()
-        request = svc.files().get_media(fileId=file_id, supportsAllDrives=True)
+        q = f"'{folder_id}' in parents and trashed = false"
+        res = self._execute_with_retry(
+            lambda: svc.files()
+            .list(
+                q=q,
+                pageSize=min(1000, int(page_size)),
+                fields="files(id, name, mimeType, size, modifiedTime)",
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True,
+            )
+            .execute()
+        )
+        return list(res.get("files") or [])
+
+    def discover_book_folders_in_drive(self) -> Dict[str, str]:
+        """Discovers BOOK 1..BOOK 9 folder IDs inside the CTG BAPTISMAL RECORDS root folder."""
+        book_map = {k: v for k, v in KNOWN_BAPTISMAL_SUBFOLDER_IDS.items() if k.startswith("BOOK ")}
+        root_id = str(self.config.get("root_folder_id") or DEFAULT_BAPTISMAL_ROOT_FOLDER_ID).strip()
+        try:
+            children = self.list_files_in_folder(root_id, page_size=100)
+            for item in children:
+                nm = str(item.get("name") or "").strip().upper()
+                if nm.startswith("BOOK ") and item.get("mimeType") == "application/vnd.google-apps.folder":
+                    book_map[nm] = str(item["id"])
+        except Exception:
+            pass
+        return book_map
+
+    def download_file_bytes(self, file_id: str = "") -> bytes:
+        target_id = str(file_id or self.config.get("workbook_file_id") or DEFAULT_BAPTISMAL_WORKBOOK_FILE_ID).strip()
+        svc = self.get_service()
+        request = svc.files().get_media(fileId=target_id, supportsAllDrives=True)
         return bytes(self._execute_with_retry(request.execute))
 
     def upload_private_file(
