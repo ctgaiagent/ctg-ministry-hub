@@ -33,6 +33,7 @@ from .config import (
 from .database import DatabaseManager
 from .excel_manager import append_new_baptism_to_workbook_bytes, get_yearly_worksheet_name
 from .google_drive import GoogleDriveManager
+from .security_crypto import decrypt_sensitive_token_to_bytes, encrypt_sensitive_bytes_to_token
 from .validation import validate_uploaded_file
 
 
@@ -308,7 +309,7 @@ class RegistrationService:
                     record_id,
                     v_img["filename"],
                     v_img["mime_type"],
-                    base64.b64encode(v_img["bytes"]).decode("ascii"),
+                    encrypt_sensitive_bytes_to_token(v_img["bytes"]),
                     len(v_img["bytes"]),
                     actor_account_id,
                     now_iso,
@@ -402,7 +403,7 @@ class RegistrationService:
         for r in rows:
             item = dict(r)
             try:
-                item["bytes"] = base64.b64decode(str(r.get("file_b64", "")).encode("ascii"))
+                item["bytes"] = decrypt_sensitive_token_to_bytes(str(r.get("file_b64", "")))
             except Exception:
                 item["bytes"] = b""
             out.append(item)

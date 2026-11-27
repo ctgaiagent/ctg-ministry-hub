@@ -231,5 +231,34 @@ class TestRoleBasedTenAccountsAndHongKongExclusion(unittest.TestCase):
         self.assertEqual(BOOK9_EPSON_SCAN_MAP["BC_120261123_174501_0005.JPG"]["record_id"], "HIST-04012")
 
 
+
+    def test_at_rest_encryption_tamper_detection_and_leak_redaction(self):
+        from baptismal.security_crypto import (
+            decrypt_sensitive_token_to_bytes,
+            encrypt_sensitive_bytes_to_token,
+            redact_sensitive_text,
+        )
+
+        secret_bytes = b"CONFIDENTIAL_BAPTISMAL_CERTIFICATE_SCAN_BYTES_2026"
+        token = encrypt_sensitive_bytes_to_token(secret_bytes)
+        self.assertTrue(token.startswith("CTG_ENC_V1:"))
+        self.assertNotIn("CONFIDENTIAL", token)
+        self.assertEqual(decrypt_sensitive_token_to_bytes(token), secret_bytes)
+
+        # Tampering with the encrypted token must fail HMAC-SHA256 verification
+        parts = token.split(":")
+        tampered_mac = "A" * len(parts[-1])
+        tampered_token = ":".join(parts[:-1] + [tampered_mac])
+        with self.assertRaises(ValueError):
+            decrypt_sensitive_token_to_bytes(tampered_token)
+
+        # Redaction check
+        leaked = "Error with token 1//0gABCDEF12345678901234567890 and key AIzaSyD123456789012345678901234567890 at /Users/jeraldclaro/secret.db"
+        redacted = redact_sensitive_text(leaked)
+        self.assertNotIn("1//0gABCDEF", redacted)
+        self.assertNotIn("AIzaSyD", redacted)
+        self.assertNotIn("/Users/jeraldclaro", redacted)
+
+
 if __name__ == "__main__":
     unittest.main()

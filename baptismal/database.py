@@ -50,10 +50,17 @@ class DatabaseManager:
                 raise
             finally:
                 conn.close()
+                try:
+                    from .security_crypto import harden_file_permissions
+                    if self.sqlite_path and self.sqlite_path != ':memory:':
+                        harden_file_permissions(self.sqlite_path)
+                except Exception:
+                    pass
         else:
             conn = sqlite3.connect(self.sqlite_path, timeout=15.0)
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA foreign_keys = ON;")
+            conn.execute("PRAGMA secure_delete = ON;")
             try:
                 cur = conn.cursor()
                 yield cur

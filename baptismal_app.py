@@ -64,6 +64,10 @@ from baptismal.image_matching import ImageMatchingService, extract_page_hint_fro
 from baptismal.migrations import run_migrations
 from baptismal.registration import RegistrationService
 from baptismal.temporary_access import TemporaryAccessService
+from baptismal.security_crypto import (
+    enforce_data_leak_protection_on_workspace,
+    redact_sensitive_text,
+)
 from baptismal.validation import escape_html_text, validate_uploaded_file
 
 _BAP_SERVICES_VERSION = "2026-11-27-v5-hotreload"
@@ -170,6 +174,49 @@ def _get_baptismal_services(_version: str = _BAP_SERVICES_VERSION) -> Dict[str, 
         "certs": certs,
         "temp_acc": temp_acc,
     }
+
+
+
+def _map_login_username_to_baptismal_username(raw_u: str) -> str:
+    """Maps either Baptismal usernames (e.g. master_admin, lipay_norte_bap_admin) or CTG Ministry Hub
+    usernames (e.g. ctg.ministry.master.admin, lipay norte parish, lipay_norte_admin) to canonical baptismal username."""
+    from baptismal.config import DEFAULT_NINE_PARISH_ADMIN_USERNAMES
+    u = str(raw_u or "").strip().lower()
+    if not u:
+        return ""
+    if u in ("master_admin", "ctg.ministry.master.admin", "master admin", "admin"):
+        return "master_admin"
+    for p_name, bap_u in DEFAULT_NINE_PARISH_ADMIN_USERNAMES.items():
+        p_low = p_name.lower()
+        p_core = p_low.replace(" parish", "").strip()
+        p_under = p_core.replace(" ", "_")
+        p_dot = p_core.replace(" ", ".")
+        if u in (bap_u, p_low, p_core, f"{p_under}_admin", f"{p_under}_bap_admin", p_dot, f"{p_dot}.admin"):
+            return bap_u
+    return u
+
+
+def _verify_against_hub_accounts_if_available(canonical_bap_u: str, plain_pw: str) -> bool:
+    """Checks if the provided password matches the user's encrypted account in main CTG Ministry Hub (`app.py`)."""
+    import sys
+    from baptismal.config import DEFAULT_NINE_PARISH_ADMIN_USERNAMES
+    for mod_name in ("__main__", "app"):
+        mod = sys.modules.get(mod_name)
+        if mod and hasattr(mod, "load_encrypted_accounts_registry") and hasattr(mod, "verify_password_hash"):
+            try:
+                reg = mod.load_encrypted_accounts_registry() or {}
+                if canonical_bap_u == "master_admin":
+                    m_acc = reg.get("MASTER ADMIN") or {}
+                    if m_acc and mod.verify_password_hash(plain_pw, m_acc.get("pw_hash", "")):
+                        return True
+                for p_name, bap_u in DEFAULT_NINE_PARISH_ADMIN_USERNAMES.items():
+                    if canonical_bap_u == bap_u:
+                        p_acc = reg.get(p_name) or {}
+                        if p_acc and mod.verify_password_hash(plain_pw, p_acc.get("pw_hash", "")):
+                            return True
+            except Exception:
+                pass
+    return False
 
 
 def _render_printable_certificate_or_image_modal(pdf_bytes: bytes = b"", image_bytes: bytes = b"", title: str = "CTG Baptismal Print") -> None:
@@ -602,143 +649,146 @@ def render_baptismal_portal(embedded_in_hub: bool = False) -> None:
     drive_mgr: GoogleDriveManager = svc["drive"]
 
     # =========================================================================
-    # AUTOMATIC ROLE & PARISH SYNC WHEN RUNNING INSIDE CTG MINISTRY HUB (`app.py`)
+    # 🛡️ WORKSPACE DATA-LEAK PROTECTION & MANDATORY BAPTISMAL VAULT LOGIN GATE
     # =========================================================================
+    enforce_data_leak_protection_on_workspace(".")
+
+    # Ensure the 1 Master Admin + 9 Official Parish Leader Admin accounts exist in the encrypted Baptismal DB
+    _resolve_or_provision_hub_synced_user(auth_svc, is_master=True)
+
     hub_is_authenticated = bool(embedded_in_hub and st.session_state.get("authenticated", False))
     hub_true_login_role = str(st.session_state.get("login_role") or "")
     hub_active_view_role = str(st.session_state.get("user_role") or hub_true_login_role or "")
     hub_active_parish = str(st.session_state.get("assigned_parish") or st.session_state.get("login_parish") or "").strip()
 
-    if hub_is_authenticated:
-        is_hub_view_master = hub_active_view_role in ("Master Admin", "Super Admin")
-        is_hub_true_master = hub_true_login_role in ("Master Admin", "Super Admin")
+    # If the user's main app role/parish changed in the sidebar switcher, immediately re-lock the Baptismal Vault!
+    current_hub_ctx = (hub_active_view_role, hub_active_parish)
+    if hub_is_authenticated and st.session_state.get("_bap_bound_hub_ctx") not in (None, current_hub_ctx):
+        st.session_state.pop("bap_auth_user", None)
+    st.session_state["_bap_bound_hub_ctx"] = current_hub_ctx
 
-        if not is_hub_view_master:
-            # User is either a logged-in Parish Leader OR Master Admin using the sidebar Parish Leader View switcher
-            if is_excluded_parish(hub_active_parish):
-                st.markdown(
-                    "<div class='ctg-bap-banner'>"
-                    "<h2>⛪ Church of the Temple of God — Baptismal Records & Certification System</h2>"
-                    "<p>Official 9 Philippine Parishes Only (Hong Kong Excluded)</p>"
-                    "</div>",
-                    unsafe_allow_html=True,
-                )
-                st.error(
-                    "⛔ **Hong Kong Parish is Excluded:** Ang Baptismal Records & Certification System ay para lamang sa **9 Official Philippine Parishes** "
-                    f"({', '.join(OFFICIAL_NINE_PARISHES)})."
-                )
-                if is_hub_true_master:
-                    if st.button("👑 Bumalik sa Master Admin View", type="primary"):
-                        st.session_state["user_role"] = "Master Admin"
-                        st.session_state["assigned_parish"] = "Lahat ng Parokya"
-                        st.rerun()
-                return
-
-            try:
-                norm_hub_p = normalize_official_nine_parish(hub_active_parish)
-            except Exception:
-                norm_hub_p = OFFICIAL_NINE_PARISHES[0]
-
-            parish_user_obj = _resolve_or_provision_hub_synced_user(auth_svc, is_master=False, parish_name=norm_hub_p)
-            st.session_state["bap_auth_user"] = parish_user_obj
-
-            if is_hub_true_master:
-                adm_bar_c1, adm_bar_c2 = st.columns([3.0, 1.2])
-                with adm_bar_c1:
-                    st.info(f"👁️ **Master Admin Preview Mode:** Tinitingnan mo ngayon ang **Parish Leader Admin Dashboard** ng **`{norm_hub_p}`**.")
-                with adm_bar_c2:
-                    if st.button("👑 Bumalik sa Master Admin Hub", type="primary", use_container_width=True):
-                        st.session_state["user_role"] = "Master Admin"
-                        st.session_state["assigned_parish"] = "Lahat ng Parokya"
-                        st.session_state["bap_master_preview_target"] = "MASTER_ADMIN"
-                        st.rerun()
-
-            _render_parish_leader_admin_dashboard(str(parish_user_obj["account_id"]), parish_user_obj, svc)
-            return
-
-        # Otherwise hub_active_view_role is Master Admin:
-        master_user_obj = _resolve_or_provision_hub_synced_user(auth_svc, is_master=True)
-        st.session_state["bap_auth_user"] = master_user_obj
-
-        # Allow Master Admin to switch/preview any of the 9 Parish Leader Admin Dashboards directly at the top!
-        preview_options = ["👑 Master Admin Central Hub (All 9 Parishes & BOOK 1–9 Archive)"] + [
-            f"⛪ {p} — Parish Leader Admin Dashboard (Leader View)" for p in OFFICIAL_NINE_PARISHES
-        ]
-        sw_c1, sw_c2 = st.columns([2.8, 1.2])
-        with sw_c1:
-            picked_preview = st.selectbox(
-                "🔀 Switch Baptismal Dashboard View (1 Master Admin Hub vs 9 Parish Leader Admin Dashboards):",
-                preview_options,
-                key="bap_top_role_switcher",
-            )
-        with sw_c2:
-            st.caption(
-                "💡 Pumili ng isa sa **9 Parish Leader Admin Dashboards** sa kaliwa kung nais mong buksan o i-test ang view ng mga Parish Leaders."
-            )
-
-        if not picked_preview.startswith("👑"):
-            chosen_p_name = picked_preview.replace("⛪ ", "").split(" — ")[0].strip()
-            p_user_obj = _resolve_or_provision_hub_synced_user(auth_svc, is_master=False, parish_name=chosen_p_name)
-            _render_parish_leader_admin_dashboard(str(p_user_obj["account_id"]), p_user_obj, svc)
-            return
-
-    # =========================================================================
-    # STANDALONE MODE LOGIN (when `embedded_in_hub=False`)
-    # =========================================================================
-    if not auth_svc.has_master_admin():
+    # Block Hong Kong Parish immediately if active in main app
+    if hub_is_authenticated and hub_active_view_role not in ("Master Admin", "Super Admin") and is_excluded_parish(hub_active_parish):
         st.markdown(
             "<div class='ctg-bap-banner'>"
             "<h2>⛪ Church of the Temple of God — Baptismal Records & Certification System</h2>"
-            "<p>Initial Master Admin Provisioning</p>"
+            "<p>Official 9 Philippine Parishes Only (Hong Kong Excluded)</p>"
             "</div>",
             unsafe_allow_html=True,
         )
-        st.warning("Initial Setup Required: No Baptismal Master Admin account exists yet. Create the first Master Admin account below.")
-        with st.form("initial_master_admin_setup"):
-            setup_u = st.text_input("Baptismal Master Admin Username:")
-            setup_fn = st.text_input("Full Name:", value="CTG Baptismal Master Admin")
-            setup_em = st.text_input("Email (Optional):")
-            setup_p1 = st.text_input("Password (minimum 8 characters):", type="password")
-            setup_p2 = st.text_input("Confirm Password:", type="password")
-            if st.form_submit_button("Create Master Admin Account", type="primary"):
-                if not setup_u.strip() or len(setup_p1) < 8:
-                    st.error("Username and a password of at least 8 characters are required.")
-                elif setup_p1 != setup_p2:
-                    st.error("Passwords do not match.")
-                else:
-                    auth_svc.create_account(
-                        username=setup_u,
-                        full_name=setup_fn,
-                        role="Master Admin",
-                        assigned_parish="ALL_NINE_PARISHES",
-                        plain_password=setup_p1,
-                        email=setup_em,
-                    )
-                    st.success("Baptismal Master Admin account provisioned securely. Please sign in.")
-                    st.rerun()
+        st.error(
+            "⛔ **Hong Kong Parish is Excluded:** Ang Baptismal Records & Certification System ay para lamang sa **9 Official Philippine Parishes** "
+            f"({', '.join(OFFICIAL_NINE_PARISHES)})."
+        )
         return
 
+    # 30-minute inactivity auto-lock for the Baptismal Vault
+    import time as _time_mod
+    now_epoch = _time_mod.time()
+    last_bap_act = float(st.session_state.get("_bap_last_activity_ts", now_epoch))
+    if st.session_state.get("bap_auth_user") and (now_epoch - last_bap_act) > 1800:
+        st.session_state.pop("bap_auth_user", None)
+        st.warning("🔒 Awtomatikong na-lock ang Baptismal Vault matapos ang 30 minutong walang activity. Mag-sign in muli.")
+    st.session_state["_bap_last_activity_ts"] = now_epoch
+
     valid_sess, current_user = auth_svc.validate_session(st.session_state.get("bap_auth_user"))
+
+    # Mandatory Secondary Login Gate before opening Baptismal Records & Certificates
     if not valid_sess or not current_user:
         st.session_state.pop("bap_auth_user", None)
         st.markdown(
             "<div class='ctg-bap-banner'>"
-            "<h2>⛪ Church of the Temple of God — Baptismal Records & Certification System</h2>"
-            "<p>1 Central Master Admin Archive • 9 Official Parish Leader Admin Dashboards (Hong Kong Excluded)</p>"
+            "<h2>🔒 Church of the Temple of God — Baptismal Archival Vault Sign-In</h2>"
+            "<p>Protected Sacramental Registry • PBKDF2-SHA256 & At-Rest Encrypted Storage • 1 Master Admin & 9 Parish Leader Admins (Hong Kong Excluded)</p>"
             "</div>",
             unsafe_allow_html=True,
         )
-        st.info("🔒 **Baptismal Authorization Required:** Mag-sign in gamit ang iyong **Master Admin** o **Parish Leader Admin (1 of 9 Parishes)** account.")
-        with st.form("baptismal_login_form"):
-            in_u = st.text_input("Baptismal Username:")
+
+        expected_parish_lock = ""
+        default_username_hint = ""
+        if hub_is_authenticated and hub_active_view_role not in ("Master Admin", "Super Admin"):
+            try:
+                expected_parish_lock = normalize_official_nine_parish(hub_active_parish)
+                from baptismal.config import DEFAULT_NINE_PARISH_ADMIN_USERNAMES
+                default_username_hint = DEFAULT_NINE_PARISH_ADMIN_USERNAMES.get(expected_parish_lock, "")
+            except Exception:
+                pass
+
+        if expected_parish_lock:
+            st.info(
+                f"🔐 **Baptismal Security Verification ({escape_html_text(expected_parish_lock)}):** "
+                f"Mag-login gamit ang iyong Parish Leader Admin account (`{escape_html_text(default_username_hint)}` o `{escape_html_text(expected_parish_lock.lower())}`) "
+                "upang mabuksan ang Baptismal Dashboard ng iyong parokya."
+            )
+        else:
+            st.info(
+                "🔐 **Baptismal Security Login Required:** Mag-sign in gamit ang iyong **Master Admin** (`master_admin`) "
+                "o **Parish Leader Admin (1 of 9 Parishes)** account bago mabuksan ang Baptismal Records & Certificates."
+            )
+
+        with st.form("baptismal_vault_login_form"):
+            in_u = st.text_input(
+                "Baptismal Username:",
+                value=default_username_hint,
+                placeholder="master_admin o lipay_norte_bap_admin / lipay norte parish",
+            )
             in_p = st.text_input("Baptismal Password:", type="password")
-            if st.form_submit_button("Sign In to Baptismal System", type="primary"):
-                ok, user_obj, msg = auth_svc.authenticate(in_u, in_p)
+            submitted_login = st.form_submit_button("🔓 Unlock & Sign In to Baptismal System", type="primary")
+            if submitted_login:
+                canonical_u = _map_login_username_to_baptismal_username(in_u)
+                # Cross-check against active CTG Ministry Hub role/parish so a Parish Leader can never log into Master Admin or another parish
+                if expected_parish_lock:
+                    from baptismal.config import DEFAULT_NINE_PARISH_ADMIN_USERNAMES
+                    allowed_bap_u = DEFAULT_NINE_PARISH_ADMIN_USERNAMES.get(expected_parish_lock, "")
+                    if canonical_u != allowed_bap_u:
+                        audit_svc.log_event(
+                            "anonymous",
+                            "CROSS_PARISH_LOGIN_BLOCKED",
+                            "FAILURE",
+                            metadata={"attempted_username": canonical_u, "locked_parish": expected_parish_lock},
+                        )
+                        st.error(
+                            f"⛔ Access Denied: Naka-login ka sa `{expected_parish_lock}`. "
+                            f"Tanging ang `{allowed_bap_u}` (`{expected_parish_lock}`) account lamang ang maaari mong buksan."
+                        )
+                        st.stop()
+
+                ok, user_obj, msg = auth_svc.authenticate(canonical_u, in_p)
+                if not ok and _verify_against_hub_accounts_if_available(canonical_u, in_p):
+                    if canonical_u == "master_admin":
+                        user_obj = _resolve_or_provision_hub_synced_user(auth_svc, is_master=True)
+                        ok = True
+                    else:
+                        from baptismal.config import DEFAULT_NINE_PARISH_ADMIN_USERNAMES
+                        matched_p = next((p for p, u in DEFAULT_NINE_PARISH_ADMIN_USERNAMES.items() if u == canonical_u), "")
+                        if matched_p:
+                            user_obj = _resolve_or_provision_hub_synced_user(auth_svc, is_master=False, parish_name=matched_p)
+                            ok = True
+
                 if ok and user_obj:
                     st.session_state["bap_auth_user"] = user_obj
+                    st.session_state["_bap_last_activity_ts"] = _time_mod.time()
                     st.rerun()
                 else:
-                    st.error(msg)
+                    st.error(redact_sensitive_text(msg))
+
+        with st.expander("🛡️ Data Protection & Official 10 Baptismal Accounts Reference (1 Master Admin + 9 Parish Leaders)"):
+            st.markdown(
+                """
+- **Encryption at Rest:** Lahat ng staged baptismal images/files, local workbook backups (`.enc.xlsx`), at snapshots (`.enc.json`) ay naka-encrypt gamit ang **`CTG_ENC_V1` (PBKDF2-HMAC-SHA256 + Encrypt-then-MAC)** at naka-lock sa `chmod 0600` (owner-only).
+- **1 Master Admin Account:** `master_admin` (o `ctg.ministry.master.admin`)
+- **9 Official Parish Leader Admin Accounts (Hong Kong Excluded):**
+  1. **Lipay Norte Parish:** `lipay_norte_bap_admin` (o `lipay norte parish`)
+  2. **Malanas Parish:** `malanas_bap_admin` (o `malanas parish`)
+  3. **Poblacion Parish:** `poblacion_bap_admin` (o `poblacion parish`)
+  4. **Duplas Parish:** `duplas_bap_admin` (o `duplas parish`)
+  5. **Santiago Parish:** `santiago_bap_admin` (o `santiago parish`)
+  6. **Caba Parish:** `caba_bap_admin` (o `caba parish`)
+  7. **Manila Parish:** `manila_bap_admin` (o `manila parish`)
+  8. **Andabuen Parish:** `andabuen_bap_admin` (o `andabuen parish`)
+  9. **Apayao Parish:** `apayao_bap_admin` (o `apayao parish`)
+"""
+            )
         return
 
     account_id = str(current_user["account_id"])
@@ -753,11 +803,10 @@ def render_baptismal_portal(embedded_in_hub: bool = False) -> None:
                 f"(`{escape_html_text(current_user['role'])}` • `{escape_html_text(current_user.get('assigned_parish', ''))}`)"
             )
         with top_c2:
-            if not hub_is_authenticated:
-                if st.button("🚪 Sign Out (Baptismal)", use_container_width=True, key="bap_parish_sign_out"):
-                    auth_svc.logout(current_user)
-                    st.session_state.pop("bap_auth_user", None)
-                    st.rerun()
+            if st.button("🔒 Lock & Sign Out (Baptismal Vault)", use_container_width=True, key="bap_parish_sign_out"):
+                auth_svc.logout(current_user)
+                st.session_state.pop("bap_auth_user", None)
+                st.rerun()
 
         if is_parish_admin:
             _render_parish_leader_admin_dashboard(account_id, current_user, svc)
@@ -803,10 +852,27 @@ def render_baptismal_portal(embedded_in_hub: bool = False) -> None:
                 else:
                     st.warning(msg_s)
     with hdr_c3:
-        if st.button("🚪 Sign Out (Baptismal)", use_container_width=True, key="bap_sign_out_btn"):
+        if st.button("🔒 Lock & Sign Out (Baptismal Vault)", use_container_width=True, key="bap_sign_out_btn"):
             auth_svc.logout(current_user)
             st.session_state.pop("bap_auth_user", None)
             st.rerun()
+
+    st.caption(
+        "🛡️ **Security Status:** `CTG_ENC_V1` At-Rest Encryption Active • SQLite `secure_delete=ON` & `chmod 0600` Locked • `.gitignore` Leak Shield Active • 30-Min Idle Auto-Lock"
+    )
+    preview_options = ["👑 Master Admin Central Hub (All 9 Parishes & BOOK 1–9 Archive)"] + [
+        f"⛪ {p} — Parish Leader Admin Dashboard (Leader View)" for p in OFFICIAL_NINE_PARISHES
+    ]
+    picked_preview = st.selectbox(
+        "🔀 Switch Baptismal Dashboard View (Master Admin Only — Preview 9 Parish Leader Admin Dashboards):",
+        preview_options,
+        key="bap_top_role_switcher",
+    )
+    if not picked_preview.startswith("👑"):
+        chosen_p_name = picked_preview.replace("⛪ ", "").split(" — ")[0].strip()
+        p_user_obj = _resolve_or_provision_hub_synced_user(auth_svc, is_master=False, parish_name=chosen_p_name)
+        _render_parish_leader_admin_dashboard(str(p_user_obj["account_id"]), p_user_obj, svc)
+        return
 
     if not st.session_state.get("_bap_auto_sync_attempted"):
         st.session_state["_bap_auto_sync_attempted"] = True
