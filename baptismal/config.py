@@ -28,10 +28,40 @@ KNOWN_BAPTISMAL_SUBFOLDER_IDS: Dict[str, str] = {
     "BOOK 1": "1Y3xyOXC0MOuqtDnN1_Sn0yQIEXGb0KWV",
     "BOOK 2": "1LEwh-KS6JNemDb_uB9t7yC07p9SppKcr",
     "BOOK 3": "127B4WBu7Ul8m1q9VfvnTNupgkq1w6h1U",
+    "BOOK 4": "1exIOAHbl7euuFi-09dA1a5jvicRh0AKT",
     "BOOK 5": "1lFo5AoPuahzz2TSiVTZzL8wxBmbzoP-e",
+    "BOOK 6": "1My30CY_kza_uxLvOCESNxzdtN7GJi_8j",
+    "BOOK 7": "1H6S1K2jBDdJKJHCD0TPfnsR3Hflc5sDH",
+    "BOOK 8": "1Ub96sqG36FJh43XKbwzFnu2QgcXZupub",
+    "BOOK 9": "1teyYxH4ZHC08u9WEYVzmXjcMw7EGzeSK",
     "NEW BAPTISM IMAGES": "1NF0xcDbN3AFXFqXHgMqMgyVV4WntfLkn",
     "GENERATED CERTIFICATES": "1IsoSJ4ZCaKcFk_Ki3CNiFY5e6hHK24U3",
     "CERTIFICATE REQUESTS": "1hIlmtf8SZEOkK25GcX8ukc-tWeu-oJ_5",
+}
+
+# Verified 1-to-1 Epson Scan Mapping in BOOK 9 (1teyYxH4ZHC08u9WEYVzmXjcMw7EGzeSK)
+BOOK9_EPSON_SCAN_MAP: Dict[str, Dict[str, str]] = {
+    "BC_120261123_174501_0001.JPG": {"record_id": "HIST-04008", "page_number": "4146", "child_name": "Lerry Joy Carolino", "drive_id": "1V2teV50FxItNvCGnQ5FRIiQZaXuRyRCq"},
+    "BC_120261123_174501_0002.JPG": {"record_id": "HIST-04009", "page_number": "4147", "child_name": "Hiddecel A. Bongbonga", "drive_id": "1XS5qIO9vzgc3M-uCN4N6jNF2UdRWSsFh"},
+    "BC_120261123_174501_0003.JPG": {"record_id": "HIST-04010", "page_number": "4148", "child_name": "Jhazheel A. Bongbonga", "drive_id": "151VFNMSyxuhfdXQ5rVVpJododsJ-URc5"},
+    "BC_120261123_174501_0004.JPG": {"record_id": "HIST-04011", "page_number": "4149", "child_name": "Andonie A. Bongbonga", "drive_id": "15k7DM11bA9IZFhWkjX-YYRYMXyuiUExl"},
+    "BC_120261123_174501_0005.JPG": {"record_id": "HIST-04012", "page_number": "4150", "child_name": "Jerald F. Claro", "drive_id": "1rPUHCRhesracY_aZbTVI2J_gOw-OCq6G"},
+    "BC_120261123_174501_0006.JPG": {"record_id": "HIST-04013", "page_number": "4151", "child_name": "Jerome F. Claro", "drive_id": "15sz5KEclG0RbUaToRZpanDfRF0xu-PVC"},
+    "BC_120261123_174501_0007.JPG": {"record_id": "HIST-04014", "page_number": "4152", "child_name": "Jerico F. Claro", "drive_id": "1LLmNYA-Td-skjqX6je_x5MGpdCkzcCOZ"},
+    "BC_120261123_174501_0008.JPG": {"record_id": "HIST-04015", "page_number": "4153", "child_name": "Justine F. Claro", "drive_id": "1mS5hc1SyxAGLYwLKkRrB1Rd5qp1Fb9Sd"},
+    "BC_120261123_174501_0009.JPG": {"record_id": "HIST-04016", "page_number": "4154", "child_name": "Jun-Jun Demenia Alcantara", "drive_id": "1GN1qM6XSxMglM6KuAMC50WUqNe2rHn5z"},
+    "BC_120261123_174501_0010.JPG": {"record_id": "HIST-04017", "page_number": "4155", "child_name": "Albert Jr. Cadiente Tibonsay", "drive_id": "10M2G8xkCH6WYtVsM52bc_zTuVg0pqUxs"},
+    "BC_120261123_174501_0011.JPG": {"record_id": "HIST-04018", "page_number": "4156", "child_name": "Johnmike Mello Estrada", "drive_id": "1NEKbcUVkzSovLwMMp_6Ty-LxHo7waUTL"},
+    "BC_120261123_174501_0012.JPG": {"record_id": "HIST-04019", "page_number": "4157", "child_name": "Zion Sky Gonzales Gaspar", "drive_id": "1eHf8I_VicSrSBC8SngGieb_phzJd6wCl"},
+    "BC_120261123_174501_0013.JPG": {"record_id": "HIST-04020", "page_number": "4158", "child_name": "Ella Kate Panis Makahilig", "drive_id": "1Djfz3eNN07f64D8j8CGbeWGZ7tMiyw6n"},
+    "BC_120261123_174501_0014.JPG": {"record_id": "HIST-04021", "page_number": "4159", "child_name": "Rodeo F. Claro", "drive_id": "1VvUwDUBi8mTHdVX5559C7M-bgHdvQIN0"},
+    "BC_120261123_174501_0015.JPG": {"record_id": "HIST-04022", "page_number": "4160", "child_name": "Ivan Guzman Opiana", "drive_id": "1ZfnHjsPEfUId1GttqbTMD-CKevyaB4xx"},
+    "BC_120261123_174501_0016.JPG": {"record_id": "HIST-04023", "page_number": "4161", "child_name": "Jhon Nygel Pascua Benabice", "drive_id": "1DufuZHHuxs2hMmXInZxmKPSheoByQiH2"},
+    "BC_120261123_174501_0017.JPG": {"record_id": "HIST-04024", "page_number": "4162", "child_name": "Zia Pascua Benabice", "drive_id": "1QSF0eoZlM47V__hVbxR1zMw9xLAouNUo"},
+    "BC_120261123_174501_0018.JPG": {"record_id": "HIST-04025", "page_number": "4163", "child_name": "Chloe Benabice Fernandez", "drive_id": "1khY6AaX2783J4cvRmSmkO1iivSjrREoU"},
+    "BC_120261123_174501_0019.JPG": {"record_id": "HIST-04026", "page_number": "4164", "child_name": "Neon Jerielle J. Caballero", "drive_id": "1Dwq9uGu1VO7EbhfqdxiLZ3TykLyKYGrf"},
+    "NOE CABLLERO.JPG": {"record_id": "HIST-04026", "page_number": "4164", "child_name": "Neon Jerielle J. Caballero (Parents Marriage Cert)", "drive_id": "1P2Z9xVKr7W_oblxVqWGwdrevmGjtsfaN"},
+    "GPSPY TEMBREZA.JPG": {"record_id": "HIST-04024", "page_number": "4162", "child_name": "Gypsy Claro Tembreza & Marites Bilar Claro (Marriage Cert)", "drive_id": "1meNNODusXyGkPZ5PLcc7ZrJ6i7WOeFvs"},
 }
 
 # OFFICIAL NINE PARISHES (Hong Kong Parish is strictly excluded)

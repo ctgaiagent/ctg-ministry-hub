@@ -17,13 +17,24 @@ from .database import DatabaseManager
 
 
 def extract_page_hint_from_filename(filename: str) -> str:
-    """Extracts a numeric page hint from a scan filename (e.g., 'BC_744.jpeg' -> '744') without trusting it."""
-    stem = str(filename or "").rsplit(".", 1)[0]
+    """Extracts a numeric page hint from a scan filename (e.g., 'BC_744.jpeg' -> '744', BOOK 9 Epson scans -> '4146'..'4164')."""
+    from .config import BOOK9_EPSON_SCAN_MAP
+    raw_fn = str(filename or "").strip()
+    if raw_fn in BOOK9_EPSON_SCAN_MAP:
+        return BOOK9_EPSON_SCAN_MAP[raw_fn]["page_number"]
+    for k, v in BOOK9_EPSON_SCAN_MAP.items():
+        if k.lower() == raw_fn.lower():
+            return v["page_number"]
+    stem = raw_fn.rsplit(".", 1)[0]
     m = re.search(r"(?:bc[_\-\s]*|page[_\-\s]*|p[_\-\s]*)(\d{1,5})\b", stem, flags=re.I)
     if m:
-        return m.group(1)
+        val = m.group(1)
+        return str(int(val)) if val.isdigit() else val
     m_end = re.search(r"(\d{1,5})$", stem.strip())
-    return m_end.group(1) if m_end else ""
+    if m_end:
+        val = m_end.group(1)
+        return str(int(val)) if val.isdigit() else val
+    return ""
 
 
 class ImageMatchingService:

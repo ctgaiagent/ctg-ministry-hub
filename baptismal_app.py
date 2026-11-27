@@ -27,7 +27,9 @@ from baptismal.authorization import AuthorizationService
 from baptismal.backup_manager import BackupManager
 from baptismal.certificates import CertificateService
 from baptismal.config import (
+    BOOK9_EPSON_SCAN_MAP,
     CANONICAL_REQUEST_STATUSES,
+    KNOWN_BAPTISMAL_SUBFOLDER_IDS,
     DEFAULT_BAPTISMAL_ROOT_FOLDER_ID,
     DEFAULT_BAPTISMAL_WORKBOOK_FILE_ID,
     EDITABLE_REGISTRATION_STATUSES,
@@ -117,41 +119,76 @@ def _render_printable_certificate_or_image_modal(pdf_bytes: bytes = b"", image_b
 
 
 def _find_candidate_drive_images_for_record(record: Dict[str, Any], drive_mgr: GoogleDriveManager) -> List[Dict[str, Any]]:
-    """Searches the record's Book folder (or all BOOK 1-9 folders in Google Drive) for scanned images
-    matching the child's name or page number (including +/- 1 page for mismatch verification)."""
+    """Searches the record's Book folder and all BOOK 1-9 folders in Google Drive for scanned images
+    matching the child's name, record ID, or page number (including BOOK 9 Epson scans and +/- 2 page mismatch checks)."""
+    rec_id = str(record.get("Record ID") or "").strip().upper()
     book_num = str(record.get("Book Number") or "").strip()
     page_num = str(record.get("Page Number") or "").strip()
     child_name = str(record.get("Name of the Child") or "").strip().lower()
     name_tokens = [t for t in re.split(r"[^a-z0-9]+", child_name) if len(t) >= 3]
 
+    candidates: List[Dict[str, Any]] = []
+    seen_ids = set()
+
+    # Check BOOK 9 verified Epson scan map first (covers HIST-04008..HIST-04026 / Pages 4146..4164)
+    for b9_fn, b9_meta in BOOK9_EPSON_SCAN_MAP.items():
+        b9_rec_id = b9_meta.get("record_id", "")
+        b9_pg = b9_meta.get("page_number", "")
+        b9_child = b9_meta.get("child_name", "").lower()
+        b9_score = 0
+        if rec_id and rec_id == b9_rec_id:
+            b9_score += 20
+        if page_num and page_num == b9_pg:
+            b9_score += 15
+        if name_tokens and all(tok in b9_child for tok in name_tokens):
+            b9_score += 12
+        if b9_score >= 12:
+            drv_id = b9_meta["drive_id"]
+            seen_ids.add(drv_id)
+            candidates.append({
+                "id": drv_id,
+                "name": f"{b9_fn} — {b9_meta['child_name']}",
+                "raw_name": b9_fn,
+                "book_folder": "BOOK 9",
+                "fn_page_hint": b9_pg,
+                "match_score": b9_score,
+                "page_mismatch": bool(page_num and b9_pg and page_num != b9_pg),
+            })
+
     book_folders = drive_mgr.discover_book_folders_in_drive()
     target_books: List[str] = []
     if book_num and f"BOOK {book_num}" in book_folders:
         target_books.append(f"BOOK {book_num}")
+    if "BOOK 9" in book_folders and "BOOK 9" not in target_books:
+        target_books.append("BOOK 9")
     for bk in sorted(book_folders.keys()):
         if bk not in target_books:
             target_books.append(bk)
 
-    candidates: List[Dict[str, Any]] = []
     for bk_name in target_books:
         fid = book_folders.get(bk_name, "")
         if not fid:
             continue
         cache_k = f"_drv_book_files_{bk_name}"
-        if cache_k not in st.session_state:
+        if cache_k not in st.session_state and bk_name in (f"BOOK {book_num}", "BOOK 9"):
             try:
-                st.session_state[cache_k] = drive_mgr.list_files_in_folder(fid, page_size=500)
+                st.session_state[cache_k] = drive_mgr.list_files_in_folder(fid, page_size=1000)
             except Exception:
                 st.session_state[cache_k] = []
         files_in_bk = st.session_state.get(cache_k, [])
         for f_it in files_in_bk:
+            f_id = str(f_it.get("id") or "")
+            if f_id in seen_ids:
+                continue
             fn = str(f_it.get("name") or "")
             fn_low = fn.lower()
             fn_page = extract_page_hint_from_filename(fn)
+            b9_info = BOOK9_EPSON_SCAN_MAP.get(fn)
+            b9_child_low = b9_info["child_name"].lower() if b9_info else ""
             score = 0
-            if name_tokens and all(tok in fn_low for tok in name_tokens):
+            if name_tokens and (all(tok in fn_low for tok in name_tokens) or (b9_child_low and all(tok in b9_child_low for tok in name_tokens))):
                 score += 10
-            elif name_tokens and any(tok in fn_low for tok in name_tokens):
+            elif name_tokens and (any(tok in fn_low for tok in name_tokens) or (b9_child_low and any(tok in b9_child_low for tok in name_tokens))):
                 score += 4
             if page_num and fn_page:
                 if fn_page == page_num:
@@ -159,8 +196,12 @@ def _find_candidate_drive_images_for_record(record: Dict[str, Any], drive_mgr: G
                 elif page_num.isdigit() and fn_page.isdigit() and abs(int(page_num) - int(fn_page)) <= 2:
                     score += 5
             if score >= 5 or (bk_name == f"BOOK {book_num}" and score >= 4):
+                seen_ids.add(f_id)
+                disp_name = f"{fn} — {b9_info['child_name']}" if b9_info else fn
                 candidates.append({
                     **f_it,
+                    "name": disp_name,
+                    "raw_name": fn,
                     "book_folder": bk_name,
                     "fn_page_hint": fn_page,
                     "match_score": score,
@@ -914,9 +955,32 @@ def render_baptismal_portal(embedded_in_hub: bool = False) -> None:
                                 st.error(str(ex))
 
     with tab_books:
-        st.subheader("🖼️ BOOK 1–9 Visual Archive & Google Drive Scanned Pages")
-        sel_book = st.selectbox("Select Book Folder:", HISTORICAL_BOOKS)
+        st.subheader("🖼️ BOOK 1–9 Visual Archive & Google Drive Scanned Pages (Kumpleto BOOK 1 Hanggang BOOK 9)")
         book_folders = drive_mgr.discover_book_folders_in_drive()
+        bk_summary_rows = [
+            {
+                "Book Folder": bk,
+                "Google Drive Folder ID": book_folders.get(bk, ""),
+                "Google Drive Link": f"https://drive.google.com/drive/folders/{book_folders.get(bk, '')}" if book_folders.get(bk) else "",
+                "Cached Scanned Files": len(st.session_state.get(f"_drv_book_files_{bk}", [])),
+            }
+            for bk in HISTORICAL_BOOKS
+        ]
+        st.dataframe(bk_summary_rows, use_container_width=True, hide_index=True)
+        if st.button("🔄 I-sync at I-load ang Listahan ng Lahat ng Scanned Images sa BOOK 1 Hanggang BOOK 9 Mula sa Google Drive", type="primary"):
+            loaded_counts = {}
+            for bk in HISTORICAL_BOOKS:
+                fid_b = book_folders.get(bk, "")
+                if fid_b:
+                    try:
+                        imgs_b = drive_mgr.list_files_in_folder(fid_b, page_size=1000)
+                        st.session_state[f"_drv_book_files_{bk}"] = imgs_b
+                        loaded_counts[bk] = len(imgs_b)
+                    except Exception as ex:
+                        loaded_counts[bk] = f"Error: {ex}"
+            st.success(f"✅ Na-load ang BOOK 1–9 mula sa Google Drive: {loaded_counts}")
+            st.rerun()
+        sel_book = st.selectbox("Select Book Folder:", HISTORICAL_BOOKS)
         b_fid = book_folders.get(sel_book, "")
         if not b_fid:
             st.info(f"Walang nakitang `{sel_book}` folder sa Google Drive (kasalukuyang naka-upload sa Drive: {', '.join(sorted(book_folders.keys()))}).")

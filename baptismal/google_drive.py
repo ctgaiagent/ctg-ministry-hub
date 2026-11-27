@@ -168,24 +168,32 @@ class GoogleDriveManager:
                 folder_map[f"{sub_name}/{yr}"] = yr_id
         return folder_map
 
-    def list_files_in_folder(self, folder_id: str, page_size: int = 200) -> List[Dict[str, Any]]:
-        """Lists files inside a specific Google Drive folder (such as BOOK 1..9 or CTG BAPTISMAL RECORDS)."""
+    def list_files_in_folder(self, folder_id: str, page_size: int = 1000) -> List[Dict[str, Any]]:
+        """Lists all files inside a specific Google Drive folder (such as BOOK 1..9) with automatic pagination."""
         if not folder_id:
             return []
         svc = self.get_service()
         q = f"'{folder_id}' in parents and trashed = false"
-        res = self._execute_with_retry(
-            lambda: svc.files()
-            .list(
-                q=q,
-                pageSize=min(1000, int(page_size)),
-                fields="files(id, name, mimeType, size, modifiedTime)",
-                supportsAllDrives=True,
-                includeItemsFromAllDrives=True,
-            )
-            .execute()
-        )
-        return list(res.get("files") or [])
+        all_files: List[Dict[str, Any]] = []
+        page_token: Optional[str] = None
+        max_total = max(int(page_size), 1000)
+        while True:
+            req_kwargs: Dict[str, Any] = {
+                "q": q,
+                "pageSize": min(1000, max_total),
+                "fields": "nextPageToken, files(id, name, mimeType, size, modifiedTime)",
+                "supportsAllDrives": True,
+                "includeItemsFromAllDrives": True,
+            }
+            if page_token:
+                req_kwargs["pageToken"] = page_token
+            res = self._execute_with_retry(lambda: svc.files().list(**req_kwargs).execute())
+            batch = list(res.get("files") or [])
+            all_files.extend(batch)
+            page_token = res.get("nextPageToken")
+            if not page_token or len(all_files) >= max_total:
+                break
+        return all_files
 
     def discover_book_folders_in_drive(self) -> Dict[str, str]:
         """Discovers BOOK 1..BOOK 9 folder IDs inside the CTG BAPTISMAL RECORDS root folder."""

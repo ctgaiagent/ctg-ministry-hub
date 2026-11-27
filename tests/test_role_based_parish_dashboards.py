@@ -216,5 +216,20 @@ class TestRoleBasedTenAccountsAndHongKongExclusion(unittest.TestCase):
         self.assertTrue(pdf_b.startswith(b"%PDF-"))
 
 
+
+    def test_all_nine_books_drive_folder_ids_and_book9_epson_mapping(self):
+        from baptismal.config import BOOK9_EPSON_SCAN_MAP, HISTORICAL_BOOKS, KNOWN_BAPTISMAL_SUBFOLDER_IDS
+        from baptismal.image_matching import extract_page_hint_from_filename
+
+        for bk in HISTORICAL_BOOKS:
+            self.assertIn(bk, KNOWN_BAPTISMAL_SUBFOLDER_IDS)
+            self.assertTrue(len(KNOWN_BAPTISMAL_SUBFOLDER_IDS[bk]) > 15)
+
+        self.assertEqual(extract_page_hint_from_filename("BC_120261123_174501_0001.JPG"), "4146")
+        self.assertEqual(extract_page_hint_from_filename("BC_120261123_174501_0005.JPG"), "4150")
+        self.assertEqual(extract_page_hint_from_filename("BC_120261123_174501_0019.JPG"), "4164")
+        self.assertEqual(BOOK9_EPSON_SCAN_MAP["BC_120261123_174501_0005.JPG"]["record_id"], "HIST-04012")
+
+
 if __name__ == "__main__":
     unittest.main()
