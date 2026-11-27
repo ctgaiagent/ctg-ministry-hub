@@ -66,7 +66,78 @@ from baptismal.registration import RegistrationService
 from baptismal.temporary_access import TemporaryAccessService
 from baptismal.validation import escape_html_text, validate_uploaded_file
 
-_BAP_SERVICES_VERSION = "2026-11-27-v4-rbac-drivefix"
+_BAP_SERVICES_VERSION = "2026-11-27-v5-hotreload"
+
+def _resolve_or_provision_hub_synced_user(auth_svc: AuthService, is_master: bool, parish_name: str = "") -> Dict[str, Any]:
+    """Self-contained helper that provisions and returns the Master Admin or 1 of the 9 Parish Leader Admin
+    session user dicts without relying on un-reloaded submodule methods in Streamlit Cloud sys.modules."""
+    if hasattr(auth_svc, "get_or_provision_hub_synced_user"):
+        try:
+            return auth_svc.get_or_provision_hub_synced_user(is_master=is_master, parish_name=parish_name)
+        except AttributeError:
+            pass
+
+    from datetime import datetime, timezone
+    from baptismal.config import get_config_value
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    master_row = auth_svc.db.fetch_one(
+        "SELECT * FROM baptismal_accounts WHERE role = 'Master Admin' AND is_active = 1 LIMIT 1"
+    )
+    if not master_row:
+        m_id = auth_svc.create_account(
+            username="master_admin",
+            full_name="CTG Baptismal Master Admin",
+            role="Master Admin",
+            assigned_parish="ALL_NINE_PARISHES",
+            plain_password=get_config_value("BAPTISMAL_INITIAL_ADMIN_PASSWORD", "MasterAdmin@CTG2026!"),
+        )
+        master_row = auth_svc.db.fetch_one("SELECT * FROM baptismal_accounts WHERE account_id = %s", (m_id,))
+
+    existing_p = auth_svc.list_parish_admin_accounts()
+    if len(existing_p) < len(OFFICIAL_NINE_PARISHES):
+        auth_svc.provision_nine_parish_leader_admins(
+            actor_account_id=str(master_row["account_id"]),
+            initial_password="ParishLeader@CTG2026!",
+        )
+
+    if is_master:
+        return {
+            "account_id": master_row["account_id"],
+            "username": master_row["username"],
+            "full_name": master_row["full_name"],
+            "email": master_row.get("email", ""),
+            "role": "Master Admin",
+            "assigned_parish": "ALL_NINE_PARISHES",
+            "authenticated_at": now_iso,
+            "session_token": "hub_synced_master_admin",
+        }
+
+    norm_p = normalize_official_nine_parish(parish_name)
+    p_row = auth_svc.db.fetch_one(
+        "SELECT * FROM baptismal_accounts WHERE role = 'Parish Leader Admin' AND assigned_parish = %s AND is_active = 1 LIMIT 1",
+        (norm_p,),
+    )
+    if not p_row:
+        auth_svc.provision_nine_parish_leader_admins(
+            actor_account_id=str(master_row["account_id"]),
+            initial_password="ParishLeader@CTG2026!",
+        )
+        p_row = auth_svc.db.fetch_one(
+            "SELECT * FROM baptismal_accounts WHERE role = 'Parish Leader Admin' AND assigned_parish = %s AND is_active = 1 LIMIT 1",
+            (norm_p,),
+        )
+    return {
+        "account_id": p_row["account_id"],
+        "username": p_row["username"],
+        "full_name": p_row["full_name"],
+        "email": p_row.get("email", ""),
+        "role": "Parish Leader Admin",
+        "assigned_parish": norm_p,
+        "authenticated_at": now_iso,
+        "session_token": f"hub_synced_{p_row['username']}",
+    }
+
 
 
 @st.cache_resource
@@ -568,7 +639,7 @@ def render_baptismal_portal(embedded_in_hub: bool = False) -> None:
             except Exception:
                 norm_hub_p = OFFICIAL_NINE_PARISHES[0]
 
-            parish_user_obj = auth_svc.get_or_provision_hub_synced_user(is_master=False, parish_name=norm_hub_p)
+            parish_user_obj = _resolve_or_provision_hub_synced_user(auth_svc, is_master=False, parish_name=norm_hub_p)
             st.session_state["bap_auth_user"] = parish_user_obj
 
             if is_hub_true_master:
@@ -586,7 +657,7 @@ def render_baptismal_portal(embedded_in_hub: bool = False) -> None:
             return
 
         # Otherwise hub_active_view_role is Master Admin:
-        master_user_obj = auth_svc.get_or_provision_hub_synced_user(is_master=True)
+        master_user_obj = _resolve_or_provision_hub_synced_user(auth_svc, is_master=True)
         st.session_state["bap_auth_user"] = master_user_obj
 
         # Allow Master Admin to switch/preview any of the 9 Parish Leader Admin Dashboards directly at the top!
@@ -607,7 +678,7 @@ def render_baptismal_portal(embedded_in_hub: bool = False) -> None:
 
         if not picked_preview.startswith("👑"):
             chosen_p_name = picked_preview.replace("⛪ ", "").split(" — ")[0].strip()
-            p_user_obj = auth_svc.get_or_provision_hub_synced_user(is_master=False, parish_name=chosen_p_name)
+            p_user_obj = _resolve_or_provision_hub_synced_user(auth_svc, is_master=False, parish_name=chosen_p_name)
             _render_parish_leader_admin_dashboard(str(p_user_obj["account_id"]), p_user_obj, svc)
             return
 
