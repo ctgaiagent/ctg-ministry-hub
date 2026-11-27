@@ -15,6 +15,7 @@ Implements:
 """
 
 import base64
+import inspect
 import json
 import re
 from typing import Any, Dict, List
@@ -55,8 +56,11 @@ from baptismal.temporary_access import TemporaryAccessService
 from baptismal.validation import escape_html_text, validate_uploaded_file
 
 
+_BAP_SERVICES_VERSION = "2026-11-27-v3-book9"
+
+
 @st.cache_resource
-def _get_baptismal_services() -> Dict[str, Any]:
+def _get_baptismal_services(_version: str = _BAP_SERVICES_VERSION) -> Dict[str, Any]:
     db = DatabaseManager()
     run_migrations(db)
     audit = AuditLogger(db)
@@ -514,7 +518,7 @@ def render_baptismal_portal(embedded_in_hub: bool = False) -> None:
         unsafe_allow_html=True,
     )
 
-    svc = _get_baptismal_services()
+    svc = _get_baptismal_services(_version=_BAP_SERVICES_VERSION)
     auth_svc: AuthService = svc["auth"]
     authz_svc: AuthorizationService = svc["authz"]
     audit_svc: AuditLogger = svc["audit"]
@@ -770,14 +774,25 @@ def render_baptismal_portal(embedded_in_hub: bool = False) -> None:
 
         page_num = int(st.number_input("Page (50 records per page):", min_value=1, value=1, step=1))
         book_flt_val = "" if f_book == "ALL" else f_book
-        rows, total_rows = hist_svc.search_records(
-            keyword=kw,
-            filters={"Parish": f_parish, "Book Number": book_flt_val, "Year of Baptism": f_year},
-            page=page_num,
-            page_size=50,
-            actor_account_id=account_id,
-            record_id_query=rid_filter,
-        )
+        _search_params = inspect.signature(hist_svc.search_records).parameters
+        if "record_id_query" in _search_params:
+            rows, total_rows = hist_svc.search_records(
+                keyword=kw,
+                filters={"Parish": f_parish, "Book Number": book_flt_val, "Year of Baptism": f_year},
+                page=page_num,
+                page_size=50,
+                actor_account_id=account_id,
+                record_id_query=rid_filter,
+            )
+        else:
+            _fallback_kw = resolve_quick_record_id(rid_filter) if rid_filter.strip() else kw
+            rows, total_rows = hist_svc.search_records(
+                keyword=_fallback_kw,
+                filters={"Parish": f_parish, "Book Number": book_flt_val, "Year of Baptism": f_year},
+                page=page_num,
+                page_size=50,
+                actor_account_id=account_id,
+            )
         st.caption(f"Showing {len(rows)} of {total_rows} matching records (Record ID `HIST-00001`..`HIST-04026`).")
 
         if rows:
