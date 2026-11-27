@@ -85,6 +85,12 @@ BOOK9_EPSON_SCAN_MAP: Dict[str, Dict[str, str]] = {
     "GPSPY TEMBREZA.JPG": {"record_id": "HIST-04024", "page_number": "4162", "child_name": "Gypsy Claro Tembreza & Marites Bilar Claro (Marriage Cert)", "drive_id": "1meNNODusXyGkPZ5PLcc7ZrJ6i7WOeFvs"},
 }
 
+# Master Admin CTG BAPTISMAL RECORDS Dedicated Login (Password stored strictly as PBKDF2-HMAC-SHA256 hash)
+MASTER_ADMIN_BAPTISMAL_USERNAME = "ctg.baptismal.admin"
+MASTER_ADMIN_BAPTISMAL_DISPLAY_USERNAME = "ctg.Baptismal.admin"
+MASTER_ADMIN_BAPTISMAL_PW_HASH = "pbkdf2_sha256$310000$qqvdw6eJZW/Hf9hjIcDtGg==$c61zE57hcpnjk335MKIefE4ZEpCWxR9WlTFkBSh0imM="
+DEFAULT_PARISH_LEADER_INTERNAL_PW_HASH = "pbkdf2_sha256$310000$wFBlxpvUeEfv4BC6ZOUfMg==$QAsqMNnFDNZLYWxibVNIU/KZxVnXeazI7xevN0lQBsA="
+
 # OFFICIAL NINE PARISHES (Hong Kong Parish is strictly excluded)
 OFFICIAL_NINE_PARISHES: List[str] = [
     "Lipay Norte Parish",
