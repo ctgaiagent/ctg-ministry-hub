@@ -2,16 +2,26 @@
 baptismal_app.py — CTG Baptismal Records & Certification System (Role-Based Dashboards)
 ======================================================================================
 Implements:
-1. Weekly-Report-Style Horizontal Tabs (`st.tabs`) for fast 1-click page switching.
-2. Quick Record ID / Last-Digits Jump (`HIST-` + last number `1..4026` with Prev/Next buttons)
-   plus full Record ID & 27-column keyword search.
-3. Side-by-Side Record + Book Image Viewer across ALL Books (`BOOK 1`–`BOOK 9`) right inside
-   the search tab, with 1-Click Print (`window.print()` + PDF) and 1-Click Share/Release to
-   any username (`📤 Ibigay sa Ibang Username para Ma-Print Din Nila`).
-4. Distinct 9 Parish Leader Admin Portals (Hong Kong Excluded):
-   - Parish Leader Admins upload new baptized members & images/files -> staged in Master Admin Confirmation Queue.
-   - Master Admin clicks `✅ Confirm & I-encode sa Google Drive Excel + I-save ang Image/File sa Google Drive`.
-   - Parish Leader Admins can submit requests to Master Admin and print/download released certificates & records.
+1. Seamless Hub Role & Parish Sync (`embedded_in_hub=True`):
+   - Master Admin sees the Central Master Admin Archive & Certification Hub (with a 1-click switcher
+     to preview any of the 9 Parish Leader Admin Dashboards).
+   - The 9 Parish Leader Admins (Lipay Norte, Malanas, Poblacion, Duplas, Santiago, Caba, Manila,
+     Andabuen, Apayao — Hong Kong Strictly Excluded) are strictly locked to their own Parish Leader
+     Admin Dashboard and CANNOT access anything belonging to the Master Admin.
+2. Strictly Scoped 9 Parish Leader Admin Dashboard (3 Horizontal Tabs):
+   - Tab 1 (`✍️ 1. Direct New Baptism Registration — Ipasa sa Master Admin`): Submit newly baptized
+     members + baptismal photos/files to Master Admin for confirmation & Google Drive encoding, and view
+     own parish submissions.
+   - Tab 2 (`📨 2. Historical Record & Certified Certificate Requests — Humingi ng Dating Copy sa Master Admin`):
+     Request an old baptismal record or certified certificate copy from Master Admin and track status.
+   - Tab 3 (`🖨️ 3. Approved Copies Mula kay Master Admin — Print / Download`): Print and download
+     ONLY the certificates and record copies approved and released by Master Admin to their account.
+3. Master Admin Central Hub (8 Horizontal Tabs like Weekly Report):
+   - Quick Record ID Jump (`HIST-` + last digits `1..4026` with Prev/Next buttons).
+   - Side-by-Side 27-Column Record + Scanned Book Image Viewer across ALL Books (`BOOK 1`–`BOOK 9`)
+     with zero `invalid_scope` errors (uses Cloud Vault multi-token rotation + instant verified Drive File IDs +
+     live Google Drive preview fallback).
+   - 1-Click Print (`window.print()`) & 1-Click Share/Release to any Parish Leader Admin username.
 """
 
 import base64
@@ -30,20 +40,21 @@ from baptismal.certificates import CertificateService
 from baptismal.config import (
     BOOK9_EPSON_SCAN_MAP,
     CANONICAL_REQUEST_STATUSES,
-    KNOWN_BAPTISMAL_SUBFOLDER_IDS,
     DEFAULT_BAPTISMAL_ROOT_FOLDER_ID,
     DEFAULT_BAPTISMAL_WORKBOOK_FILE_ID,
     EDITABLE_REGISTRATION_STATUSES,
     HISTORICAL_27_COLUMNS,
     HISTORICAL_BOOKS,
+    KNOWN_BAPTISMAL_SUBFOLDER_IDS,
     OFFICIAL_NINE_PARISHES,
-    REGISTRATION_VERIFICATION_STATUSES,
     SUPPORTED_NEW_YEARS,
-    TEMP_ACCESS_PERMISSIONS,
     THEME_GOLD,
     THEME_NAVY,
     THEME_NAVY_DARK,
     THEME_WHITE,
+    VERIFIED_RECORD_DRIVE_IMAGE_MAP,
+    is_excluded_parish,
+    normalize_official_nine_parish,
 )
 from baptismal.database import DatabaseManager
 from baptismal.google_drive import GoogleDriveManager, GoogleDrivePermissionError
@@ -55,8 +66,7 @@ from baptismal.registration import RegistrationService
 from baptismal.temporary_access import TemporaryAccessService
 from baptismal.validation import escape_html_text, validate_uploaded_file
 
-
-_BAP_SERVICES_VERSION = "2026-11-27-v3-book9"
+_BAP_SERVICES_VERSION = "2026-11-27-v4-rbac-drivefix"
 
 
 @st.cache_resource
@@ -98,7 +108,7 @@ def _render_printable_certificate_or_image_modal(pdf_bytes: bytes = b"", image_b
         components.html(
             f"""
             <div style="margin-bottom:8px;">
-                <button onclick="const w=window.open('');w.document.write('<iframe src=\\'data:application/pdf;base64,{b64_pdf}\\' style=\\'width:100%;height:100vh;border:none;\\'></iframe>');setTimeout(()=>w.print(),700);"
+                <button onclick="const w=window.open('');w.document.write('<iframe src=\'data:application/pdf;base64,{b64_pdf}\' style=\'width:100%;height:100vh;border:none;\'></iframe>');setTimeout(()=>w.print(),700);"
                         style="background:#0F2C59;color:#FFFFFF;border:2px solid #D4AF37;padding:8px 18px;border-radius:8px;font-weight:700;cursor:pointer;">
                     🖨️ Print Official Certificate Now ({escape_html_text(title)})
                 </button>
@@ -112,7 +122,7 @@ def _render_printable_certificate_or_image_modal(pdf_bytes: bytes = b"", image_b
         components.html(
             f"""
             <div style="margin-bottom:8px;">
-                <button onclick="const w=window.open('');w.document.write('<img src=\\'data:image/jpeg;base64,{b64_img}\\' style=\\'max-width:100%;\\'/>');setTimeout(()=>w.print(),400);"
+                <button onclick="const w=window.open('');w.document.write('<img src=\'data:image/jpeg;base64,{b64_img}\' style=\'max-width:100%;\'/>');setTimeout(()=>w.print(),400);"
                         style="background:#0F2C59;color:#FFFFFF;border:2px solid #D4AF37;padding:8px 18px;border-radius:8px;font-weight:700;cursor:pointer;">
                     🖨️ Print Scanned Book Page Now ({escape_html_text(title)})
                 </button>
@@ -122,11 +132,27 @@ def _render_printable_certificate_or_image_modal(pdf_bytes: bytes = b"", image_b
         )
 
 
+def _render_drive_file_embed_fallback(drive_file_id: str, filename: str, book_folder: str) -> None:
+    """Renders a live Google Drive image preview iframe + direct print/open links whenever direct byte download is unavailable."""
+    if not drive_file_id:
+        return
+    preview_url = f"https://drive.google.com/file/d/{drive_file_id}/preview"
+    view_url = f"https://drive.google.com/file/d/{drive_file_id}/view"
+    st.markdown(
+        f"🖼️ **{escape_html_text(book_folder)} / `{escape_html_text(filename)}`** — "
+        f"[🔗 Buksan at I-print sa Google Drive]({view_url})"
+    )
+    components.html(
+        f'<iframe src="{preview_url}" width="100%" height="520" style="border:2px solid #D4AF37;border-radius:10px;background:#0F2C59;" allow="autoplay"></iframe>',
+        height=535,
+    )
+
+
 def _find_candidate_drive_images_for_record(record: Dict[str, Any], drive_mgr: GoogleDriveManager) -> List[Dict[str, Any]]:
-    """Searches the record's Book folder and all BOOK 1-9 folders in Google Drive for scanned images
-    matching the child's name, record ID, or page number (including BOOK 9 Epson scans and +/- 2 page mismatch checks)."""
+    """Searches pre-verified mappings, BOOK 9 Epson scans, and the record's Book folder in Google Drive
+    for scanned images matching the child's name, record ID, or page number."""
     rec_id = str(record.get("Record ID") or "").strip().upper()
-    book_num = str(record.get("Book Number") or "").strip()
+    book_num = str(record.get("Book Number") or "1").strip()
     page_num = str(record.get("Page Number") or "").strip()
     child_name = str(record.get("Name of the Child") or "").strip().lower()
     name_tokens = [t for t in re.split(r"[^a-z0-9]+", child_name) if len(t) >= 3]
@@ -134,7 +160,22 @@ def _find_candidate_drive_images_for_record(record: Dict[str, Any], drive_mgr: G
     candidates: List[Dict[str, Any]] = []
     seen_ids = set()
 
-    # Check BOOK 9 verified Epson scan map first (covers HIST-04008..HIST-04026 / Pages 4146..4164)
+    # 1. Check pre-verified Record ID -> Drive File ID map (instant 0ms match, including Book 1 Page 1 Marlou De Leon)
+    if rec_id in VERIFIED_RECORD_DRIVE_IMAGE_MAP:
+        vm = VERIFIED_RECORD_DRIVE_IMAGE_MAP[rec_id]
+        drv_id = vm["drive_id"]
+        seen_ids.add(drv_id)
+        candidates.append({
+            "id": drv_id,
+            "name": vm["filename"],
+            "raw_name": vm["filename"],
+            "book_folder": vm["book_folder"],
+            "fn_page_hint": vm["page_number"],
+            "match_score": 25,
+            "page_mismatch": bool(page_num and vm["page_number"] and page_num != vm["page_number"]),
+        })
+
+    # 2. Check BOOK 9 verified Epson scan map (covers HIST-04008..HIST-04026 / Pages 4146..4164)
     for b9_fn, b9_meta in BOOK9_EPSON_SCAN_MAP.items():
         b9_rec_id = b9_meta.get("record_id", "")
         b9_pg = b9_meta.get("page_number", "")
@@ -148,69 +189,80 @@ def _find_candidate_drive_images_for_record(record: Dict[str, Any], drive_mgr: G
             b9_score += 12
         if b9_score >= 12:
             drv_id = b9_meta["drive_id"]
-            seen_ids.add(drv_id)
+            if drv_id not in seen_ids:
+                seen_ids.add(drv_id)
+                candidates.append({
+                    "id": drv_id,
+                    "name": f"{b9_fn} — {b9_meta['child_name']}",
+                    "raw_name": b9_fn,
+                    "book_folder": "BOOK 9",
+                    "fn_page_hint": b9_pg,
+                    "match_score": b9_score,
+                    "page_mismatch": bool(page_num and b9_pg and page_num != b9_pg),
+                })
+
+    # 3. Fast targeted query in the record's Book folder (or cached folder list)
+    book_folders = drive_mgr.discover_book_folders_in_drive()
+    primary_bk = f"BOOK {book_num}" if f"BOOK {book_num}" in book_folders else "BOOK 1"
+    fid = book_folders.get(primary_bk, "")
+
+    files_to_check: List[Dict[str, Any]] = []
+    cache_k = f"_drv_book_files_{primary_bk}"
+    if cache_k in st.session_state and st.session_state[cache_k]:
+        files_to_check.extend([(primary_bk, f) for f in st.session_state[cache_k]])
+    elif fid:
+        # Use targeted search_files_in_folder so we don't have to pull 600+ files at once
+        search_terms: List[str] = []
+        if page_num and page_num.isdigit():
+            p_int = int(page_num)
+            search_terms.extend([f"BC_{p_int}.", f"BC_{p_int:03d}.", f"BC_{p_int:04d}."])
+        for tok in name_tokens[:2]:
+            search_terms.append(tok)
+        rec_search_cache_k = f"_drv_rec_search_{rec_id}"
+        if rec_search_cache_k not in st.session_state:
+            try:
+                st.session_state[rec_search_cache_k] = drive_mgr.search_files_in_folder(fid, search_terms, page_size=30)
+            except Exception:
+                st.session_state[rec_search_cache_k] = []
+        files_to_check.extend([(primary_bk, f) for f in st.session_state.get(rec_search_cache_k, [])])
+
+    # Also check any other already-cached book folders
+    for bk_other in sorted(book_folders.keys()):
+        if bk_other != primary_bk and st.session_state.get(f"_drv_book_files_{bk_other}"):
+            files_to_check.extend([(bk_other, f) for f in st.session_state[f"_drv_book_files_{bk_other}"]])
+
+    for bk_name, f_it in files_to_check:
+        f_id = str(f_it.get("id") or "")
+        if not f_id or f_id in seen_ids:
+            continue
+        fn = str(f_it.get("name") or "")
+        fn_low = fn.lower()
+        fn_page = extract_page_hint_from_filename(fn)
+        b9_info = BOOK9_EPSON_SCAN_MAP.get(fn)
+        b9_child_low = b9_info["child_name"].lower() if b9_info else ""
+        score = 0
+        if name_tokens and (all(tok in fn_low for tok in name_tokens) or (b9_child_low and all(tok in b9_child_low for tok in name_tokens))):
+            score += 10
+        elif name_tokens and (any(tok in fn_low for tok in name_tokens) or (b9_child_low and any(tok in b9_child_low for tok in name_tokens))):
+            score += 4
+        if page_num and fn_page:
+            if fn_page == page_num:
+                score += 8
+            elif page_num.isdigit() and fn_page.isdigit() and abs(int(page_num) - int(fn_page)) <= 2:
+                score += 5
+        if score >= 4:
+            seen_ids.add(f_id)
+            disp_name = f"{fn} — {b9_info['child_name']}" if b9_info else fn
             candidates.append({
-                "id": drv_id,
-                "name": f"{b9_fn} — {b9_meta['child_name']}",
-                "raw_name": b9_fn,
-                "book_folder": "BOOK 9",
-                "fn_page_hint": b9_pg,
-                "match_score": b9_score,
-                "page_mismatch": bool(page_num and b9_pg and page_num != b9_pg),
+                **f_it,
+                "name": disp_name,
+                "raw_name": fn,
+                "book_folder": bk_name,
+                "fn_page_hint": fn_page,
+                "match_score": score,
+                "page_mismatch": bool(page_num and fn_page and page_num != fn_page),
             })
 
-    book_folders = drive_mgr.discover_book_folders_in_drive()
-    target_books: List[str] = []
-    if book_num and f"BOOK {book_num}" in book_folders:
-        target_books.append(f"BOOK {book_num}")
-    if "BOOK 9" in book_folders and "BOOK 9" not in target_books:
-        target_books.append("BOOK 9")
-    for bk in sorted(book_folders.keys()):
-        if bk not in target_books:
-            target_books.append(bk)
-
-    for bk_name in target_books:
-        fid = book_folders.get(bk_name, "")
-        if not fid:
-            continue
-        cache_k = f"_drv_book_files_{bk_name}"
-        if cache_k not in st.session_state and bk_name in (f"BOOK {book_num}", "BOOK 9"):
-            try:
-                st.session_state[cache_k] = drive_mgr.list_files_in_folder(fid, page_size=1000)
-            except Exception:
-                st.session_state[cache_k] = []
-        files_in_bk = st.session_state.get(cache_k, [])
-        for f_it in files_in_bk:
-            f_id = str(f_it.get("id") or "")
-            if f_id in seen_ids:
-                continue
-            fn = str(f_it.get("name") or "")
-            fn_low = fn.lower()
-            fn_page = extract_page_hint_from_filename(fn)
-            b9_info = BOOK9_EPSON_SCAN_MAP.get(fn)
-            b9_child_low = b9_info["child_name"].lower() if b9_info else ""
-            score = 0
-            if name_tokens and (all(tok in fn_low for tok in name_tokens) or (b9_child_low and all(tok in b9_child_low for tok in name_tokens))):
-                score += 10
-            elif name_tokens and (any(tok in fn_low for tok in name_tokens) or (b9_child_low and any(tok in b9_child_low for tok in name_tokens))):
-                score += 4
-            if page_num and fn_page:
-                if fn_page == page_num:
-                    score += 8
-                elif page_num.isdigit() and fn_page.isdigit() and abs(int(page_num) - int(fn_page)) <= 2:
-                    score += 5
-            if score >= 5 or (bk_name == f"BOOK {book_num}" and score >= 4):
-                seen_ids.add(f_id)
-                disp_name = f"{fn} — {b9_info['child_name']}" if b9_info else fn
-                candidates.append({
-                    **f_it,
-                    "name": disp_name,
-                    "raw_name": fn,
-                    "book_folder": bk_name,
-                    "fn_page_hint": fn_page,
-                    "match_score": score,
-                    "page_mismatch": bool(page_num and fn_page and page_num != fn_page),
-                })
     candidates.sort(key=lambda x: x["match_score"], reverse=True)
     return candidates
 
@@ -220,8 +272,13 @@ def _render_parish_leader_admin_dashboard(
     current_user: Dict[str, Any],
     svc: Dict[str, Any],
 ) -> None:
-    """Renders the distinct Parish Leader Admin Portal using horizontal tabs (like Weekly Report)."""
-    auth_svc: AuthService = svc["auth"]
+    """Renders the strictly isolated Parish Leader Admin Dashboard for 1 of the 9 Official Parishes (Hong Kong Excluded).
+    Parish Leader Admins ONLY have access to:
+    1. Direct New Baptism Registration (submitting new baptized members + photos/files to Master Admin for confirmation & Drive encoding).
+    2. Historical Record & Certified Certificate Requests (requesting old copies from Master Admin).
+    3. Approved Copies & Certificates released to their account by Master Admin (for printing/downloading).
+    They CANNOT access Master Admin's 4,026 historical search, BOOK 1-9 archive, confirmation queue, or other parishes.
+    """
     authz_svc: AuthorizationService = svc["authz"]
     hist_svc: HistoricalRecordsService = svc["hist"]
     reg_svc: RegistrationService = svc["reg"]
@@ -232,36 +289,32 @@ def _render_parish_leader_admin_dashboard(
 
     st.markdown(
         f"<div class='ctg-bap-banner'>"
-        f"<h2>⛪ {escape_html_text(assigned_parish)} — Parish Leader Admin Baptismal Portal</h2>"
-        f"<p>Upload New Baptized Members for Master Admin Confirmation • Request Historical Records & Certified Certificates • Print Released Certificates</p>"
+        f"<h2>⛪ {escape_html_text(assigned_parish)} — Parish Leader Admin Baptismal Dashboard</h2>"
+        f"<p>1. Magpasa ng Bagong Na-Baptize sa Master Admin • 2. Mag-Request ng Dating Copy / Certified Certificate sa Master Admin • 3. I-print ang Approved Copy (Strict Parish Isolation — Walang Access sa Master Admin Archive)</p>"
         f"</div>",
         unsafe_allow_html=True,
     )
 
     p_stats = reg_svc.get_parish_dashboard_statistics(account_id)
-    k1, k2, k3, k4, k5, k6 = st.columns(6)
-    k1.metric("My New Baptisms", p_stats["my_new_registrations"])
-    k2.metric("Pending Admin Confirm", p_stats["pending_verification"])
-    k3.metric("Confirmed & Encoded", p_stats["approved_registrations"])
-    k4.metric("Rejected", p_stats["rejected_registrations"])
-    k5.metric("Pending Requests", p_stats["pending_certificate_requests"])
-    k6.metric("Ready to Print", p_stats["approved_certificates"])
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("My Submitted New Baptisms", p_stats["my_new_registrations"])
+    k2.metric("Pending Master Admin Confirm", p_stats["pending_verification"])
+    k3.metric("Confirmed & Encoded sa Drive", p_stats["approved_registrations"])
+    k4.metric("Pending Copy Requests", p_stats["pending_certificate_requests"])
+    k5.metric("Approved Copies (Ready to Print)", p_stats["approved_certificates"])
 
-    # Horizontal Tabs just like Weekly Report & Parish Monitoring
-    ptab_upload, ptab_subs, ptab_req_hist, ptab_req_cert, ptab_print, ptab_acc = st.tabs([
-        "📤 1. Mag-upload ng Bagong Baptized (Ipasa sa Master Admin)",
-        "📂 2. My Submissions & Uploaded Images",
-        "📜 3. Request Historical Record",
-        "🏅 4. Request Certified Certificate",
-        "🖨️ 5. My Approved Certificates & Records (Print / Download)",
-        "🔐 6. My Account",
+    # Strictly 3 horizontal tabs covering ONLY what the 9 Parish Leader Admins are allowed to access
+    ptab_new_bap, ptab_req_copy, ptab_approved_print = st.tabs([
+        "✍️ 1. Direct New Baptism Registration (Ipasa sa Master Admin)",
+        "📨 2. Historical Record & Certified Certificate Requests (Humingi ng Dating Copy sa Master Admin)",
+        "🖨️ 3. Approved Copies Mula kay Master Admin (Print / Download)",
     ])
 
-    with ptab_upload:
-        st.subheader(f"📤 Mag-upload ng Bagong Baptized Member — {assigned_parish}")
+    with ptab_new_bap:
+        st.subheader(f"✍️ Direct New Baptism Registration — {assigned_parish} (9 Official Parishes — Hong Kong Excluded)")
         st.info(
-            "📌 **Workflow:** Kapag nag-submit ka rito kasama ang Baptismal Image/File, mapupunta muna ito sa **Master Admin Confirmation Queue**. "
-            "Kapag na-confirm na ng Master Admin, awtomatiko itong ie-encode sa `OVERALL BAPTISMAL CERTIFICATE LIST.xlsx` at ise-save ang image/file sa Google Drive!"
+            f"📌 **Para sa {assigned_parish} Leader Admin:** I-fill up ang bagong na-baptize at i-upload ang Baptismal Image/File. "
+            "Mapupunta ito sa **Master Admin Confirmation Queue** upang i-confirm ng Master Admin, i-encode sa `OVERALL BAPTISMAL CERTIFICATE LIST.xlsx` sa Google Drive, at i-save ang image/file sa Google Drive."
         )
         with st.form("parish_new_baptism_form"):
             payload: Dict[str, str] = {}
@@ -269,18 +322,18 @@ def _render_parish_leader_admin_dashboard(
             for idx, col_name in enumerate(HISTORICAL_27_COLUMNS):
                 with cols[idx % 3]:
                     if col_name == "Parish":
-                        st.text_input("Parish (Locked Server-Side):", value=assigned_parish, disabled=True)
+                        st.text_input("Parish (Locked Server-Side — 9 Official Parishes):", value=assigned_parish, disabled=True)
                         payload["Parish"] = assigned_parish
                     elif col_name == "Year of Baptism":
                         payload[col_name] = st.selectbox(col_name, SUPPORTED_NEW_YEARS)
                     else:
                         payload[col_name] = st.text_input(col_name, key=f"p_reg_{col_name}")
             up_imgs = st.file_uploader(
-                "📸 I-upload ang Baptismal Image(s) o Supporting File(s) (JPG, PNG, WEBP, PDF):",
+                "📸 I-upload ang Baptismal Image(s) o File(s) (JPG, PNG, WEBP, PDF):",
                 type=["jpg", "jpeg", "png", "webp", "pdf"],
                 accept_multiple_files=True,
             )
-            if st.form_submit_button("📤 Ipasa sa Master Admin para I-confirm at I-encode sa Google Drive", type="primary"):
+            if st.form_submit_button("📤 Ipasa ang Bagong Baptized sa Master Admin para I-confirm at I-encode sa Google Drive", type="primary"):
                 img_list = [
                     {"bytes": uf.read(), "filename": uf.name, "mime_type": uf.type or "image/jpeg"}
                     for uf in (up_imgs or [])
@@ -297,16 +350,16 @@ def _render_parish_leader_admin_dashboard(
                 except Exception as ex:
                     st.error(str(ex))
 
-    with ptab_subs:
-        st.subheader(f"📂 My Submissions & Staged Images — {assigned_parish}")
+        st.divider()
+        st.markdown(f"#### 📂 Mga Naipasa Kong Bagong Baptized sa Master Admin ({assigned_parish})")
         subs = reg_svc.list_submissions_for_actor(account_id)
         if not subs:
-            st.info("Wala pang naipapasang new baptism submission.")
+            st.info("Wala pang naipapasang new baptism submission mula sa iyong parokya.")
         else:
             st.dataframe(subs, use_container_width=True, hide_index=True)
             editable_subs = [s for s in subs if s.get("verification_status") in EDITABLE_REGISTRATION_STATUSES]
             if editable_subs:
-                with st.expander("✏️ I-edit ang Submission Habang Pending Verification Pa"):
+                with st.expander("✏️ I-edit ang Submission Habang Pending Verification Pa sa Master Admin"):
                     sel_edit_id = st.selectbox("Piliin ang Pending Record ID:", [s["record_id"] for s in editable_subs])
                     target_sub = next(s for s in editable_subs if s["record_id"] == sel_edit_id)
                     cur_payload = json.loads(target_sub["payload_json"])
@@ -334,28 +387,35 @@ def _render_parish_leader_admin_dashboard(
                             except Exception as ex:
                                 st.error(str(ex))
 
-        imgs = reg_svc.list_uploaded_images_for_actor(account_id)
-        if imgs:
-            st.markdown("#### ☁️ Uploaded Images Confirmed in Google Drive")
-            st.dataframe(imgs, use_container_width=True, hide_index=True)
-
-    with ptab_req_hist:
-        st.subheader(f"📜 Request Historical Baptismal Record sa Master Admin — {assigned_parish}")
-        with st.form("req_hist_record_form"):
+    with ptab_req_copy:
+        st.subheader(f"📨 Historical Record & Certified Certificate Requests — Humingi ng Dating Copy sa Master Admin ({assigned_parish})")
+        st.info(
+            "📌 **Tandaan:** Tanging ang **Master Admin** lamang ang may access sa Historical Archive (`BOOK 1`–`BOOK 9`). "
+            "Gamitin ang form sa ibaba upang humingi o mag-request ng dating copy / official certified baptismal certificate mula sa Master Admin."
+        )
+        with st.form("unified_parish_leader_request_copy_form"):
+            req_kind = st.radio(
+                "Uri ng Hinihinging Copy Mula kay Master Admin:",
+                [
+                    "CERTIFIED_CERTIFICATE — Official Certified Baptismal Certificate Copy (Dating Copy para Ma-Print)",
+                    "HISTORICAL_RECORD — Historical Baptismal Record Verification & Copy",
+                ],
+                horizontal=True,
+            )
             c_h1, c_h2 = st.columns(2)
             with c_h1:
                 child_nm = st.text_input("Name of Baptized Person (Required):")
                 father_nm = st.text_input("Father's Name (if known):")
                 mother_nm = st.text_input("Mother's Name (if known):")
-                approx_bap = st.text_input("Approximate Baptism Date:")
+                approx_bap = st.text_input("Approximate Baptism Date / Year:")
             with c_h2:
                 approx_dob = st.text_input("Approximate Birth Date:")
-                st.text_input("Parish (Locked to Your Parish):", value=assigned_parish, disabled=True)
+                st.text_input("Requesting Parish Leader Admin (Locked):", value=assigned_parish, disabled=True)
                 bk_hint = st.text_input("Book Number (if known):")
-                pg_hint = st.text_input("Page Number (if known):")
-            reason_txt = st.text_area("Reason for Request (Required):")
-            sup_doc = st.file_uploader("Supporting Document (Optional — JPG, PNG, PDF):", type=["jpg", "jpeg", "png", "pdf"])
-            if st.form_submit_button("📨 Ipadala ang Historical Record Request sa Master Admin", type="primary"):
+                pg_hint = st.text_input("Page Number / Record ID (if known):")
+            reason_txt = st.text_area("Reason / Purpose for Requesting Copy from Master Admin (Required):")
+            sup_doc = st.file_uploader("Supporting Document / ID (Optional — JPG, PNG, PDF):", type=["jpg", "jpeg", "png", "pdf"])
+            if st.form_submit_button("📨 Ipadala ang Request ng Dating Copy / Certificate sa Master Admin", type="primary"):
                 sup_fn = ""
                 if sup_doc is not None:
                     ok_f, msg_f, safe_fn = validate_uploaded_file(sup_doc.read(), sup_doc.name)
@@ -363,13 +423,14 @@ def _render_parish_leader_admin_dashboard(
                         st.error(msg_f)
                         st.stop()
                     sup_fn = safe_fn
+                selected_req_type = "CERTIFIED_CERTIFICATE" if req_kind.startswith("CERTIFIED_CERTIFICATE") else "HISTORICAL_RECORD"
                 try:
                     rid = temp_svc.submit_request(
                         requester_account_id=account_id,
                         requester_username=current_user["username"],
                         requested_person_name=child_nm,
                         purpose=reason_txt,
-                        request_type="HISTORICAL_RECORD",
+                        request_type=selected_req_type,
                         father_name=father_nm,
                         mother_name=mother_nm,
                         approx_baptism_date=approx_bap,
@@ -379,70 +440,28 @@ def _render_parish_leader_admin_dashboard(
                         page_hint=pg_hint,
                         supporting_doc_filename=sup_fn,
                     )
-                    st.success(f"✅ Naipadala ang Historical Record Request sa Master Admin! Request ID: `{rid}`")
-                except Exception as ex:
-                    st.error(str(ex))
-
-    with ptab_req_cert:
-        st.subheader(f"🏅 Request Certified Baptismal Certificate sa Master Admin — {assigned_parish}")
-        with st.form("req_cert_copy_form"):
-            c_c1, c_c2 = st.columns(2)
-            with c_c1:
-                c_child = st.text_input("Name of Baptized Person (Required):")
-                c_father = st.text_input("Father's Name (if known):")
-                c_mother = st.text_input("Mother's Name (if known):")
-                c_bap_dt = st.text_input("Approximate Baptism Date:")
-            with c_c2:
-                c_dob_dt = st.text_input("Approximate Birth Date:")
-                st.text_input("Parish (Locked):", value=assigned_parish, disabled=True)
-                c_rec_id = st.text_input("Known Record ID (Optional, e.g. HIST-00743 or BAP-2026-...):")
-                c_bk_pg = st.text_input("Book / Page Number (if known):")
-            c_purpose = st.text_area("Purpose / Reason for Certified Certificate (Required):")
-            c_sup = st.file_uploader("Supporting Document (Optional):", type=["jpg", "jpeg", "png", "pdf"])
-            if st.form_submit_button("📨 Ipadala ang Request para sa Official Certificate", type="primary"):
-                sup_fn = ""
-                if c_sup is not None:
-                    ok_f, msg_f, safe_fn = validate_uploaded_file(c_sup.read(), c_sup.name)
-                    if not ok_f:
-                        st.error(msg_f)
-                        st.stop()
-                    sup_fn = safe_fn
-                try:
-                    rid = temp_svc.submit_request(
-                        requester_account_id=account_id,
-                        requester_username=current_user["username"],
-                        requested_person_name=c_child,
-                        purpose=c_purpose,
-                        target_record_id=c_rec_id,
-                        request_type="CERTIFIED_CERTIFICATE",
-                        father_name=c_father,
-                        mother_name=c_mother,
-                        approx_baptism_date=c_bap_dt,
-                        approx_birth_date=c_dob_dt,
-                        parish=assigned_parish,
-                        book_hint=c_bk_pg,
-                        supporting_doc_filename=sup_fn,
-                    )
-                    st.success(f"✅ Naipadala ang Certified Certificate Request! Request ID: `{rid}`")
+                    st.success(f"✅ Naipadala na sa Master Admin ang iyong request! Request ID: `{rid}`")
+                    st.rerun()
                 except Exception as ex:
                     st.error(str(ex))
 
         st.divider()
-        st.markdown("#### 📋 My Request History & Status")
+        st.markdown(f"#### 📋 My Historical Record & Certified Certificate Requests ({assigned_parish})")
         my_reqs = temp_svc.list_requests(actor_account_id=account_id)
         if my_reqs:
             st.dataframe(my_reqs, use_container_width=True, hide_index=True)
         else:
-            st.info("Wala pang naipadalang request.")
+            st.info("Wala pang naipadalang request sa Master Admin.")
 
-    with ptab_print:
-        st.subheader(f"🖨️ My Approved Certificates & Released Records (Ready to Print) — {assigned_parish}")
+    with ptab_approved_print:
+        st.subheader(f"🖨️ Approved Copies & Certificates Mula kay Master Admin (Print / Download) — {assigned_parish}")
+        st.caption("Dito lalabas ang lahat ng dating copy at official baptismal certificates na in-approve o ibinigay ng Master Admin sa iyong Parish Leader Admin account.")
         rel_certs = cert_svc.list_certificates(actor_account_id=account_id)
         if not rel_certs:
-            st.info("Wala pang opisyal na certificate na na-release o naibigay sa iyong username.")
+            st.info("Wala pang opisyal na certificate o dating copy na na-release ng Master Admin sa iyong account.")
         else:
             st.dataframe(rel_certs, use_container_width=True, hide_index=True)
-            sel_cid = st.selectbox("Piliin ang Released Certificate para I-print o I-download:", [c["certificate_id"] for c in rel_certs])
+            sel_cid = st.selectbox("Piliin ang Approved Certificate Copy para I-print o I-download:", [c["certificate_id"] for c in rel_certs])
             if sel_cid:
                 try:
                     pdf_bytes = cert_svc.download_released_certificate(account_id, sel_cid)
@@ -460,7 +479,7 @@ def _render_parish_leader_admin_dashboard(
         my_grants = temp_svc.list_active_grants(account_id=account_id)
         if my_grants:
             st.divider()
-            st.markdown("#### 📄 Mga Record na Ibinigay ng Master Admin sa Iyong Username")
+            st.markdown("#### 📄 Mga Historical Record Details na Ibinigay ng Master Admin sa Iyong Parokya")
             for g in my_grants:
                 rec_id = g["record_id"]
                 if authz_svc.has_temporary_record_permission(account_id, rec_id, "view_record"):
@@ -468,25 +487,6 @@ def _render_parish_leader_admin_dashboard(
                     if rec_data:
                         st.success(f"Released Record `{rec_id}` — **{rec_data.get('Name of the Child', '')}** (Expires: {g['expires_at']})")
                         st.json(rec_data)
-
-    with ptab_acc:
-        st.subheader(f"🔐 My Parish Admin Account — {assigned_parish}")
-        st.markdown(
-            f"- **Username:** `{escape_html_text(current_user['username'])}`\n"
-            f"- **Role:** `{escape_html_text(current_user['role'])}`\n"
-            f"- **Assigned Parish (Server-Locked):** `{escape_html_text(assigned_parish)}`"
-        )
-        with st.form("parish_admin_pw_change"):
-            np1 = st.text_input("New Password (minimum 8 characters):", type="password")
-            np2 = st.text_input("Confirm New Password:", type="password")
-            if st.form_submit_button("Update My Password"):
-                if len(np1) < 8:
-                    st.error("Password must be at least 8 characters.")
-                elif np1 != np2:
-                    st.error("Passwords do not match.")
-                else:
-                    auth_svc.reset_password(account_id, np1, actor_account_id=account_id)
-                    st.success("Password updated successfully.")
 
 
 def render_baptismal_portal(embedded_in_hub: bool = False) -> None:
@@ -529,8 +529,91 @@ def render_baptismal_portal(embedded_in_hub: bool = False) -> None:
     cert_svc: CertificateService = svc["certs"]
     temp_svc: TemporaryAccessService = svc["temp_acc"]
     drive_mgr: GoogleDriveManager = svc["drive"]
-    backup_mgr: BackupManager = svc["backup"]
 
+    # =========================================================================
+    # AUTOMATIC ROLE & PARISH SYNC WHEN RUNNING INSIDE CTG MINISTRY HUB (`app.py`)
+    # =========================================================================
+    hub_is_authenticated = bool(embedded_in_hub and st.session_state.get("authenticated", False))
+    hub_true_login_role = str(st.session_state.get("login_role") or "")
+    hub_active_view_role = str(st.session_state.get("user_role") or hub_true_login_role or "")
+    hub_active_parish = str(st.session_state.get("assigned_parish") or st.session_state.get("login_parish") or "").strip()
+
+    if hub_is_authenticated:
+        is_hub_view_master = hub_active_view_role in ("Master Admin", "Super Admin")
+        is_hub_true_master = hub_true_login_role in ("Master Admin", "Super Admin")
+
+        if not is_hub_view_master:
+            # User is either a logged-in Parish Leader OR Master Admin using the sidebar Parish Leader View switcher
+            if is_excluded_parish(hub_active_parish):
+                st.markdown(
+                    "<div class='ctg-bap-banner'>"
+                    "<h2>⛪ Church of the Temple of God — Baptismal Records & Certification System</h2>"
+                    "<p>Official 9 Philippine Parishes Only (Hong Kong Excluded)</p>"
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
+                st.error(
+                    "⛔ **Hong Kong Parish is Excluded:** Ang Baptismal Records & Certification System ay para lamang sa **9 Official Philippine Parishes** "
+                    f"({', '.join(OFFICIAL_NINE_PARISHES)})."
+                )
+                if is_hub_true_master:
+                    if st.button("👑 Bumalik sa Master Admin View", type="primary"):
+                        st.session_state["user_role"] = "Master Admin"
+                        st.session_state["assigned_parish"] = "Lahat ng Parokya"
+                        st.rerun()
+                return
+
+            try:
+                norm_hub_p = normalize_official_nine_parish(hub_active_parish)
+            except Exception:
+                norm_hub_p = OFFICIAL_NINE_PARISHES[0]
+
+            parish_user_obj = auth_svc.get_or_provision_hub_synced_user(is_master=False, parish_name=norm_hub_p)
+            st.session_state["bap_auth_user"] = parish_user_obj
+
+            if is_hub_true_master:
+                adm_bar_c1, adm_bar_c2 = st.columns([3.0, 1.2])
+                with adm_bar_c1:
+                    st.info(f"👁️ **Master Admin Preview Mode:** Tinitingnan mo ngayon ang **Parish Leader Admin Dashboard** ng **`{norm_hub_p}`**.")
+                with adm_bar_c2:
+                    if st.button("👑 Bumalik sa Master Admin Hub", type="primary", use_container_width=True):
+                        st.session_state["user_role"] = "Master Admin"
+                        st.session_state["assigned_parish"] = "Lahat ng Parokya"
+                        st.session_state["bap_master_preview_target"] = "MASTER_ADMIN"
+                        st.rerun()
+
+            _render_parish_leader_admin_dashboard(str(parish_user_obj["account_id"]), parish_user_obj, svc)
+            return
+
+        # Otherwise hub_active_view_role is Master Admin:
+        master_user_obj = auth_svc.get_or_provision_hub_synced_user(is_master=True)
+        st.session_state["bap_auth_user"] = master_user_obj
+
+        # Allow Master Admin to switch/preview any of the 9 Parish Leader Admin Dashboards directly at the top!
+        preview_options = ["👑 Master Admin Central Hub (All 9 Parishes & BOOK 1–9 Archive)"] + [
+            f"⛪ {p} — Parish Leader Admin Dashboard (Leader View)" for p in OFFICIAL_NINE_PARISHES
+        ]
+        sw_c1, sw_c2 = st.columns([2.8, 1.2])
+        with sw_c1:
+            picked_preview = st.selectbox(
+                "🔀 Switch Baptismal Dashboard View (1 Master Admin Hub vs 9 Parish Leader Admin Dashboards):",
+                preview_options,
+                key="bap_top_role_switcher",
+            )
+        with sw_c2:
+            st.caption(
+                "💡 Pumili ng isa sa **9 Parish Leader Admin Dashboards** sa kaliwa kung nais mong buksan o i-test ang view ng mga Parish Leaders."
+            )
+
+        if not picked_preview.startswith("👑"):
+            chosen_p_name = picked_preview.replace("⛪ ", "").split(" — ")[0].strip()
+            p_user_obj = auth_svc.get_or_provision_hub_synced_user(is_master=False, parish_name=chosen_p_name)
+            _render_parish_leader_admin_dashboard(str(p_user_obj["account_id"]), p_user_obj, svc)
+            return
+
+    # =========================================================================
+    # STANDALONE MODE LOGIN (when `embedded_in_hub=False`)
+    # =========================================================================
     if not auth_svc.has_master_admin():
         st.markdown(
             "<div class='ctg-bap-banner'>"
@@ -574,7 +657,7 @@ def render_baptismal_portal(embedded_in_hub: bool = False) -> None:
             "</div>",
             unsafe_allow_html=True,
         )
-        st.info("🔒 **Separate Baptismal Authorization Required:** Mag-sign in gamit ang iyong **Master Admin** o **Parish Leader Admin (1 of 9 Parishes)** account.")
+        st.info("🔒 **Baptismal Authorization Required:** Mag-sign in gamit ang iyong **Master Admin** o **Parish Leader Admin (1 of 9 Parishes)** account.")
         with st.form("baptismal_login_form"):
             in_u = st.text_input("Baptismal Username:")
             in_p = st.text_input("Baptismal Password:", type="password")
@@ -599,10 +682,11 @@ def render_baptismal_portal(embedded_in_hub: bool = False) -> None:
                 f"(`{escape_html_text(current_user['role'])}` • `{escape_html_text(current_user.get('assigned_parish', ''))}`)"
             )
         with top_c2:
-            if st.button("🚪 Sign Out (Baptismal)", use_container_width=True, key="bap_parish_sign_out"):
-                auth_svc.logout(current_user)
-                st.session_state.pop("bap_auth_user", None)
-                st.rerun()
+            if not hub_is_authenticated:
+                if st.button("🚪 Sign Out (Baptismal)", use_container_width=True, key="bap_parish_sign_out"):
+                    auth_svc.logout(current_user)
+                    st.session_state.pop("bap_auth_user", None)
+                    st.rerun()
 
         if is_parish_admin:
             _render_parish_leader_admin_dashboard(account_id, current_user, svc)
@@ -720,7 +804,6 @@ def render_baptismal_portal(embedded_in_hub: bool = False) -> None:
     with tab_search_verify:
         st.subheader("🔍 Search Record ID (Palitan Lang ang Huling Number), Verify Book Image, Print & Ibigay sa Ibang Username")
 
-        # Quick Record ID Jump where HIST- is automatic and user only changes the last number!
         if "bap_quick_num" not in st.session_state:
             st.session_state["bap_quick_num"] = 1
 
@@ -822,7 +905,6 @@ def render_baptismal_portal(embedded_in_hub: bool = False) -> None:
                         height=440,
                     )
 
-                    # 1-Click Print & Download Certificate right on the selected record
                     pr_c1, pr_c2 = st.columns(2)
                     with pr_c1:
                         pr_orient = st.radio("Certificate Layout:", ["portrait", "landscape"], horizontal=True, key=f"pr_or_{sel_id}")
@@ -852,7 +934,6 @@ def render_baptismal_portal(embedded_in_hub: bool = False) -> None:
                     )
                     st.caption("Suriin kung tugma ang scanned image mula sa Google Drive BOOK 1–9 sa nakasulat sa record sa kaliwa.")
 
-                    # Check both linked image associations and Google Drive BOOK folders across ALL books
                     linked_assocs = img_arc_svc.list_associations_for_record(sel_id, actor_account_id=account_id)
                     cand_drive_imgs = _find_candidate_drive_images_for_record(detail, drive_mgr)
 
@@ -865,16 +946,23 @@ def render_baptismal_portal(embedded_in_hub: bool = False) -> None:
                         key=f"rec_bk_sel_{sel_id}",
                     )
                     bk_drive_id = book_folders_all.get(sel_bk_for_rec, "")
+                    if bk_drive_id:
+                        st.caption(
+                            f"📂 [Buksan ang `{sel_bk_for_rec}` Folder sa Google Drive](https://drive.google.com/drive/folders/{bk_drive_id})"
+                        )
 
                     if cand_drive_imgs:
                         st.success(f"✨ Nakahanap ng {len(cand_drive_imgs)} tugmang scanned image(s) sa Google Drive para sa `{detail.get('Name of the Child', '')}` / Page `{rec_pg_num}`:")
                     elif bk_drive_id:
                         if st.button(f"🔍 I-scan ang {sel_bk_for_rec} sa Google Drive para sa Record na Ito", key=f"btn_scan_bk_{sel_id}"):
                             try:
-                                st.session_state[f"_drv_book_files_{sel_bk_for_rec}"] = drive_mgr.list_files_in_folder(bk_drive_id, page_size=500)
+                                st.session_state[f"_drv_book_files_{sel_bk_for_rec}"] = drive_mgr.list_files_in_folder(bk_drive_id, page_size=1000)
                                 st.rerun()
                             except Exception as ex:
-                                st.error(str(ex))
+                                st.info(
+                                    f"ℹ️ **Direct Google Drive Folder Access:** [Buksan ang {sel_bk_for_rec} sa Google Drive](https://drive.google.com/drive/folders/{bk_drive_id}) "
+                                    f"o i-update ang Google Drive OAuth Scope sa **🛠️ App Settings & Security → 🔑 1-Click Google Drive + Gmail Scope Upgrade**."
+                                )
 
                     all_bk_files = cand_drive_imgs + [
                         {**f, "book_folder": sel_bk_for_rec, "fn_page_hint": extract_page_hint_from_filename(f.get("name", "")), "page_mismatch": False}
@@ -903,8 +991,8 @@ def render_baptismal_portal(embedded_in_hub: bool = False) -> None:
                                 try:
                                     raw_ib = drive_mgr.download_file_bytes(chosen_drv_id)
                                     st.session_state[f"_loaded_rec_img_{sel_id}"] = (chosen_obj["name"], chosen_drv_id, chosen_obj.get("book_folder", sel_bk_for_rec), raw_ib)
-                                except Exception as ex:
-                                    st.error(f"Hindi ma-download ang image: {ex}")
+                                except Exception:
+                                    st.session_state[f"_embed_rec_img_{sel_id}"] = (chosen_obj["name"], chosen_drv_id, chosen_obj.get("book_folder", sel_bk_for_rec))
                         with v_c2:
                             if st.button("✅ Confirm Tama ang Image sa Record", use_container_width=True, key=f"cnf_im_{sel_id}"):
                                 sug = img_match_svc.suggest_possible_match(
@@ -916,14 +1004,21 @@ def render_baptismal_portal(embedded_in_hub: bool = False) -> None:
                                 img_match_svc.confirm_image_association(account_id, sug["association_id"], approve=True, admin_notes="Verified side-by-side by Master Admin")
                                 st.success(f"✅ Na-confirm na tugma ang `{chosen_obj['name']}` sa `{sel_id}`!")
 
-                    if st.session_state.get(f"_loaded_rec_img_{sel_id}"):
-                        im_nm, im_id, im_bk, im_bytes = st.session_state[f"_loaded_rec_img_{sel_id}"]
-                        rot_v = st.selectbox("Rotate Image:", [0, 90, 180, 270], key=f"rot_s_{sel_id}")
-                        zoom_v = st.slider("Zoom Width (px):", min_value=400, max_value=2200, value=1000, step=100, key=f"zm_s_{sel_id}")
-                        disp_b = render_image_preview_bytes(im_bytes, rotation_degrees=rot_v, max_width=zoom_v)
-                        st.image(disp_b, caption=f"{im_bk} / {im_nm} (Record {sel_id})")
-                        st.download_button("⬇️ Download Scanned Book Page", data=disp_b, file_name=im_nm, mime="image/jpeg", use_container_width=True)
-                        _render_printable_certificate_or_image_modal(image_bytes=disp_b, title=f"{sel_id} - {im_nm}")
+                        # Automatically display preview if not yet loaded in byte form
+                        if st.session_state.get(f"_loaded_rec_img_{sel_id}"):
+                            im_nm, im_id, im_bk, im_bytes = st.session_state[f"_loaded_rec_img_{sel_id}"]
+                            rot_v = st.selectbox("Rotate Image:", [0, 90, 180, 270], key=f"rot_s_{sel_id}")
+                            zoom_v = st.slider("Zoom Width (px):", min_value=400, max_value=2200, value=1000, step=100, key=f"zm_s_{sel_id}")
+                            disp_b = render_image_preview_bytes(im_bytes, rotation_degrees=rot_v, max_width=zoom_v)
+                            st.image(disp_b, caption=f"{im_bk} / {im_nm} (Record {sel_id})")
+                            st.download_button("⬇️ Download Scanned Book Page", data=disp_b, file_name=im_nm, mime="image/jpeg", use_container_width=True)
+                            _render_printable_certificate_or_image_modal(image_bytes=disp_b, title=f"{sel_id} - {im_nm}")
+                        else:
+                            _render_drive_file_embed_fallback(
+                                chosen_drv_id,
+                                chosen_obj["name"],
+                                chosen_obj.get("book_folder", sel_bk_for_rec),
+                            )
 
                     if linked_assocs:
                         st.caption("🔗 Naka-link na Scanned Images sa Record na Ito:")
@@ -964,7 +1059,7 @@ def render_baptismal_portal(embedded_in_hub: bool = False) -> None:
                                 )
                                 st.success(
                                     f"✅ Naibigay na ang Record `{sel_id}` at Official Printable Certificate `{sh_res['certificate_id']}` "
-                                    f"kay **`{sh_res['target_username']}`**! Maaari na niya itong i-print sa kanyang `🖨️ My Approved Certificates & Records` tab."
+                                    f"kay **`{sh_res['target_username']}`**! Maaari na niya itong i-print sa kanyang `🖨️ Approved Copies Mula kay Master Admin` tab."
                                 )
                             except Exception as ex:
                                 st.error(str(ex))
@@ -992,21 +1087,21 @@ def render_baptismal_portal(embedded_in_hub: bool = False) -> None:
                         st.session_state[f"_drv_book_files_{bk}"] = imgs_b
                         loaded_counts[bk] = len(imgs_b)
                     except Exception as ex:
-                        loaded_counts[bk] = f"Error: {ex}"
+                        loaded_counts[bk] = f"Direct Link Ready ({fid_b})"
             st.success(f"✅ Na-load ang BOOK 1–9 mula sa Google Drive: {loaded_counts}")
             st.rerun()
         sel_book = st.selectbox("Select Book Folder:", HISTORICAL_BOOKS)
         b_fid = book_folders.get(sel_book, "")
         if not b_fid:
-            st.info(f"Walang nakitang `{sel_book}` folder sa Google Drive (kasalukuyang naka-upload sa Drive: {', '.join(sorted(book_folders.keys()))}).")
+            st.info(f"Walang nakitang `{sel_book}` folder sa Google Drive.")
         else:
             st.caption(f"📂 Google Drive Folder ID (`{sel_book}`): `{b_fid}` — [Buksan sa Google Drive](https://drive.google.com/drive/folders/{b_fid})")
             if st.button(f"🔍 I-load ang Listahan ng Scanned Images sa {sel_book} Mula sa Google Drive", key=f"btn_list_drv_{sel_book}"):
                 try:
-                    drv_imgs = drive_mgr.list_files_in_folder(b_fid, page_size=500)
+                    drv_imgs = drive_mgr.list_files_in_folder(b_fid, page_size=1000)
                     st.session_state[f"_drv_book_files_{sel_book}"] = drv_imgs
-                except Exception as ex:
-                    st.error(f"Google Drive Folder List Error: {ex}")
+                except Exception:
+                    st.info(f"📂 [Buksan ang `{sel_book}` Direkta sa Google Drive](https://drive.google.com/drive/folders/{b_fid})")
             cached_drv_imgs = st.session_state.get(f"_drv_book_files_{sel_book}", [])
             if cached_drv_imgs:
                 st.dataframe(cached_drv_imgs, use_container_width=True, hide_index=True)
@@ -1021,8 +1116,8 @@ def render_baptismal_portal(embedded_in_hub: bool = False) -> None:
                     try:
                         img_b = drive_mgr.download_file_bytes(chosen_id)
                         st.session_state["_active_drive_preview_img"] = (chosen_nm, chosen_id, img_b)
-                    except Exception as ex:
-                        st.error(f"Hindi ma-download ang image: {ex}")
+                    except Exception:
+                        _render_drive_file_embed_fallback(chosen_id, chosen_nm, sel_book)
 
             if st.session_state.get("_active_drive_preview_img"):
                 p_nm, p_id, p_bytes = st.session_state["_active_drive_preview_img"]

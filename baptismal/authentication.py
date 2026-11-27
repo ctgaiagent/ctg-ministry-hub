@@ -313,6 +313,70 @@ class AuthService:
         )
         self.audit.log_event(actor_account_id, "PASSWORD_RESET", "SUCCESS", metadata={"target_account_id": account_id})
 
+
+    def get_or_provision_hub_synced_user(self, is_master: bool, parish_name: str = "") -> Dict[str, Any]:
+        """Ensures the 1 Master Admin and 9 Official Parish Leader Admin accounts exist when running
+        embedded inside CTG Ministry Hub, and returns a validated session user object matching
+        either the Master Admin or the specific Parish Leader Admin (excluding Hong Kong Parish)."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+        master_row = self.db.fetch_one(
+            "SELECT * FROM baptismal_accounts WHERE role = 'Master Admin' AND is_active = 1 LIMIT 1"
+        )
+        if not master_row:
+            m_id = self.create_account(
+                username="master_admin",
+                full_name="CTG Baptismal Master Admin",
+                role="Master Admin",
+                assigned_parish="ALL_NINE_PARISHES",
+                plain_password=get_config_value("BAPTISMAL_INITIAL_ADMIN_PASSWORD", "MasterAdmin@CTG2026!"),
+            )
+            master_row = self.db.fetch_one("SELECT * FROM baptismal_accounts WHERE account_id = %s", (m_id,))
+
+        # Ensure all 9 official Parish Leader Admin accounts are provisioned
+        existing_p = self.list_parish_admin_accounts()
+        if len(existing_p) < len(OFFICIAL_NINE_PARISHES):
+            self.provision_nine_parish_leader_admins(
+                actor_account_id=str(master_row["account_id"]),
+                initial_password="ParishLeader@CTG2026!",
+            )
+
+        if is_master:
+            return {
+                "account_id": master_row["account_id"],
+                "username": master_row["username"],
+                "full_name": master_row["full_name"],
+                "email": master_row.get("email", ""),
+                "role": "Master Admin",
+                "assigned_parish": "ALL_NINE_PARISHES",
+                "authenticated_at": now_iso,
+                "session_token": "hub_synced_master_admin",
+            }
+
+        norm_p = normalize_official_nine_parish(parish_name)
+        p_row = self.db.fetch_one(
+            "SELECT * FROM baptismal_accounts WHERE role = 'Parish Leader Admin' AND assigned_parish = %s AND is_active = 1 LIMIT 1",
+            (norm_p,),
+        )
+        if not p_row:
+            self.provision_nine_parish_leader_admins(
+                actor_account_id=str(master_row["account_id"]),
+                initial_password="ParishLeader@CTG2026!",
+            )
+            p_row = self.db.fetch_one(
+                "SELECT * FROM baptismal_accounts WHERE role = 'Parish Leader Admin' AND assigned_parish = %s AND is_active = 1 LIMIT 1",
+                (norm_p,),
+            )
+        return {
+            "account_id": p_row["account_id"],
+            "username": p_row["username"],
+            "full_name": p_row["full_name"],
+            "email": p_row.get("email", ""),
+            "role": "Parish Leader Admin",
+            "assigned_parish": norm_p,
+            "authenticated_at": now_iso,
+            "session_token": f"hub_synced_{p_row['username']}",
+        }
+
     def logout(self, session_user: Optional[Dict[str, Any]]) -> None:
         if session_user and session_user.get("account_id"):
             self.audit.log_event(str(session_user["account_id"]), "LOGOUT", "SUCCESS")

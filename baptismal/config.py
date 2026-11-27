@@ -40,6 +40,27 @@ KNOWN_BAPTISMAL_SUBFOLDER_IDS: Dict[str, str] = {
 }
 
 # Verified 1-to-1 Epson Scan Mapping in BOOK 9 (1teyYxH4ZHC08u9WEYVzmXjcMw7EGzeSK)
+# Pre-verified Google Drive Scanned Book Image File IDs for instant 0ms lookup
+VERIFIED_RECORD_DRIVE_IMAGE_MAP: Dict[str, Dict[str, str]] = {
+    "HIST-00001": {"book_folder": "BOOK 1", "page_number": "1", "filename": "Marlou De Leon BC_001.jpeg", "drive_id": "1_ojB6n5JMToei9Bd5PUtIZXVJUEiSGG0"},
+    "HIST-00084": {"book_folder": "BOOK 1", "page_number": "84", "filename": "Marlou De Leon BC_084.jpeg", "drive_id": "141-4YezL0x4BRPCYXnGG55sgjVoChPec"},
+    "HIST-00125": {"book_folder": "BOOK 1", "page_number": "125", "filename": "Virginia Cavinta BC_125.jpeg", "drive_id": "1RrxUD_qjITLMpSQXvYw2Pym01HPeLT4z"},
+    "HIST-00126": {"book_folder": "BOOK 1", "page_number": "126", "filename": "Violeta Abubo BC_126.jpeg", "drive_id": "1vqscaGs8UIkJVDeU-NssLImEHUYgxi_5"},
+    "HIST-00137": {"book_folder": "BOOK 1", "page_number": "137", "filename": "Victor Sobrepena BC_137.jpeg", "drive_id": "1kIR03CgXRR46Mk3m2R1gkgrqTOOgUwmB"},
+    "HIST-00165": {"book_folder": "BOOK 1", "page_number": "165", "filename": "Victoriano Manuel Jr BC_165.jpeg", "drive_id": "1qQAvsJpH7p4XkuVkt97TibjXPXSV7DHa"},
+    "HIST-00201": {"book_folder": "BOOK 1", "page_number": "201", "filename": "Tita Estalilla BC_201.jpeg", "drive_id": "1tHvKrBUImpLcrKFs9_OylSwoEjVG26k1"},
+    "HIST-00217": {"book_folder": "BOOK 1", "page_number": "217", "filename": "Virginia Dulay BC_217.jpeg", "drive_id": "1SRpwZMuGXgx28fjboC4Pd94QA4xyoknK"},
+    "HIST-00244": {"book_folder": "BOOK 1", "page_number": "244", "filename": "Viginia Mapili BC_244.jpeg", "drive_id": "1vY-XUTgT7EqDDkF1PdhJ50zsawDFUj4-"},
+    "HIST-00305": {"book_folder": "BOOK 1", "page_number": "305", "filename": "Virginia Barrio BC_305.jpeg", "drive_id": "158p4BdJalg8ZcBCxzL4GZlnLKHON8Z2m"},
+    "HIST-00315": {"book_folder": "BOOK 1", "page_number": "315", "filename": "Welfred Sudialcal BC_315.jpeg", "drive_id": "1A2Spw8GTkhOjlk4o1vNx0Sa8lGutx0lA"},
+    "HIST-00317": {"book_folder": "BOOK 1", "page_number": "317", "filename": "Veronica Estalilla BC_317.jpeg", "drive_id": "1Vqtp718CnA9xyNpxE6cKLzWrfKmfZrMT"},
+    "HIST-00330": {"book_folder": "BOOK 1", "page_number": "330", "filename": "Zenaida Sobejana BC_330.jpeg", "drive_id": "1-yiC0fOUJvr3xH8Arc5Ao3GP5h52XJ_k"},
+    "HIST-00336": {"book_folder": "BOOK 1", "page_number": "336", "filename": "Welfred Sudiacal BC_336.jpeg", "drive_id": "1x7rBYVfDgBpu3P4ftVA35Jf7lz-X72sK"},
+    "HIST-00339": {"book_folder": "BOOK 1", "page_number": "339", "filename": "Zenaida Sobejana BC_339.jpeg", "drive_id": "1Y-2aBGp_dGGWvQFyr2pag8RCAiOUO8XB"},
+    "HIST-00378": {"book_folder": "BOOK 1", "page_number": "378", "filename": "Venus Pasive BC_378.jpeg", "drive_id": "1LIpz2luoqxSnNfT84MQ191zu0XPaq8fd"},
+    "HIST-00382": {"book_folder": "BOOK 1", "page_number": "382", "filename": "Virginia Balangue BC_382.jpeg", "drive_id": "1MTAR3ifM108BW_yujFdcCsThXpK1Gtvo"},
+}
+
 BOOK9_EPSON_SCAN_MAP: Dict[str, Dict[str, str]] = {
     "BC_120261123_174501_0001.JPG": {"record_id": "HIST-04008", "page_number": "4146", "child_name": "Lerry Joy Carolino", "drive_id": "1V2teV50FxItNvCGnQ5FRIiQZaXuRyRCq"},
     "BC_120261123_174501_0002.JPG": {"record_id": "HIST-04009", "page_number": "4147", "child_name": "Hiddecel A. Bongbonga", "drive_id": "1XS5qIO9vzgc3M-uCN4N6jNF2UdRWSsFh"},
