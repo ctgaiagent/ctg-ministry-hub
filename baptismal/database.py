@@ -3,12 +3,13 @@ baptismal/database.py — Persistent PostgreSQL & SQLite Database Abstraction
 =========================================================================
 Uses parameterized SQL exclusively (no string interpolation of user inputs)
 and explicit transaction commit/rollback handling.
-Supports PostgreSQL via psycopg2 in production (Streamlit Cloud / Neon / Supabase / RDS)
-and SQLite for local offline development and automated unit testing.
+Supports PostgreSQL via psycopg2 in production and WAL-optimized SQLite locally.
 """
 
 from contextlib import contextmanager
+import os
 import sqlite3
+import stat
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .config import get_database_url
@@ -26,6 +27,7 @@ class DatabaseManager:
             self.sqlite_path = self.dsn
         else:
             self.sqlite_path = ""
+        self._permissions_set = False
 
     def _adapt_sql(self, sql: str) -> str:
         """Converts PostgreSQL-style %s placeholders to SQLite ? placeholders when running on SQLite."""
@@ -50,17 +52,12 @@ class DatabaseManager:
                 raise
             finally:
                 conn.close()
-                try:
-                    from .security_crypto import harden_file_permissions
-                    if self.sqlite_path and self.sqlite_path != ':memory:':
-                        harden_file_permissions(self.sqlite_path)
-                except Exception:
-                    pass
         else:
-            conn = sqlite3.connect(self.sqlite_path, timeout=15.0)
+            is_new_file = bool(self.sqlite_path and self.sqlite_path != ":memory:" and not os.path.exists(self.sqlite_path))
+            conn = sqlite3.connect(self.sqlite_path, timeout=20.0)
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA foreign_keys = ON;")
-            conn.execute("PRAGMA secure_delete = ON;")
+            conn.execute("PRAGMA synchronous = NORMAL;")
             try:
                 cur = conn.cursor()
                 yield cur
@@ -70,6 +67,12 @@ class DatabaseManager:
                 raise
             finally:
                 conn.close()
+                if (is_new_file or not self._permissions_set) and self.sqlite_path and self.sqlite_path != ":memory:":
+                    self._permissions_set = True
+                    try:
+                        os.chmod(self.sqlite_path, stat.S_IRUSR | stat.S_IWUSR)
+                    except Exception:
+                        pass
 
     def execute(self, sql: str, params: Tuple[Any, ...] = ()) -> int:
         adapted = self._adapt_sql(sql)

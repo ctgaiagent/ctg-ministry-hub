@@ -146,6 +146,7 @@ class HistoricalRecordsService:
 
         local_candidates = [
             "OVERALL BAPTISMAL CERTIFICATE LIST.xlsx",
+            "OVERALL_BAPTISMAL_CERTIFICATE_LIST.xlsx",
             "BAPTISMAL RELATED FILES/OVERALL BAPTISMAL CERTIFICATE LIST.xlsx",
             "downloads/OVERALL_BAPTISMAL_CERTIFICATE_LIST.xlsx",
         ]

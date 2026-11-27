@@ -155,53 +155,36 @@ def harden_directory_permissions(dirpath: str) -> bool:
         return False
 
 
+_WORKSPACE_HARDENED_ONCE = False
+
+
 def enforce_data_leak_protection_on_workspace(base_dir: str = ".") -> Dict[str, int]:
-    """Locks down file/directory permissions (0600/0700) on all local data files and updates `.gitignore`
-    so sensitive databases, Excel files, tokens, and backups never leak to git or other OS users."""
+    """Locks down file/directory permissions (0600/0700) on local SQLite DB and backup directory ONCE per process
+    so Streamlit Cloud's inotify file watcher is never triggered during UI reruns."""
+    global _WORKSPACE_HARDENED_ONCE
+    if _WORKSPACE_HARDENED_ONCE:
+        return {"locked_files": 0, "locked_dirs": 0}
+    _WORKSPACE_HARDENED_ONCE = True
+
     locked_files = 0
     locked_dirs = 0
 
-    for rel_f in SENSITIVE_LOCAL_FILES:
+    for rel_f in ("baptismal_local.db", "ctg_baptismal_local.db", "ctg_app_cloud_config.json", ".env"):
         fp = os.path.join(base_dir, rel_f)
         if os.path.exists(fp) and harden_file_permissions(fp):
             locked_files += 1
 
-    try:
-        for fn in os.listdir(base_dir):
-            if fn.endswith((".db", ".sqlite", ".sqlite3", ".xlsx", ".toml", ".env")) or "backup" in fn.lower() or "audit" in fn.lower():
-                fp = os.path.join(base_dir, fn)
+    dp = os.path.join(base_dir, "baptismal_backups")
+    if os.path.isdir(dp):
+        if harden_directory_permissions(dp):
+            locked_dirs += 1
+        try:
+            for fn in os.listdir(dp):
+                fp = os.path.join(dp, fn)
                 if os.path.isfile(fp) and harden_file_permissions(fp):
                     locked_files += 1
-    except Exception:
-        pass
-
-    for rel_d in SENSITIVE_LOCAL_DIRS:
-        dp = os.path.join(base_dir, rel_d)
-        if os.path.isdir(dp):
-            if harden_directory_permissions(dp):
-                locked_dirs += 1
-            try:
-                for fn in os.listdir(dp):
-                    fp = os.path.join(dp, fn)
-                    if os.path.isfile(fp):
-                        harden_file_permissions(fp)
-                        locked_files += 1
-            except Exception:
-                pass
-
-    # Ensure .gitignore contains all data-leak prevention patterns
-    gi_path = os.path.join(base_dir, ".gitignore")
-    try:
-        existing_gi = ""
-        if os.path.exists(gi_path):
-            with open(gi_path, "r", encoding="utf-8", errors="ignore") as f:
-                existing_gi = f.read()
-        missing_patterns = [p for p in GITIGNORE_PROTECTED_PATTERNS if p not in existing_gi]
-        if missing_patterns:
-            with open(gi_path, "a", encoding="utf-8") as f:
-                f.write("\n" + "\n".join(missing_patterns) + "\n")
-    except Exception:
-        pass
+        except Exception:
+            pass
 
     return {"locked_files": locked_files, "locked_dirs": locked_dirs}
 

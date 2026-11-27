@@ -89,6 +89,7 @@ def _get_baptismal_services(_version: str = _BAP_SERVICES_VERSION) -> Dict[str, 
     reg = RegistrationService(db, authz=authz, audit=audit, drive=drive, backup=backup)
     certs = CertificateService(db, authz=authz, audit=audit, drive=drive)
     temp_acc = TemporaryAccessService(db, authz=authz, audit=audit)
+    enforce_data_leak_protection_on_workspace(".")
     return {
         "db": db,
         "audit": audit,
@@ -102,13 +103,22 @@ def _get_baptismal_services(_version: str = _BAP_SERVICES_VERSION) -> Dict[str, 
         "reg": reg,
         "certs": certs,
         "temp_acc": temp_acc,
+        "_provisioned_cache": {},
     }
+
+
+_PROVISIONED_USERS_MEMO: Dict[str, Dict[str, Any]] = {}
 
 
 def _resolve_or_provision_hub_synced_user(auth_svc: AuthService, is_master: bool, parish_name: str = "") -> Dict[str, Any]:
     """Ensures the 1 Master Admin (`ctg.Baptismal.admin` with hidden PBKDF2-SHA256 hash) and 9 Official
-    Parish Leader Admin accounts exist in the database, and returns the validated session user dict."""
+    Parish Leader Admin accounts exist in the database, memoized in memory for 0-overhead reruns."""
     now_iso = datetime.now(timezone.utc).isoformat()
+    cache_key = "MASTER" if is_master else f"PARISH::{parish_name.strip().upper()}"
+    if cache_key in _PROVISIONED_USERS_MEMO:
+        cached = dict(_PROVISIONED_USERS_MEMO[cache_key])
+        cached["authenticated_at"] = now_iso
+        return cached
     master_row = auth_svc.db.fetch_one(
         "SELECT * FROM baptismal_accounts WHERE role = 'Master Admin' AND is_active = 1 LIMIT 1"
     )
@@ -144,24 +154,25 @@ def _resolve_or_provision_hub_synced_user(auth_svc: AuthService, is_master: bool
                 password_hash=DEFAULT_PARISH_LEADER_INTERNAL_PW_HASH,
             )
 
+    _PROVISIONED_USERS_MEMO["MASTER"] = {
+        "account_id": master_row["account_id"],
+        "username": master_row["username"],
+        "full_name": master_row["full_name"],
+        "email": master_row.get("email", ""),
+        "role": "Master Admin",
+        "assigned_parish": "ALL_NINE_PARISHES",
+        "authenticated_at": now_iso,
+        "session_token": "hub_synced_master_admin",
+    }
     if is_master:
-        return {
-            "account_id": master_row["account_id"],
-            "username": master_row["username"],
-            "full_name": master_row["full_name"],
-            "email": master_row.get("email", ""),
-            "role": "Master Admin",
-            "assigned_parish": "ALL_NINE_PARISHES",
-            "authenticated_at": now_iso,
-            "session_token": "hub_synced_master_admin",
-        }
+        return dict(_PROVISIONED_USERS_MEMO["MASTER"])
 
     norm_p = normalize_official_nine_parish(parish_name)
     p_row = auth_svc.db.fetch_one(
         "SELECT * FROM baptismal_accounts WHERE role = 'Parish Leader Admin' AND assigned_parish = %s AND is_active = 1 LIMIT 1",
         (norm_p,),
     )
-    return {
+    res_p = {
         "account_id": p_row["account_id"],
         "username": p_row["username"],
         "full_name": p_row["full_name"],
@@ -171,6 +182,9 @@ def _resolve_or_provision_hub_synced_user(auth_svc: AuthService, is_master: bool
         "authenticated_at": now_iso,
         "session_token": f"hub_synced_{p_row['username']}",
     }
+    _PROVISIONED_USERS_MEMO[cache_key] = res_p
+    _PROVISIONED_USERS_MEMO[f"PARISH::{norm_p.upper()}"] = res_p
+    return dict(res_p)
 
 
 def _render_printable_certificate_or_image_modal(pdf_bytes: bytes = b"", image_bytes: bytes = b"", title: str = "CTG Baptismal Print") -> None:
@@ -280,19 +294,9 @@ def _find_candidate_drive_images_for_record(record: Dict[str, Any], drive_mgr: G
     if cache_k in st.session_state and st.session_state[cache_k]:
         files_to_check.extend([(primary_bk, f) for f in st.session_state[cache_k]])
     elif fid:
-        search_terms: List[str] = []
-        if page_num and page_num.isdigit():
-            p_int = int(page_num)
-            search_terms.extend([f"BC_{p_int}.", f"BC_{p_int:03d}.", f"BC_{p_int:04d}."])
-        for tok in name_tokens[:2]:
-            search_terms.append(tok)
         rec_search_cache_k = f"_drv_rec_search_{rec_id}"
-        if rec_search_cache_k not in st.session_state:
-            try:
-                st.session_state[rec_search_cache_k] = drive_mgr.search_files_in_folder(fid, search_terms, page_size=30)
-            except Exception:
-                st.session_state[rec_search_cache_k] = []
-        files_to_check.extend([(primary_bk, f) for f in st.session_state.get(rec_search_cache_k, [])])
+        if rec_search_cache_k in st.session_state:
+            files_to_check.extend([(primary_bk, f) for f in st.session_state.get(rec_search_cache_k, [])])
 
     for bk_other in sorted(book_folders.keys()):
         if bk_other != primary_bk and st.session_state.get(f"_drv_book_files_{bk_other}"):
@@ -582,8 +586,6 @@ def render_baptismal_portal(embedded_in_hub: bool = False) -> None:
         unsafe_allow_html=True,
     )
 
-    enforce_data_leak_protection_on_workspace(".")
-
     svc = _get_baptismal_services(_version=_BAP_SERVICES_VERSION)
     auth_svc: AuthService = svc["auth"]
     authz_svc: AuthorizationService = svc["authz"]
@@ -746,8 +748,8 @@ def render_baptismal_portal(embedded_in_hub: bool = False) -> None:
         st.session_state["_bap_auto_sync_attempted"] = True
         cur_stats_check = hist_svc.get_dashboard_statistics(actor_account_id=account_id)
         if cur_stats_check["total_historical"] == 0:
-            with st.spinner("Awtomatikong binabasa ang historical records mula sa Google Drive (`OVERALL BAPTISMAL CERTIFICATE LIST.xlsx`)..."):
-                hist_svc.auto_sync_from_drive_or_disk(drive_mgr, force=False)
+            # Fast local-disk-only check on initial login so login never hangs waiting for network
+            hist_svc.auto_sync_from_drive_or_disk(drive_mgr=None, force=False)
 
     (
         tab_dash,
@@ -952,15 +954,28 @@ def render_baptismal_portal(embedded_in_hub: bool = False) -> None:
 
                     if cand_drive_imgs:
                         st.success(f"✨ Nakahanap ng {len(cand_drive_imgs)} tugmang scanned image(s) sa Google Drive para sa `{detail.get('Name of the Child', '')}` / Page `{rec_pg_num}`:")
-                    elif bk_drive_id:
-                        if st.button(f"🔍 I-scan ang {sel_bk_for_rec} sa Google Drive para sa Record na Ito", key=f"btn_scan_bk_{sel_id}"):
-                            try:
-                                st.session_state[f"_drv_book_files_{sel_bk_for_rec}"] = drive_mgr.list_files_in_folder(bk_drive_id, page_size=1000)
-                                st.rerun()
-                            except Exception:
-                                st.info(
-                                    f"ℹ️ [Buksan ang {sel_bk_for_rec} sa Google Drive](https://drive.google.com/drive/folders/{bk_drive_id})"
-                                )
+                    if bk_drive_id:
+                        sc_b1, sc_b2 = st.columns(2)
+                        with sc_b1:
+                            if st.button(f"🔍 Hanapin ang Image ng {sel_id} sa {sel_bk_for_rec}", key=f"btn_qfind_{sel_id}", use_container_width=True):
+                                try:
+                                    s_terms = []
+                                    if rec_pg_num and rec_pg_num.isdigit():
+                                        pi = int(rec_pg_num)
+                                        s_terms.extend([f"BC_{pi}.", f"BC_{pi:03d}.", f"BC_{pi:04d}."])
+                                    c_toks = [t for t in re.split(r"[^a-zA-Z0-9]+", str(detail.get("Name of the Child") or "")) if len(t) >= 3]
+                                    s_terms.extend(c_toks[:2])
+                                    st.session_state[f"_drv_rec_search_{sel_id}"] = drive_mgr.search_files_in_folder(bk_drive_id, s_terms, page_size=40)
+                                    st.rerun()
+                                except Exception:
+                                    st.info(f"📂 [Buksan ang {sel_bk_for_rec} sa Google Drive](https://drive.google.com/drive/folders/{bk_drive_id})")
+                        with sc_b2:
+                            if st.button(f"📂 I-load Lahat ng Pahina sa {sel_bk_for_rec}", key=f"btn_scan_bk_{sel_id}", use_container_width=True):
+                                try:
+                                    st.session_state[f"_drv_book_files_{sel_bk_for_rec}"] = drive_mgr.list_files_in_folder(bk_drive_id, page_size=1000)
+                                    st.rerun()
+                                except Exception:
+                                    st.info(f"📂 [Buksan ang {sel_bk_for_rec} sa Google Drive](https://drive.google.com/drive/folders/{bk_drive_id})")
 
                     all_bk_files = cand_drive_imgs + [
                         {**f, "book_folder": sel_bk_for_rec, "fn_page_hint": extract_page_hint_from_filename(f.get("name", "")), "page_mismatch": False}
@@ -1010,12 +1025,9 @@ def render_baptismal_portal(embedded_in_hub: bool = False) -> None:
                             st.image(disp_b, caption=f"{im_bk} / {im_nm} (Record {sel_id})")
                             st.download_button("⬇️ Download Scanned Book Page", data=disp_b, file_name=im_nm, mime="image/jpeg", use_container_width=True)
                             _render_printable_certificate_or_image_modal(image_bytes=disp_b, title=f"{sel_id} - {im_nm}")
-                        else:
-                            _render_drive_file_embed_fallback(
-                                chosen_drv_id,
-                                chosen_obj["name"],
-                                chosen_obj.get("book_folder", sel_bk_for_rec),
-                            )
+                        elif st.session_state.get(f"_embed_rec_img_{sel_id}"):
+                            em_nm, em_id, em_bk = st.session_state[f"_embed_rec_img_{sel_id}"]
+                            _render_drive_file_embed_fallback(em_id, em_nm, em_bk)
 
                     if linked_assocs:
                         st.caption("🔗 Naka-link na Scanned Images sa Record na Ito:")
