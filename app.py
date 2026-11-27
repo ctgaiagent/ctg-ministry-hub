@@ -13,6 +13,7 @@ Official Streamlit Web Application for Master Admin & 10 Parish Leaders:
 """
 
 import os
+import sys
 import io
 import gc
 import re
@@ -25189,6 +25190,9 @@ elif app_mode == "🛠️ App Settings":
 # 8. MADALING SUNDAN NA AI CHAT ASSISTANT (STEP-BY-STEP GUIDE + ONE-CLICK BUTTONS)
 # =====================================================================
 elif app_mode == "⛪ Baptismal Records & Certificates":
+    import sys
+    import hashlib
+    import importlib
     _cur_bap_hash = hashlib.sha256(_BAPTISMAL_BUNDLE_B64.encode("ascii")).hexdigest()[:16]
     if getattr(sys, "_ctg_loaded_bap_bundle_hash", "") != _cur_bap_hash:
         _bootstrap_modular_baptismal_package_files(force_overwrite=True)
