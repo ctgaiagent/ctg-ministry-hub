@@ -20990,7 +20990,7 @@ def render_persistent_ctg_top_navbar() -> None:
                 "time": p_inf.get("last_active_ph", ph_now_str),
             })
 
-    all_notifs_top = load_live_notifications_from_disk()
+    all_notifs_top = load_live_notifications()
     unread_cnt = len(all_notifs_top)
 
     if is_master_top:
