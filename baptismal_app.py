@@ -373,30 +373,6 @@ def _render_parish_leader_admin_dashboard(
     k4.metric("Pending Copy Requests", p_stats["pending_certificate_requests"])
     k5.metric("Approved Copies (Ready to Print)", p_stats["approved_certificates"])
 
-    _p_side_sel = str(st.session_state.get("bap_contextual_nav") or "Dashboard").strip()
-    _p_tab_map = {
-        "Dashboard": 0,
-        "New Baptism Registration": 0,
-        "Certificate Requests": 1,
-        "Released Certificates": 2,
-    }
-    _p_t_idx = _p_tab_map.get(_p_side_sel, 0)
-    if st.session_state.get("_bap_force_tab_jump"):
-        st.session_state["_bap_force_tab_jump"] = False
-        components.html(
-            f"""
-            <script>
-            setTimeout(function() {{
-                const tabs = window.parent.document.querySelectorAll('button[data-baseweb="tab"]');
-                if (tabs && tabs.length > {_p_t_idx}) {{
-                    tabs[{_p_t_idx}].click();
-                }}
-            }}, 120);
-            </script>
-            """,
-            height=0,
-        )
-
     ptab_new_bap, ptab_req_copy, ptab_approved_print = st.tabs([
         "✍️ 1. Direct New Baptism Registration (Ipasa sa Master Admin)",
         "📨 2. Historical Record & Certified Certificate Requests (Humingi ng Dating Copy sa Master Admin)",
@@ -780,40 +756,6 @@ def render_baptismal_portal(embedded_in_hub: bool = False) -> None:
             # Fast local-disk-only check on initial login so login never hangs waiting for network
             hist_svc.auto_sync_from_drive_or_disk(drive_mgr=None, force=False)
 
-    _bap_side_sel = str(st.session_state.get("bap_contextual_nav") or "Dashboard").strip()
-    _bap_tab_idx_map = {
-        "Dashboard": 0,
-        "Historical Records": 1,
-        "Global Search": 1,
-        "BOOK 1 – 9": 2,
-        "Parish Submissions": 3,
-        "Certificate Requests": 4,
-        "Direct New Baptism": 5,
-        "Certificate Generator": 6,
-        "Generated Certificates": 6,
-        "Temporary Access": 7,
-        "User Management": 7,
-        "Google Drive Storage": 7,
-        "Audit Logs": 7,
-        "Security Settings": 7,
-    }
-    _target_bap_tab_idx = _bap_tab_idx_map.get(_bap_side_sel, 0)
-    if st.session_state.get("_bap_force_tab_jump"):
-        st.session_state["_bap_force_tab_jump"] = False
-        components.html(
-            f"""
-            <script>
-            setTimeout(function() {{
-                const tabs = window.parent.document.querySelectorAll('button[data-baseweb="tab"]');
-                if (tabs && tabs.length > {_target_bap_tab_idx}) {{
-                    tabs[{_target_bap_tab_idx}].click();
-                }}
-            }}, 120);
-            </script>
-            """,
-            height=0,
-        )
-
     (
         tab_dash,
         tab_search_verify,
@@ -822,16 +764,14 @@ def render_baptismal_portal(embedded_in_hub: bool = False) -> None:
         tab_reqs_share,
         tab_new_reg,
         tab_cert_gen,
-        tab_admin_suite,
     ) = st.tabs([
         "📊 1. Dashboard",
-        "🔍 2. Historical & Global Search",
+        "🔍 2. Search ID, Book Image & Print/Share",
         "🖼️ 3. BOOK 1–9 Archive",
-        "📥 4. Parish Submissions",
-        "📨 5. Certificate Requests",
-        "✍️ 6. Direct New Baptism",
-        "📜 7. Certificate Generator & Archive",
-        "⚙️ 8. Administration & Security",
+        "📥 4. Confirm Leaders' Uploads (Encode to Drive)",
+        "📨 5. Requests & Release",
+        "✍️ 6. Direct New Baptism (Master)",
+        "📜 7. Certificates Archive",
     ])
 
     with tab_dash:
@@ -1364,67 +1304,6 @@ def render_baptismal_portal(embedded_in_hub: bool = False) -> None:
         st.markdown("#### 🗂️ Generated Certificates Archive")
         certs_list = cert_svc.list_certificates(actor_account_id=account_id)
         st.dataframe(certs_list, use_container_width=True, hide_index=True)
-
-    with tab_admin_suite:
-        st.subheader("⚙️ Administration, Temporary Access, Google Drive Storage, Audit Logs & Security")
-        adm_sub_opts = [
-            "⏳ Temporary Access",
-            "👥 User Management",
-            "☁️ Google Drive Storage",
-            "📋 Audit Logs",
-            "⚙️ Security Settings",
-        ]
-        _default_adm_idx = 0
-        for _ai, _al in enumerate(adm_sub_opts):
-            if _bap_side_sel and _bap_side_sel.lower() in _al.lower():
-                _default_adm_idx = _ai
-                break
-        picked_adm_view = st.radio(
-            "Administration Section:",
-            adm_sub_opts,
-            index=_default_adm_idx,
-            horizontal=True,
-            key="bap_adm_suite_radio",
-        )
-        st.divider()
-        if "Temporary Access" in picked_adm_view:
-            st.markdown("#### ⏳ Temporary Record Access Grants for Parish Leader Admins")
-            active_grants = temp_svc.list_active_grants()
-            if active_grants:
-                st.dataframe(active_grants, use_container_width=True, hide_index=True)
-            else:
-                st.info("Wala pang aktibong temporary record access grant sa kasalukuyan.")
-        elif "User Management" in picked_adm_view:
-            st.markdown("#### 👥 Official Baptismal System Accounts (1 Master Admin + 9 Parish Leader Admins — Hong Kong Excluded)")
-            all_accs = svc["db"].fetch_all(
-                "SELECT account_id, username, full_name, role, assigned_parish, is_active, updated_at FROM baptismal_accounts ORDER BY role ASC, assigned_parish ASC"
-            )
-            st.dataframe(all_accs, use_container_width=True, hide_index=True)
-        elif "Google Drive Storage" in picked_adm_view:
-            st.markdown("#### ☁️ Connected Google Drive Storage (`CTG BAPTISMAL RECORDS`)")
-            st.markdown(
-                f"- **Root Folder (`CTG BAPTISMAL RECORDS`):** [Buksan sa Google Drive](https://drive.google.com/drive/folders/{DEFAULT_BAPTISMAL_ROOT_FOLDER_ID}) (`{DEFAULT_BAPTISMAL_ROOT_FOLDER_ID}`)\n"
-                f"- **Master Workbook (`OVERALL BAPTISMAL CERTIFICATE LIST.xlsx`):** [Buksan sa Google Drive](https://drive.google.com/file/d/{DEFAULT_BAPTISMAL_WORKBOOK_FILE_ID}/view) (`{DEFAULT_BAPTISMAL_WORKBOOK_FILE_ID}`)"
-            )
-            from baptismal.config import KNOWN_BAPTISMAL_SUBFOLDER_IDS
-            folder_rows = [
-                {"Folder Name": k, "Drive Folder ID": v, "Drive URL": f"https://drive.google.com/drive/folders/{v}"}
-                for k, v in KNOWN_BAPTISMAL_SUBFOLDER_IDS.items()
-            ]
-            st.dataframe(folder_rows, use_container_width=True, hide_index=True)
-        elif "Audit Logs" in picked_adm_view:
-            st.markdown("#### 📋 Security & Operational Audit Trail")
-            events = audit_svc.list_events(limit=150)
-            st.dataframe(events, use_container_width=True, hide_index=True)
-        else:
-            st.markdown("#### ⚙️ Security Settings & Encryption Status")
-            st.success(
-                "🔒 **Defense-in-Depth Active:**\n"
-                "- **Master Admin Authentication:** 120,000-iteration PBKDF2-HMAC-SHA256 (`ctg.Baptismal.admin`)\n"
-                "- **At-Rest Database Encryption:** `CTG_ENC_V1` Encrypt-then-MAC (AES-CTR-256 + HMAC-SHA256)\n"
-                "- **Google Drive Visibility:** Compatible with `Restricted` private folders & files via authenticated Drive credentials\n"
-                "- **Parish Isolation:** 9 Official Philippine Parishes strictly isolated server-side (Hong Kong Parish excluded)"
-            )
 
 
 if __name__ == "__main__":
