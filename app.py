@@ -3508,193 +3508,162 @@ def _build_profile_avatar_html(photo_b64: str, border_color: str = "#38BDF8", si
 
 def render_church_leadership_and_priests_directory(context_key: str = "home"):
     """
-    Renders the Church of the Temple of God Executive Leadership & Parish Leader Admins
-    matching the exact panel positions in App Design.jpg while preserving real uploaded photos:
-    - Hero Banner: Church of the Temple of God • CTG Ministries Database • Building a Stronger Church Community
-    - Panel 1 (👑 CTG Executive Leadership): All 4 Executive Leaders side-by-side in 1 horizontal row (st.columns(4)):
-      1. GIDEON FLORANTE A. ABAQUITA, Sr. (SUPREME HEAD)
-      2. JOSEPHINE ALENSUELA ABAQUITA (SUPREME SECRETARY)
-      3. Msgr. BELLA B. BINABICE (DIOCESE HEAD - REGION 1)
-      4. MSGR. ELORDE A. WAYET (DIOCESE HEAD - REGION 2)
-    - Panel 2 (⛪ Our 10 Parishes – Parish Leader Admins): 5x2 grid (or scoped parish cards for Diocese/Parish Leaders)
-      with real profile photos and top-right Green 'Online' / Red 'Offline' status badges.
+    Renders the Church of the Temple of God Leadership Hierarchy on the Home Dashboard:
+    - Tier 1 (Visible to ALL):
+      * GIDEON FLORANTE A. ABAQUITA, Sr. (Supreme Head/Bishop, Presiding Elder)
+      * JOSEPHINE ALENSUELA ABAQUITA (SUPREME SECRETARY/SEMINAR DIRECTOR — without 'Supreme Leadership')
+    - Tier 2 (Visible to ALL):
+      * Msgr. BELLA B. BINABICE (DIOCESE HEAD I - REGION 1 — shown only once)
+      * MSGR. ELORDE A. WAYET (DIOCESE HEAD 2 - REGION 2 — shown only once)
+    - Tier 3 (Visible ONLY to Master Admin):
+      * 10 Parish Priests / Malanas House Church / Hongkong Leader cards with compact Top-Right
+        Green 'Active' (when logged in) or Red 'Offline' (when not logged in) status badge.
     """
     profiles = load_leadership_and_priests_profiles()
     is_master = (st.session_state.user_role == "Master Admin")
-    cur_d_scope = get_current_diocese_scope_key()
-    cur_assigned_p = str(st.session_state.get("assigned_parish", "") or "").strip()
-
-    logo_img_tag = (
-        f"<img src='data:image/png;base64,{LOGO_B64}' style='width:68px;height:68px;border-radius:50%;"
-        f"border:2.5px solid #D4AF37;box-shadow:0 0 16px rgba(212,175,55,0.45);object-fit:cover;flex-shrink:0;'>"
-        if LOGO_B64 else ""
-    )
 
     st.markdown(
-        f"<div style='background:linear-gradient(135deg, #07142E 0%, #0F2C59 55%, #1E3A8A 100%);"
-        f"border:1.5px solid #D4AF37;border-radius:16px;padding:18px 24px;margin-bottom:16px;"
-        f"display:flex;align-items:center;justify-content:center;gap:18px;"
-        f"box-shadow:0 8px 24px rgba(7,20,46,0.35);'>"
-        f"{logo_img_tag}"
-        f"<div style='text-align:center;'>"
-        f"<div style='font-size:1.55rem;font-weight:900;color:#FFFFFF;letter-spacing:0.4px;line-height:1.2;'>"
-        f"Church of the Temple of God"
-        f"</div>"
-        f"<div style='font-size:1.18rem;font-weight:800;color:#FDE047;margin-top:2px;'>"
-        f"CTG Ministries Database"
-        f"</div>"
-        f"<div style='display:inline-block;background:linear-gradient(90deg, rgba(255,255,255,0.92), rgba(241,245,249,0.96));"
-        f"color:#0F2C59;font-weight:800;font-size:0.80rem;padding:4px 16px;border-radius:999px;margin-top:6px;"
-        f"border:1px solid #D4AF37;font-style:italic;'>"
-        f"Building a Stronger Church Community"
-        f"</div>"
-        f"</div></div>",
-        unsafe_allow_html=True,
+        "<div style='background:linear-gradient(135deg, #064E3B 0%, #0F172A 100%);"
+        "border:1px solid rgba(16,185,129,0.45);border-radius:14px;padding:16px 20px;margin-bottom:14px;text-align:center;'>"
+        "<div style='font-size:1.25rem;font-weight:800;color:#F8FAFC;letter-spacing:0.5px;'>"
+        "🏛️ CHURCH OF THE TEMPLE OF GOD — SUPREME LEADERSHIP & DIOCESE HEADS"
+        "</div>"
+        "<div style='font-size:0.86rem;color:#A7F3D0;margin-top:4px;'>"
+        "Opisyal na Pamunuan ng Church of the Temple of God (Supreme Head, Supreme Secretary/Seminar Director & Diocese Heads)"
+        "</div></div>",
+        unsafe_allow_html=True
     )
 
-    # PANEL 1: 👑 CTG EXECUTIVE LEADERSHIP (4 CARDS SIDE-BY-SIDE IN ONE ROW)
-    st.markdown(
-        "<div style='background:linear-gradient(90deg, rgba(15,44,89,0.95), rgba(7,20,46,0.95));"
-        "border-left:4px solid #D4AF37;border-top:1px solid rgba(212,175,55,0.45);"
-        "border-right:1px solid rgba(212,175,55,0.25);border-bottom:1px solid rgba(212,175,55,0.25);"
-        "border-radius:10px;padding:8px 14px;margin-bottom:10px;display:flex;align-items:center;gap:8px;'>"
-        "<span style='font-size:1.05rem;'>👑</span>"
-        "<span style='font-size:0.98rem;font-weight:800;color:#F8FAFC;letter-spacing:0.3px;'>CTG Executive Leadership</span>"
-        "</div>",
-        unsafe_allow_html=True,
-    )
-
+    # TIER 1: SUPREME HEAD & SPOUSE
     sup1 = profiles["supreme_head"]
     sup2 = profiles["supreme_head_spouse"]
+    sp_L, col_sup1, col_sup2, sp_R = st.columns([0.3, 1.7, 1.7, 0.3])
+    with col_sup1:
+        av1 = _build_profile_avatar_html(sup1.get("photo_b64", ""), "#F59E0B", 98, "👑")
+        st.markdown(
+            f"<div style='background:linear-gradient(145deg, rgba(30,41,59,0.96), rgba(15,23,42,0.96));"
+            f"border:2px solid #F59E0B;border-radius:14px;padding:16px 14px;text-align:center;"
+            f"box-shadow:0 6px 18px rgba(245,158,11,0.16);margin-bottom:10px;min-height:215px;'>"
+            f"{av1}<br>"
+            f"<span style='background:#F59E0B;color:#0F172A;font-weight:800;font-size:0.73rem;padding:2px 10px;border-radius:12px;'>SUPREME HEAD</span>"
+            f"<div style='font-size:1.08rem;font-weight:800;color:#FEF3C7;margin-top:8px;'>{html_esc(sup1.get('name'))}</div>"
+            f"<div style='font-size:0.85rem;color:#FDE68A;font-weight:700;margin-top:3px;'>{html_esc(sup1.get('position'))}</div>"
+            f"<div style='font-size:0.76rem;color:#94A3B8;margin-top:3px;'>Church of the Temple of God</div>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+    with col_sup2:
+        av2 = _build_profile_avatar_html(sup2.get("photo_b64", ""), "#F59E0B", 98, "🌟")
+        st.markdown(
+            f"<div style='background:linear-gradient(145deg, rgba(30,41,59,0.96), rgba(15,23,42,0.96));"
+            f"border:2px solid #F59E0B;border-radius:14px;padding:16px 14px;text-align:center;"
+            f"box-shadow:0 6px 18px rgba(245,158,11,0.16);margin-bottom:10px;min-height:215px;'>"
+            f"{av2}<br>"
+            f"<div style='font-size:1.08rem;font-weight:800;color:#FEF3C7;margin-top:10px;'>{html_esc(sup2.get('name'))}</div>"
+            f"<div style='font-size:0.85rem;color:#FDE68A;font-weight:700;margin-top:4px;'>{html_esc(sup2.get('position'))}</div>"
+            f"<div style='font-size:0.76rem;color:#94A3B8;margin-top:4px;'>Church of the Temple of God</div>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+
+    # TIER 2: DIOCESE HEADS
     dio1 = profiles["diocese_head_1"]
     dio2 = profiles["diocese_head_2"]
     dio1_pos_clean = str(dio1.get("position", "") or "DIOCESE HEAD I - REGION 1").strip()
     dio2_pos_clean = str(dio2.get("position", "") or "DIOCESE HEAD 2 - REGION 2").strip()
+    cur_d_scope = get_current_diocese_scope_key()
+    cur_assigned_p = str(st.session_state.get("assigned_parish", "") or "").strip()
+    show_d1 = is_master or (cur_d_scope == DIOCESE_1_KEY) or (not cur_d_scope and cur_assigned_p in DIOCESE_1_PARISHES)
+    show_d2 = is_master or (cur_d_scope == DIOCESE_2_KEY) or (not cur_d_scope and cur_assigned_p in DIOCESE_2_PARISHES)
 
     d1_online = (cur_d_scope == DIOCESE_1_KEY) or (bool(dio1.get("is_active_online")) and (time.time() - float(dio1.get("last_active_epoch", 0) or 0)) <= 1800.0)
     d2_online = (cur_d_scope == DIOCESE_2_KEY) or (bool(dio2.get("is_active_online")) and (time.time() - float(dio2.get("last_active_epoch", 0) or 0)) <= 1800.0)
     d1_badge = _build_top_right_status_badge_html(is_online=d1_online) if (is_master or cur_d_scope == DIOCESE_1_KEY) else ""
     d2_badge = _build_top_right_status_badge_html(is_online=d2_online) if (is_master or cur_d_scope == DIOCESE_2_KEY) else ""
 
-    av1 = _build_profile_avatar_html(sup1.get("photo_b64", ""), "#D4AF37", 76, "👑")
-    av2 = _build_profile_avatar_html(sup2.get("photo_b64", ""), "#D4AF37", 76, "🕊️")
-    av3 = _build_profile_avatar_html(dio1.get("photo_b64", ""), "#38BDF8", 76, "🏛️")
-    av4 = _build_profile_avatar_html(dio2.get("photo_b64", ""), "#38BDF8", 76, "🏛️")
-
-    exec_c1, exec_c2, exec_c3, exec_c4 = st.columns(4)
-    with exec_c1:
-        st.markdown(
-            f"<div style='position:relative;background:linear-gradient(155deg, #0D2247 0%, #07142B 100%);"
-            f"border:1.5px solid #D4AF37;border-radius:14px;padding:14px 10px;text-align:center;"
-            f"box-shadow:0 6px 16px rgba(0,0,0,0.28);margin-bottom:10px;min-height:208px;'>"
-            f"{av1}<br>"
-            f"<span style='background:#D4AF37;color:#07142B;font-weight:800;font-size:0.66rem;padding:2px 9px;border-radius:999px;letter-spacing:0.04em;'>SUPREME HEAD</span>"
-            f"<div style='font-size:0.90rem;font-weight:800;color:#FEF3C7;margin-top:7px;line-height:1.25;'>{html_esc(sup1.get('name'))}</div>"
-            f"<div style='font-size:0.75rem;color:#FDE68A;font-weight:700;margin-top:3px;'>{html_esc(sup1.get('position'))}</div>"
-            f"<div style='font-size:0.68rem;color:#94A3B8;margin-top:3px;'>Church of the Temple of God</div>"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
-    with exec_c2:
-        st.markdown(
-            f"<div style='position:relative;background:linear-gradient(155deg, #0D2247 0%, #07142B 100%);"
-            f"border:1.5px solid #D4AF37;border-radius:14px;padding:14px 10px;text-align:center;"
-            f"box-shadow:0 6px 16px rgba(0,0,0,0.28);margin-bottom:10px;min-height:208px;'>"
-            f"{av2}<br>"
-            f"<span style='background:#D4AF37;color:#07142B;font-weight:800;font-size:0.66rem;padding:2px 9px;border-radius:999px;letter-spacing:0.04em;'>SUPREME SECRETARY</span>"
-            f"<div style='font-size:0.90rem;font-weight:800;color:#FEF3C7;margin-top:7px;line-height:1.25;'>{html_esc(sup2.get('name'))}</div>"
-            f"<div style='font-size:0.75rem;color:#FDE68A;font-weight:700;margin-top:3px;'>{html_esc(sup2.get('position'))}</div>"
-            f"<div style='font-size:0.68rem;color:#94A3B8;margin-top:3px;'>Church of the Temple of God</div>"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
-    with exec_c3:
-        st.markdown(
-            f"<div style='position:relative;background:linear-gradient(155deg, #0D2247 0%, #07142B 100%);"
-            f"border:1.5px solid #38BDF8;border-radius:14px;padding:14px 10px;text-align:center;"
-            f"box-shadow:0 6px 16px rgba(0,0,0,0.28);margin-bottom:10px;min-height:208px;'>"
-            f"{d1_badge}"
-            f"{av3}<br>"
-            f"<span style='background:rgba(56,189,248,0.22);color:#7DD3FC;border:1px solid #38BDF8;font-weight:800;font-size:0.64rem;padding:2px 8px;border-radius:999px;'>{html_esc(dio1_pos_clean)}</span>"
-            f"<div style='font-size:0.90rem;font-weight:800;color:#F8FAFC;margin-top:7px;line-height:1.25;'>{html_esc(dio1.get('name'))}</div>"
-            f"<div style='font-size:0.70rem;color:#94A3B8;margin-top:4px;'>Sakop: Region 1 Parishes, Manila &amp; Hong Kong</div>"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
-    with exec_c4:
-        st.markdown(
-            f"<div style='position:relative;background:linear-gradient(155deg, #0D2247 0%, #07142B 100%);"
-            f"border:1.5px solid #38BDF8;border-radius:14px;padding:14px 10px;text-align:center;"
-            f"box-shadow:0 6px 16px rgba(0,0,0,0.28);margin-bottom:10px;min-height:208px;'>"
-            f"{d2_badge}"
-            f"{av4}<br>"
-            f"<span style='background:rgba(56,189,248,0.22);color:#7DD3FC;border:1px solid #38BDF8;font-weight:800;font-size:0.64rem;padding:2px 8px;border-radius:999px;'>{html_esc(dio2_pos_clean)}</span>"
-            f"<div style='font-size:0.90rem;font-weight:800;color:#F8FAFC;margin-top:7px;line-height:1.25;'>{html_esc(dio2.get('name'))}</div>"
-            f"<div style='font-size:0.70rem;color:#94A3B8;margin-top:4px;'>Sakop: Region 2 Parishes (Andabuen &amp; Apayao)</div>"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
-
-    # PANEL 2: ⛪ OUR 10 PARISHES – PARISH LEADER ADMINS (OR SCOPED PARISH CARDS FOR DIOCESE / PARISH LEADERS)
-    if is_master:
-        visible_tier3_parishes = PARISH_ORDER
-        panel2_title = "Our 10 Parishes – Parish Leader Admins"
-    elif is_current_user_diocese_admin():
-        visible_tier3_parishes = get_allowed_parishes_for_current_user()
-        panel2_title = f"Our Scoped Parishes ({cur_d_scope}) – Parish Leader Admins"
-    else:
-        visible_tier3_parishes = [cur_assigned_p] if cur_assigned_p in PARISH_ORDER else [PARISH_ORDER[0]]
-        panel2_title = f"Our Parish Leader Admin – {cur_assigned_p}"
-
-    st.markdown(
-        f"<div style='background:linear-gradient(90deg, rgba(15,44,89,0.95), rgba(7,20,46,0.95));"
-        f"border-left:4px solid #D4AF37;border-top:1px solid rgba(212,175,55,0.45);"
-        f"border-right:1px solid rgba(212,175,55,0.25);border-bottom:1px solid rgba(212,175,55,0.25);"
-        f"border-radius:10px;padding:8px 14px;margin:6px 0 10px 0;display:flex;align-items:center;gap:8px;'>"
-        f"<span style='font-size:1.05rem;'>⛪</span>"
-        f"<span style='font-size:0.98rem;font-weight:800;color:#F8FAFC;letter-spacing:0.3px;'>{html_esc(panel2_title)}</span>"
-        f"</div>",
-        unsafe_allow_html=True,
+    d1_card_html = (
+        f"<div style='position:relative;background:rgba(15,23,42,0.94);border:1.5px solid #10B981;border-radius:12px;"
+        f"padding:16px 12px;text-align:center;margin-bottom:12px;min-height:198px;'>"
+        f"{d1_badge}"
+        f"{_build_profile_avatar_html(dio1.get('photo_b64', ''), '#10B981', 86, '🏛️')}<br>"
+        f"<div style='font-size:1.04rem;font-weight:800;color:#ECFDF5;margin-top:6px;'>{html_esc(dio1.get('name'))}</div>"
+        f"<div style='font-size:0.84rem;color:#6EE7B7;font-weight:700;margin-top:5px;'>{html_esc(dio1_pos_clean)}</div>"
+        f"<div style='font-size:0.71rem;color:#94A3B8;margin-top:4px;'>Sakop: Region 1 Parishes, Manila & Hong Kong</div>"
+        f"</div>"
+    )
+    d2_card_html = (
+        f"<div style='position:relative;background:rgba(15,23,42,0.94);border:1.5px solid #10B981;border-radius:12px;"
+        f"padding:16px 12px;text-align:center;margin-bottom:12px;min-height:198px;'>"
+        f"{d2_badge}"
+        f"{_build_profile_avatar_html(dio2.get('photo_b64', ''), '#10B981', 86, '🏛️')}<br>"
+        f"<div style='font-size:1.04rem;font-weight:800;color:#ECFDF5;margin-top:6px;'>{html_esc(dio2.get('name'))}</div>"
+        f"<div style='font-size:0.84rem;color:#6EE7B7;font-weight:700;margin-top:5px;'>{html_esc(dio2_pos_clean)}</div>"
+        f"<div style='font-size:0.71rem;color:#94A3B8;margin-top:4px;'>Sakop: Region 2 Parishes (Andabuen & Apayao)</div>"
+        f"</div>"
     )
 
-    priests_dict = profiles.get("parish_priests", {})
-    for row_start in range(0, len(visible_tier3_parishes), 5):
-        row_parishes = visible_tier3_parishes[row_start:row_start + 5]
-        p_cols = st.columns(5 if len(visible_tier3_parishes) >= 5 else max(1, len(row_parishes)))
-        for c_i, p_name in enumerate(row_parishes):
-            def_role_p = get_default_parish_leader_role_title(p_name)
-            p_info = priests_dict.get(p_name, {"name": f"{def_role_p} ({p_name.title()})", "position": def_role_p, "parish": p_name, "photo_b64": ""})
-            pos_badge = p_info.get("position") or def_role_p
-            if p_name == "HONGKONG PARISH" and pos_badge.upper() == "PARISH PRIEST":
-                pos_badge = "Leader"
-            elif p_name == "MALANAS PARISH" and pos_badge.upper() == "PARISH PRIEST":
-                pos_badge = "House Church"
-            parish_disp_name = "MALANAS HOUSE CHURCH" if p_name == "MALANAS PARISH" else p_name
-            is_p_online = is_parish_leader_currently_online(p_info, p_name)
-            top_right_badge = _build_top_right_status_badge_html(is_online=is_p_online)
-            border_col = "#10B981" if is_p_online else "rgba(56,189,248,0.45)"
-            av_border_col = "#10B981" if is_p_online else "#38BDF8"
-            last_act_str = str(p_info.get("last_active_ph", "") or "").strip()
-            last_seen_html = (
-                f"<div style='font-size:0.62rem;color:#94A3B8;margin-top:3px;'>🕒 {last_act_str}</div>"
-                if last_act_str else ""
-            )
-            with p_cols[c_i]:
-                av_p = _build_profile_avatar_html(p_info.get("photo_b64", ""), av_border_col, 70, "🏠" if p_name == "MALANAS PARISH" else "⛪")
-                st.markdown(
-                    f"<div style='position:relative;background:linear-gradient(160deg, #0D2247 0%, #07142B 100%);"
-                    f"border:1.5px solid {border_col};border-radius:14px;padding:16px 8px 12px 8px;text-align:center;"
-                    f"margin-bottom:10px;min-height:202px;box-shadow:0 4px 14px rgba(0,0,0,0.25);'>"
-                    f"{top_right_badge}"
-                    f"{av_p}<br>"
-                    f"<span style='background:rgba(56,189,248,0.18);color:#7DD3FC;font-weight:700;font-size:0.66rem;padding:2px 8px;border-radius:8px;'>"
-                    f"{html_esc(pos_badge)}</span>"
-                    f"<div style='font-size:0.86rem;font-weight:800;color:#F8FAFC;margin-top:6px;line-height:1.25;'>{html_esc(p_info.get('name'))}</div>"
-                    f"<div style='font-size:0.72rem;color:#38BDF8;font-weight:800;margin-top:4px;'>{parish_disp_name}</div>"
-                    f"{last_seen_html}"
-                    f"</div>",
-                    unsafe_allow_html=True,
+    if show_d1 and show_d2:
+        dsp_L, col_dio1, col_dio2, dsp_R = st.columns([0.45, 1.55, 1.55, 0.45])
+        with col_dio1:
+            st.markdown(d1_card_html, unsafe_allow_html=True)
+        with col_dio2:
+            st.markdown(d2_card_html, unsafe_allow_html=True)
+    elif show_d1:
+        dsp_L, col_dio_single, dsp_R = st.columns([1.1, 1.8, 1.1])
+        with col_dio_single:
+            st.markdown(d1_card_html, unsafe_allow_html=True)
+    elif show_d2:
+        dsp_L, col_dio_single, dsp_R = st.columns([1.1, 1.8, 1.1])
+        with col_dio_single:
+            st.markdown(d2_card_html, unsafe_allow_html=True)
+
+    # TIER 3: PARISHES — VISIBLE TO MASTER ADMIN (ALL 10) OR DIOCESE ADMIN (THEIR SCOPED PARISHES ONLY)
+    if is_master or is_current_user_diocese_admin():
+        visible_tier3_parishes = PARISH_ORDER if is_master else get_allowed_parishes_for_current_user()
+        hdr_tier3 = (
+            "##### ⛪ Mga Parish Priests, Malanas House Church & Hongkong Leader (10 Parishes — Master Admin Live Active/Offline Monitor)"
+            if is_master else
+            f"##### ⛪ Mga Sakop na Parokya sa Ilalim ng {cur_d_scope} ({len(visible_tier3_parishes)} Parishes — Live Active/Offline Monitor)"
+        )
+        st.markdown(hdr_tier3)
+        priests_dict = profiles.get("parish_priests", {})
+        for row_start in range(0, len(visible_tier3_parishes), 5):
+            row_parishes = visible_tier3_parishes[row_start:row_start + 5]
+            p_cols = st.columns(5)
+            for c_i, p_name in enumerate(row_parishes):
+                def_role_p = get_default_parish_leader_role_title(p_name)
+                p_info = priests_dict.get(p_name, {"name": f"{def_role_p} ({p_name.title()})", "position": def_role_p, "parish": p_name, "photo_b64": ""})
+                pos_badge = p_info.get("position") or def_role_p
+                if p_name == "HONGKONG PARISH" and pos_badge.upper() == "PARISH PRIEST":
+                    pos_badge = "Leader"
+                elif p_name == "MALANAS PARISH" and pos_badge.upper() == "PARISH PRIEST":
+                    pos_badge = "House Church"
+                parish_disp_name = "MALANAS HOUSE CHURCH" if p_name == "MALANAS PARISH" else p_name
+                is_p_online = is_parish_leader_currently_online(p_info, p_name)
+                top_right_badge = _build_top_right_status_badge_html(is_online=is_p_online)
+                border_col = "#10B981" if is_p_online else "rgba(239,68,68,0.55)"
+                av_border_col = "#10B981" if is_p_online else "#38BDF8"
+                last_act_str = str(p_info.get("last_active_ph", "") or "").strip()
+                last_seen_html = (
+                    f"<div style='font-size:0.62rem;color:#94A3B8;margin-top:3px;'>🕒 Last Open: {last_act_str}</div>"
+                    if last_act_str else ""
                 )
+                with p_cols[c_i]:
+                    av_p = _build_profile_avatar_html(p_info.get("photo_b64", ""), av_border_col, 74, "🏠" if p_name == "MALANAS PARISH" else "⛪")
+                    st.markdown(
+                        f"<div style='position:relative;background:linear-gradient(160deg, rgba(30,41,59,0.94), rgba(15,23,42,0.94));"
+                        f"border:1.5px solid {border_col};border-radius:14px;padding:18px 8px 12px 8px;text-align:center;"
+                        f"margin-bottom:10px;min-height:215px;box-shadow:0 4px 14px rgba(0,0,0,0.22);'>"
+                        f"{top_right_badge}"
+                        f"{av_p}<br>"
+                        f"<span style='background:rgba(56,189,248,0.18);color:#7DD3FC;font-weight:700;font-size:0.68rem;padding:2px 8px;border-radius:8px;'>"
+                        f"{html_esc(pos_badge)}</span>"
+                        f"<div style='font-size:0.90rem;font-weight:800;color:#F8FAFC;margin-top:6px;line-height:1.25;'>{html_esc(p_info.get('name'))}</div>"
+                        f"<div style='font-size:0.74rem;color:#38BDF8;font-weight:700;margin-top:4px;'>{parish_disp_name}</div>"
+                        f"{last_seen_html}"
+                        f"</div>",
+                        unsafe_allow_html=True
+                    )
 
 
 def upload_leader_profile_image_to_weekly_report_folder(file_bytes: bytes, filename: str, mime_type: str, parish_name: str = "") -> tuple[str, str]:
@@ -18851,7 +18820,7 @@ def render_outreach_visitation_missionary_page():
                 st.caption("Walang nakalagay na Remarks sa House Visitation, Missionary Work, o Indoctrination para sa piniling filter.")
 
 # =====================================================================
-# ⚙️ DUAL-MODE LEFT SIDE PANEL (MAIN HUB SIDEBAR + CONTEXTUAL MODULE SIDEBARS)
+# ⚙️ SIDEBAR CONTROL PANEL (IMAGE 2 LAYOUT — 5 COLLAPSIBLE GROUPS)
 # =====================================================================
 if st.session_state.user_role == "Master Admin":
     nav_options = [
@@ -18873,7 +18842,6 @@ if st.session_state.user_role == "Master Admin":
     ]
     main_sidebar_groups = [
         ("📁 1. PARISH OPERATIONS & REPORTS", [
-            ("🧭 Parish Leader Portal (Wizard & Summary)", "🏠 Home & Leadership Portal"),
             ("📑 Weekly Report & Parish Monitoring", "📑 Weekly Report & Monitoring"),
             ("🏠 House Visitation, Missionary Work, Indoctrination & Remarks", "🏠 Visitation, Mission & Remarks"),
         ]),
@@ -18914,7 +18882,6 @@ else:
     ]
     main_sidebar_groups = [
         ("📁 1. PARISH OPERATIONS & REPORTS", [
-            ("🧭 Parish Leader Portal (Wizard & Summary)", "🏠 Home & Leadership Portal"),
             ("📑 Weekly Report & Parish Monitoring", "📑 Weekly Report & Monitoring"),
             ("🏠 House Visitation, Missionary Work, Indoctrination & Remarks", "🏠 Visitation, Mission & Remarks"),
         ]),
@@ -18963,10 +18930,11 @@ if "app_mode_override" in st.session_state:
         target_nav = "📊 Parish Census & Member Manager"
     if target_nav in nav_options:
         st.session_state["current_nav_page"] = target_nav
-        st.session_state["force_main_hub_sidebar"] = False
 
 if "selected_gemini_model_global" not in st.session_state:
     st.session_state["selected_gemini_model_global"] = "gemini-3.8-flash"
+if "ctg_sidebar_collapsed" not in st.session_state:
+    st.session_state["ctg_sidebar_collapsed"] = False
 
 active_notifs_for_me = trigger_browser_and_toast_notifications_for_current_user()
 
@@ -18991,394 +18959,264 @@ with st.sidebar:
     if st.session_state.user_role != "Master Admin":
         record_parish_leader_active_presence(st.session_state.assigned_parish)
     _ldr_profiles_sb = load_leadership_and_priests_profiles()
-
-    st.markdown(
-        """
-        <style>
-        section[data-testid="stSidebar"] {
-            background: linear-gradient(180deg, #061024 0%, #0A1936 55%, #071226 100%) !important;
-            border-right: 1.5px solid rgba(212, 175, 55, 0.45) !important;
-        }
-        .ctg-sb-sec-hdr {
-            color: #94A3B8;
-            font-size: 0.72rem;
-            font-weight: 800;
-            letter-spacing: 0.08em;
-            text-transform: uppercase;
-            margin: 12px 0 6px 4px;
-            border-bottom: 1px solid rgba(148, 163, 184, 0.18);
-            padding-bottom: 3px;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
     _cur_page_sb = st.session_state["current_nav_page"]
-    _show_main_menu_sb = (
-        _cur_page_sb == "🧭 Parish Leader Portal (Wizard & Summary)"
-        or bool(st.session_state.get("force_main_hub_sidebar", False))
-    )
 
-    _sb_logo_html = (
-        f"<img src='data:image/png;base64,{LOGO_B64}' style='width:58px;height:58px;border-radius:50%;"
-        f"border:2px solid #D4AF37;box-shadow:0 0 12px rgba(212,175,55,0.35);object-fit:cover;'>"
-        if LOGO_B64 else "⛪"
-    )
-
-    # =====================================================================
-    # MODE B: MODULE-SPECIFIC CONTEXTUAL LEFT SIDE PANEL
-    # =====================================================================
-    if not _show_main_menu_sb:
-        _mod_title_map = {
-            "⛪ Baptismal Records & Certificates": ("CTG", "Baptismal Records"),
-            "💍 Marriage Records & Certificates": ("CTG", "Marriage Records"),
-            "📑 Weekly Report & Parish Monitoring": ("CTG", "Weekly Reports"),
-            "🏠 House Visitation, Missionary Work, Indoctrination & Remarks": ("CTG", "Visitation & Mission"),
-            "📊 Parish Census & Member Manager": ("CTG", "Census & Directory"),
-            "➕ Magdagdag ng Miyembro & Litrato": ("CTG", "Member Registration"),
-            "📈 Live Activity & Update Dashboard": ("CTG", "Live Activity Monitor"),
-            "🛡️ Master Admin Controller & Approval Queue": ("CTG", "Approval Queue"),
-            "📥 Parish Inbox & Action Hub": ("CTG", "Parish Inbox Hub"),
-            "🗣️ Ministry Messenger (Admin & Users Chat)": ("CTG", "Ministry Messenger"),
-            "🤝 Notion CRM (Visitors & Members)": ("CTG", "Visitors & Members CRM"),
-            "💬 AI Chat Assistant": ("CTG", "Gabay AI Assistant"),
-            "🙏 Prayer Wall & Categorizer": ("CTG", "Prayer Wall Hub"),
-            "📢 Announcement Broadcaster": ("CTG", "Broadcaster Hub"),
-            "🛠️ App Settings": ("CTG", "Settings & Security"),
-        }
-        _m_top, _m_sub = _mod_title_map.get(_cur_page_sb, ("CTG", "Ministry Module"))
-
+    if st.session_state.user_role == "Master Admin":
+        _sb_av_html = _build_profile_avatar_html("", "#10B981", 78, "⛪")
+        _sb_act_html = _build_top_right_status_badge_html(is_online=True)
         st.markdown(
-            f"<div style='display:flex;align-items:center;gap:12px;padding:8px 6px 12px 6px;"
-            f"border-bottom:1px solid rgba(212,175,55,0.3);margin-bottom:12px;'>"
-            f"{_sb_logo_html}"
-            f"<div>"
-            f"<div style='font-size:1.15rem;font-weight:900;color:#FFFFFF;line-height:1.15;'>{_m_top}</div>"
-            f"<div style='font-size:0.95rem;font-weight:700;color:#E2E8F0;'>{_m_sub}</div>"
-            f"</div></div>",
-            unsafe_allow_html=True,
-        )
-
-        if st.button("🏠  Dashboard (Main Overview)", use_container_width=True, type="primary", key="ctx_sb_back_main_dash"):
-            st.session_state["current_nav_page"] = "🧭 Parish Leader Portal (Wizard & Summary)"
-            st.session_state["force_main_hub_sidebar"] = False
-            st.rerun()
-
-        if _cur_page_sb == "⛪ Baptismal Records & Certificates":
-            if st.session_state.user_role == "Master Admin":
-                _bap_sections = [
-                    ("RECORDS MANAGEMENT", [
-                        ("Dashboard", "🏠  Baptismal Dashboard"),
-                        ("Historical Records", "📄  Historical Records"),
-                        ("BOOK 1 – 9", "📖  BOOK 1 – 9"),
-                        ("Global Search", "🔍  Global Search"),
-                        ("Parish Submissions", "👥  Parish Submissions"),
-                    ]),
-                    ("CERTIFICATION", [
-                        ("Certificate Requests", "📩  Certificate Requests"),
-                        ("Certificate Generator", "🖨️  Certificate Generator"),
-                        ("Generated Certificates", "📜  Generated Certificates"),
-                    ]),
-                    ("ADMINISTRATION", [
-                        ("Temporary Access", "⏳  Temporary Access"),
-                        ("User Management", "👥  User Management"),
-                        ("Google Drive Storage", "☁️  Google Drive Storage"),
-                        ("Audit Logs", "📋  Audit Logs"),
-                        ("Security Settings", "⚙️  Security Settings"),
-                    ]),
-                ]
-            else:
-                _bap_sections = [
-                    ("PARISH BAPTISMAL RECORDS", [
-                        ("New Baptism Registration", "✍️  New Baptism Registration"),
-                        ("Certificate Requests", "📩  Certificate Requests"),
-                        ("Released Certificates", "📜  Approved / Released Copies"),
-                    ]),
-                ]
-            _cur_bap_sec = st.session_state.get("bap_contextual_nav", "Dashboard")
-            for _sec_hdr, _sec_items in _bap_sections:
-                st.markdown(f"<div class='ctg-sb-sec-hdr'>{_sec_hdr}</div>", unsafe_allow_html=True)
-                for _s_key, _s_lbl in _sec_items:
-                    _is_act = (_cur_bap_sec == _s_key)
-                    if st.button(
-                        f"{'▸ ' if _is_act else ''}{_s_lbl}",
-                        key=f"ctx_bap_btn_{_s_key}",
-                        use_container_width=True,
-                        type="primary" if _is_act else "secondary",
-                    ):
-                        st.session_state["bap_contextual_nav"] = _s_key
-                        st.session_state["_bap_force_tab_jump"] = True
-                        st.rerun()
-            if st.session_state.user_role == "Master Admin":
-                st.markdown("<div class='ctg-sb-sec-hdr'>SWITCH CERTIFICATE</div>", unsafe_allow_html=True)
-                if st.button("💍  Certificate of Marriage", use_container_width=True, key="ctx_bap_to_mar"):
-                    st.session_state["current_nav_page"] = "💍 Marriage Records & Certificates"
-                    st.rerun()
-
-        elif _cur_page_sb == "💍 Marriage Records & Certificates":
-            _mar_sections = [
-                ("RECORDS MANAGEMENT", [
-                    ("Dashboard", "🏠  Marriage Dashboard"),
-                    ("Global Search & Print", "🔍  Global Search & Print"),
-                    ("MARRIAGE JPEG Archive", "🖼️  MARRIAGE JPEG Archive"),
-                    ("New Marriage Registration", "✍️  New Marriage Registration"),
-                ]),
-                ("CERTIFICATION", [
-                    ("Certificate Generator", "🖨️  Certificate Generator"),
-                    ("Generated Certificates", "📜  Generated Certificates"),
-                ]),
-                ("ADMINISTRATION", [
-                    ("Google Drive Storage", "☁️  Google Drive Storage"),
-                ]),
-            ]
-            _cur_mar_sec = st.session_state.get("mar_contextual_nav", "Dashboard")
-            for _sec_hdr, _sec_items in _mar_sections:
-                st.markdown(f"<div class='ctg-sb-sec-hdr'>{_sec_hdr}</div>", unsafe_allow_html=True)
-                for _s_key, _s_lbl in _sec_items:
-                    _is_act = (_cur_mar_sec == _s_key)
-                    if st.button(
-                        f"{'▸ ' if _is_act else ''}{_s_lbl}",
-                        key=f"ctx_mar_btn_{_s_key}",
-                        use_container_width=True,
-                        type="primary" if _is_act else "secondary",
-                    ):
-                        st.session_state["mar_contextual_nav"] = _s_key
-                        st.session_state["_mar_force_tab_jump"] = True
-                        st.rerun()
-            st.markdown("<div class='ctg-sb-sec-hdr'>SWITCH CERTIFICATE</div>", unsafe_allow_html=True)
-            if st.button("⛪  Certificate of Baptismal", use_container_width=True, key="ctx_mar_to_bap"):
-                st.session_state["current_nav_page"] = "⛪ Baptismal Records & Certificates"
-                st.rerun()
-
-        else:
-            for _g_title, _g_items in main_sidebar_groups:
-                st.markdown(f"<div class='ctg-sb-sec-hdr'>{_g_title.replace('📁 ', '')}</div>", unsafe_allow_html=True)
-                for _k, _lbl in _g_items:
-                    _is_cur_m = (_k == _cur_page_sb)
-                    if st.button(
-                        f"{'▸ ' if _is_cur_m else ''}{_lbl}",
-                        key=f"ctx_gen_nav_{hash(_k)}",
-                        use_container_width=True,
-                        type="primary" if _is_cur_m else "secondary",
-                    ):
-                        st.session_state["current_nav_page"] = _k
-                        st.rerun()
-
-        st.markdown("---")
-        if st.button("📂  Show Full Main Side Panel", use_container_width=True, key="ctx_show_full_sb_btn"):
-            st.session_state["force_main_hub_sidebar"] = True
-            st.rerun()
-        if st.button("🚪  Logout", use_container_width=True, key="ctx_logout_btn"):
-            _perform_clean_user_logout()
-
-    # =====================================================================
-    # MODE A: MAIN CTG MINISTRIES DATABASE SIDE PANEL (Matching App Design.jpg Top-Left)
-    # =====================================================================
-    else:
-        st.markdown(
-            f"<div style='text-align:center;padding:8px 6px 10px 6px;'>"
-            f"{_sb_logo_html}"
-            f"<div style='font-size:1.12rem;font-weight:900;color:#FFFFFF;margin-top:6px;line-height:1.2;'>"
-            f"Church of the<br>Temple of God</div>"
-            f"<div style='font-size:0.78rem;font-weight:700;color:#93C5FD;margin-top:3px;'>CTG Ministries Database</div>"
+            f"<div style='position:relative;background:linear-gradient(145deg, rgba(15,23,42,0.96), rgba(30,41,59,0.92));"
+            f"border:1.5px solid #10B981;border-radius:14px;padding:18px 10px 14px 10px;text-align:center;margin-bottom:10px;'>"
+            f"{_sb_act_html}"
+            f"{_sb_av_html}<br>"
+            f"<span style='background:#065F46;color:#D1FAE5;font-size:0.70rem;font-weight:700;padding:2px 9px;border-radius:10px;'>"
+            f"Church of the Temple of God</span>"
+            f"<div style='font-size:0.98rem;font-weight:800;color:#F8FAFC;margin-top:6px;'>CTG Ministries Database</div>"
+            f"<div style='font-size:0.78rem;color:#38BDF8;font-weight:700;margin-top:2px;'>📍 {st.session_state.assigned_parish}</div>"
+            f"<div style='font-size:0.72rem;color:#94A3B8;margin-top:2px;'>Role: Master Admin</div>"
             f"</div>",
             unsafe_allow_html=True,
         )
-
-        if st.session_state.user_role == "Master Admin":
-            _sb_av = _build_profile_avatar_html("", "#10B981", 46, "👤")
-            st.markdown(
-                f"<div style='position:relative;background:rgba(15,23,42,0.88);border:1px solid rgba(56,189,248,0.35);"
-                f"border-radius:12px;padding:10px 12px;margin-bottom:10px;display:flex;align-items:center;gap:10px;'>"
-                f"{_build_top_right_status_badge_html(is_online=True)}"
-                f"{_sb_av}"
-                f"<div style='text-align:left;'>"
-                f"<div style='font-size:0.86rem;font-weight:800;color:#F8FAFC;margin-top:6px;'>Master Admin</div>"
-                f"<div style='font-size:0.70rem;color:#94A3B8;'>System Administrator</div>"
-                f"</div></div>",
-                unsafe_allow_html=True,
-            )
-        elif is_current_user_diocese_admin():
-            _d_scope_sb = get_current_diocese_scope_key()
-            _dio_prof_k = "diocese_head_1" if _d_scope_sb == DIOCESE_1_KEY else "diocese_head_2"
-            _my_dio_prof = _ldr_profiles_sb.get(_dio_prof_k, {})
-            _my_dio_name = _my_dio_prof.get("name") or (DIOCESE_1_LEADER_NAME if _d_scope_sb == DIOCESE_1_KEY else DIOCESE_2_LEADER_NAME)
-            _my_dio_pos = _my_dio_prof.get("position") or _d_scope_sb
-            _sb_av = _build_profile_avatar_html(_my_dio_prof.get("photo_b64", ""), "#10B981", 46, "🏛️")
-            _dio_allowed_sb = get_allowed_parishes_for_current_user()
-            st.markdown(
-                f"<div style='position:relative;background:rgba(15,23,42,0.88);border:1px solid rgba(56,189,248,0.35);"
-                f"border-radius:12px;padding:10px 12px;margin-bottom:8px;display:flex;align-items:center;gap:10px;'>"
-                f"{_build_top_right_status_badge_html(is_online=True)}"
-                f"{_sb_av}"
-                f"<div style='text-align:left;'>"
-                f"<div style='font-size:0.82rem;font-weight:800;color:#F8FAFC;margin-top:6px;'>{html_esc(_my_dio_name)}</div>"
-                f"<div style='font-size:0.68rem;color:#38BDF8;'>{html_esc(_my_dio_pos)}</div>"
-                f"</div></div>",
-                unsafe_allow_html=True,
-            )
-            _sel_dio_p_idx = _dio_allowed_sb.index(st.session_state.assigned_parish) if st.session_state.assigned_parish in _dio_allowed_sb else 0
-            _chosen_dio_parish = st.selectbox(
-                f"🏛️ Sakop na Parokya ({_my_dio_pos}):",
-                _dio_allowed_sb,
-                index=_sel_dio_p_idx,
-                key="sidebar_diocese_parish_selector",
-            )
-            if _chosen_dio_parish != st.session_state.assigned_parish:
-                st.session_state.assigned_parish = _chosen_dio_parish
-                st.session_state["up_sel_parish"] = _chosen_dio_parish
-                st.session_state["editor_sel_parish"] = _chosen_dio_parish
-                st.session_state["mon_view_parish"] = _chosen_dio_parish
-                st.session_state["outreach_sel_parish"] = _chosen_dio_parish
-                st.session_state["auto_add_mem_parish"] = _chosen_dio_parish
-                st.rerun()
-        else:
-            _def_role_sb = get_default_parish_leader_role_title(st.session_state.assigned_parish)
-            _my_sb_prof = _ldr_profiles_sb.get("parish_priests", {}).get(st.session_state.assigned_parish, {})
-            _my_sb_title = _my_sb_prof.get("position") or _def_role_sb
-            if st.session_state.assigned_parish == "HONGKONG PARISH" and _my_sb_title.upper() == "PARISH PRIEST":
-                _my_sb_title = "Leader"
-            elif st.session_state.assigned_parish == "MALANAS PARISH" and _my_sb_title.upper() == "PARISH PRIEST":
-                _my_sb_title = "House Church"
-            _my_sb_name = _my_sb_prof.get("name", f"{_my_sb_title} ({st.session_state.assigned_parish})")
-            _sb_av = _build_profile_avatar_html(_my_sb_prof.get("photo_b64", ""), "#10B981", 46, "⛪")
-            _sb_parish_disp = "MALANAS HOUSE CHURCH" if st.session_state.assigned_parish == "MALANAS PARISH" else st.session_state.assigned_parish
-            st.markdown(
-                f"<div style='position:relative;background:rgba(15,23,42,0.88);border:1px solid rgba(56,189,248,0.35);"
-                f"border-radius:12px;padding:10px 12px;margin-bottom:8px;display:flex;align-items:center;gap:10px;'>"
-                f"{_build_top_right_status_badge_html(is_online=True)}"
-                f"{_sb_av}"
-                f"<div style='text-align:left;'>"
-                f"<div style='font-size:0.82rem;font-weight:800;color:#F8FAFC;margin-top:6px;'>{html_esc(_my_sb_name)}</div>"
-                f"<div style='font-size:0.68rem;color:#38BDF8;'>{html_esc(_sb_parish_disp)}</div>"
-                f"</div></div>",
-                unsafe_allow_html=True,
-            )
-
-        if st.button("🏠  Dashboard (Overview)", use_container_width=True, type="primary", key="sb_main_dash_overview_btn"):
-            st.session_state["current_nav_page"] = "🧭 Parish Leader Portal (Wizard & Summary)"
-            st.session_state["force_main_hub_sidebar"] = False
-            st.rerun()
-
-        for _g_idx, (_g_title, _g_items) in enumerate(main_sidebar_groups):
-            _g_keys = [k for k, _ in _g_items]
-            _is_open = (_cur_page_sb in _g_keys) and (_cur_page_sb != "🧭 Parish Leader Portal (Wizard & Summary)")
-            with st.expander(_g_title, expanded=_is_open):
-                for _item_k, _item_lbl in _g_items:
-                    _is_act_item = (_item_k == _cur_page_sb)
-                    if st.button(
-                        f"{'▸ ' if _is_act_item else ''}{_item_lbl}",
-                        key=f"main_sb_grp_{_g_idx}_{hash(_item_k)}",
-                        use_container_width=True,
-                        type="primary" if _is_act_item else "secondary",
-                    ):
-                        st.session_state["current_nav_page"] = _item_k
-                        st.session_state["force_main_hub_sidebar"] = False
-                        st.rerun()
-
-        if st.button("🔄  Sync Live Data", use_container_width=True, key="sb_sync_live_data_btn"):
-            st.cache_data.clear()
-            st.cache_resource.clear()
-            st.rerun()
-
-        if st.session_state.user_role == "Master Admin":
-            with st.expander("📈 Live Activity Monitor", expanded=False):
-                if not global_records_df.empty:
-                    c_s1, c_s2 = st.columns(2)
-                    cnt_sub = len(global_records_df[global_records_df["Status"].str.contains("For Master Admin Approval", case=False, na=False)])
-                    cnt_ass = len(global_records_df[global_records_df["Status"].str.contains("Assigned to Parish Leader", case=False, na=False)])
-                    c_s1.metric("📥 Approval", cnt_sub)
-                    c_s2.metric("📤 Assigned", cnt_ass)
-                else:
-                    st.caption("Wala pang aktibong rekord.")
-
-            with st.expander("☁️ Cloud Backup", expanded=False):
-                st.session_state.auto_cloud_backup = st.checkbox(
-                    "Auto-save bawat update sa Gmail Cloud",
-                    value=st.session_state.auto_cloud_backup,
-                )
-                if not global_records_df.empty:
-                    csv_bytes = global_records_df.to_csv(index=False).encode("utf-8")
-                    st.download_button(
-                        label="📥 Download CSV Backup",
-                        data=csv_bytes,
-                        file_name=f"CTG_Ministry_Backup_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                        mime="text/csv",
-                        use_container_width=True,
-                    )
-
-        if st.session_state.login_role == "Master Admin":
-            with st.expander("👥 Admin/Parish Switcher", expanded=False):
-                override_role = st.selectbox(
-                    "Pumili ng View Mode:",
-                    ["Master Admin (Lahat)", "Diocese Head I View (Region 1 + Manila/HK)", "Diocese Head 2 View (Region 2)", "Parish Leader View"],
-                    key="ctrl_role_override",
-                )
-                if override_role == "Master Admin (Lahat)":
-                    new_role, new_parish, new_dio_key = "Master Admin", "Lahat ng Parokya", ""
-                elif override_role.startswith("Diocese Head I"):
-                    new_role, new_dio_key = "Diocese Admin", DIOCESE_1_KEY
-                    new_parish = st.selectbox("Sakop na Parokya (Diocese I):", DIOCESE_1_PARISHES, key="ctrl_d1_parish_override")
-                elif override_role.startswith("Diocese Head 2"):
-                    new_role, new_dio_key = "Diocese Admin", DIOCESE_2_KEY
-                    new_parish = st.selectbox("Sakop na Parokya (Diocese 2):", DIOCESE_2_PARISHES, key="ctrl_d2_parish_override")
-                else:
-                    new_role, new_dio_key = "Parish Leader", ""
-                    new_parish = st.selectbox("Pumili ng Parokya:", PARISH_ORDER, key="ctrl_parish_override")
-                if st.button("🔄 Ilipat ang Control View", use_container_width=True):
-                    st.session_state.user_role = new_role
-                    st.session_state.assigned_parish = new_parish
-                    if new_dio_key:
-                        st.session_state.diocese_scope_key = new_dio_key
-                    else:
-                        st.session_state.pop("diocese_scope_key", None)
-                    st.rerun()
-        elif not is_current_user_diocese_admin():
-            _def_role_sb = get_default_parish_leader_role_title(st.session_state.assigned_parish)
-            _my_sb_prof = _ldr_profiles_sb.get("parish_priests", {}).get(st.session_state.assigned_parish, {})
-            _my_sb_title = _my_sb_prof.get("position") or _def_role_sb
-            _my_sb_name = _my_sb_prof.get("name", f"{_my_sb_title} ({st.session_state.assigned_parish})")
-            with st.expander("👤 Edit My Leader Profile & Photo", expanded=False):
-                with st.form("sidebar_my_profile_form"):
-                    sb_in_name = st.text_input("Pangalan:", value=str(_my_sb_name)).strip()
-                    sb_in_pos = st.text_input("Position:", value=str(_my_sb_title)).strip()
-                    sb_in_pic = st.file_uploader("Palitan ang Picture (.jpg, .png):", type=["jpg", "jpeg", "png"], key="sb_prof_pic_up")
-                    if st.form_submit_button("💾 I-save ang Profile", type="primary", use_container_width=True):
-                        new_sb_b64 = _my_sb_prof.get("photo_b64", "")
-                        if sb_in_pic is not None:
-                            comp_sb = compress_profile_image_to_data_uri(sb_in_pic.read())
-                            if comp_sb:
-                                new_sb_b64 = comp_sb
-                        p_k_sb = st.session_state.assigned_parish
-                        if p_k_sb in _ldr_profiles_sb["parish_priests"]:
-                            _ldr_profiles_sb["parish_priests"][p_k_sb].update({
-                                "name": sb_in_name or _my_sb_name,
-                                "position": sb_in_pos or _def_role_sb,
-                                "parish": p_k_sb,
-                                "photo_b64": new_sb_b64,
-                                "is_active_online": True,
-                                "last_active_ph": get_philippine_datetime_str(),
-                            })
-                        save_leadership_and_priests_profiles(_ldr_profiles_sb)
-                        st.success("✅ Na-update na ang iyong Profile!")
-                        st.rerun()
-
-        selected_model = st.selectbox(
-            "✨ CTG AI Assistant:",
-            ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3.1-pro-preview"],
-            index=0,
-            key="selected_gemini_model_global",
+    elif is_current_user_diocese_admin():
+        _d_scope_sb = get_current_diocese_scope_key()
+        _dio_prof_k = "diocese_head_1" if _d_scope_sb == DIOCESE_1_KEY else "diocese_head_2"
+        _my_dio_prof = _ldr_profiles_sb.get(_dio_prof_k, {})
+        _my_dio_name = _my_dio_prof.get("name") or (DIOCESE_1_LEADER_NAME if _d_scope_sb == DIOCESE_1_KEY else DIOCESE_2_LEADER_NAME)
+        _my_dio_pos = _my_dio_prof.get("position") or _d_scope_sb
+        _sb_av_html = _build_profile_avatar_html(_my_dio_prof.get("photo_b64", ""), "#10B981", 78, "🏛️")
+        _sb_act_html = _build_top_right_status_badge_html(is_online=True)
+        _dio_allowed_sb = get_allowed_parishes_for_current_user()
+        st.markdown(
+            f"<div style='position:relative;background:linear-gradient(145deg, rgba(15,23,42,0.96), rgba(30,41,59,0.92));"
+            f"border:1.5px solid #10B981;border-radius:14px;padding:18px 10px 14px 10px;text-align:center;margin-bottom:10px;'>"
+            f"{_sb_act_html}"
+            f"{_sb_av_html}<br>"
+            f"<span style='background:#065F46;color:#D1FAE5;font-size:0.70rem;font-weight:700;padding:2px 9px;border-radius:10px;'>"
+            f"{_my_dio_pos}</span>"
+            f"<div style='font-size:0.98rem;font-weight:800;color:#F8FAFC;margin-top:6px;'>{_my_dio_name}</div>"
+            f"<div style='font-size:0.76rem;color:#38BDF8;font-weight:700;margin-top:2px;'>📍 Sakop: {len(_dio_allowed_sb)} Parokya | Active: {st.session_state.assigned_parish}</div>"
+            f"<div style='font-size:0.72rem;color:#94A3B8;margin-top:2px;'>Role: Diocese Head Admin</div>"
+            f"</div>",
+            unsafe_allow_html=True,
         )
-        sb_bot_c1, sb_bot_c2 = st.columns(2)
-        with sb_bot_c1:
-            if st.button("🗑️ Clear History", use_container_width=True, key="sb_clear_ai_hist_btn"):
-                st.session_state.messages = []
-                st.session_state.pop("chat_session", None)
+        _sel_dio_p_idx = _dio_allowed_sb.index(st.session_state.assigned_parish) if st.session_state.assigned_parish in _dio_allowed_sb else 0
+        _chosen_dio_parish = st.selectbox(
+            f"🏛️ Pumili ng Sakop na Parokya ({_my_dio_pos}):",
+            _dio_allowed_sb,
+            index=_sel_dio_p_idx,
+            key="sidebar_diocese_parish_selector",
+        )
+        if _chosen_dio_parish != st.session_state.assigned_parish:
+            st.session_state.assigned_parish = _chosen_dio_parish
+            st.session_state["up_sel_parish"] = _chosen_dio_parish
+            st.session_state["editor_sel_parish"] = _chosen_dio_parish
+            st.session_state["mon_view_parish"] = _chosen_dio_parish
+            st.session_state["outreach_sel_parish"] = _chosen_dio_parish
+            st.session_state["auto_add_mem_parish"] = _chosen_dio_parish
+            st.rerun()
+        with st.expander(f"👤 I-edit ang Aking {_my_dio_pos} Profile & Picture", expanded=False):
+            with st.form("sidebar_my_diocese_profile_form"):
+                sb_d_name = st.text_input("Pangalan (Diocese Head):", value=str(_my_dio_name)).strip()
+                sb_d_pos = st.text_input("Position:", value=str(_my_dio_pos)).strip()
+                sb_d_pic = st.file_uploader("Palitan ang Picture (.jpg, .png):", type=["jpg", "jpeg", "png"], key="sb_dio_prof_pic_up")
+                if st.form_submit_button("💾 I-save ang Aking Diocese Profile", type="primary", use_container_width=True):
+                    new_d_b64 = _my_dio_prof.get("photo_b64", "")
+                    if sb_d_pic is not None:
+                        comp_d = compress_profile_image_to_data_uri(sb_d_pic.read())
+                        if comp_d:
+                            new_d_b64 = comp_d
+                    _ldr_profiles_sb[_dio_prof_k].update({
+                        "name": sb_d_name or _my_dio_name,
+                        "position": sb_d_pos or _my_dio_pos,
+                        "photo_b64": new_d_b64,
+                        "is_active_online": True,
+                        "last_active_ph": get_philippine_datetime_str(),
+                    })
+                    save_leadership_and_priests_profiles(_ldr_profiles_sb)
+                    st.success("✅ Na-update na ang iyong Diocese Head Profile!")
+                    time.sleep(0.1)
+                    st.rerun()
+    else:
+        _def_role_sb = get_default_parish_leader_role_title(st.session_state.assigned_parish)
+        _my_sb_prof = _ldr_profiles_sb.get("parish_priests", {}).get(st.session_state.assigned_parish, {})
+        _my_sb_title = _my_sb_prof.get("position") or _def_role_sb
+        if st.session_state.assigned_parish == "HONGKONG PARISH" and _my_sb_title.upper() == "PARISH PRIEST":
+            _my_sb_title = "Leader"
+        elif st.session_state.assigned_parish == "MALANAS PARISH" and _my_sb_title.upper() == "PARISH PRIEST":
+            _my_sb_title = "House Church"
+        _my_sb_name = _my_sb_prof.get("name", f"{_my_sb_title} ({st.session_state.assigned_parish})")
+        _sb_av_html = _build_profile_avatar_html(_my_sb_prof.get("photo_b64", ""), "#10B981", 78, "⛪")
+        _sb_act_html = _build_top_right_status_badge_html(is_online=True)
+        _sb_parish_disp = "MALANAS HOUSE CHURCH" if st.session_state.assigned_parish == "MALANAS PARISH" else st.session_state.assigned_parish
+        st.markdown(
+            f"<div style='position:relative;background:linear-gradient(145deg, rgba(15,23,42,0.96), rgba(30,41,59,0.92));"
+            f"border:1.5px solid #10B981;border-radius:14px;padding:18px 10px 14px 10px;text-align:center;margin-bottom:10px;'>"
+            f"{_sb_act_html}"
+            f"{_sb_av_html}<br>"
+            f"<span style='background:#065F46;color:#D1FAE5;font-size:0.70rem;font-weight:700;padding:2px 9px;border-radius:10px;'>"
+            f"{_my_sb_title}</span>"
+            f"<div style='font-size:0.98rem;font-weight:800;color:#F8FAFC;margin-top:6px;'>{_my_sb_name}</div>"
+            f"<div style='font-size:0.78rem;color:#38BDF8;font-weight:700;margin-top:2px;'>📍 {_sb_parish_disp}</div>"
+            f"<div style='font-size:0.72rem;color:#94A3B8;margin-top:2px;'>Role: {st.session_state.user_role}</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+        with st.expander(f"👤 I-edit ang Aking {_def_role_sb} Profile & Picture", expanded=False):
+            with st.form("sidebar_my_profile_form"):
+                sb_in_name = st.text_input(f"Pangalan ({_def_role_sb}):", value=str(_my_sb_name)).strip()
+                sb_in_pos = st.text_input("Position:", value=str(_my_sb_title)).strip()
+                sb_in_pic = st.file_uploader("Palitan ang Picture (.jpg, .png):", type=["jpg", "jpeg", "png"], key="sb_prof_pic_up")
+                if st.form_submit_button("💾 I-save ang Aking Profile", type="primary", use_container_width=True):
+                    new_sb_b64 = _my_sb_prof.get("photo_b64", "")
+                    new_sb_link = _my_sb_prof.get("drive_link", "")
+                    if sb_in_pic is not None:
+                        raw_sb_b = sb_in_pic.read()
+                        comp_sb = compress_profile_image_to_data_uri(raw_sb_b)
+                        if comp_sb:
+                            new_sb_b64 = comp_sb
+                        p_scope_sb = st.session_state.assigned_parish if st.session_state.assigned_parish in PARISH_ORDER else PARISH_ORDER[0]
+                        d_lnk, _ = upload_leader_profile_image_to_weekly_report_folder(
+                            raw_sb_b,
+                            f"CTG_Leader_Profile_{p_scope_sb.replace(' ', '_')}_{sb_in_name.replace(' ', '_')}.jpg",
+                            sb_in_pic.type or "image/jpeg",
+                            p_scope_sb,
+                        )
+                        if d_lnk:
+                            new_sb_link = d_lnk
+                    p_k_sb = st.session_state.assigned_parish
+                    if p_k_sb in _ldr_profiles_sb["parish_priests"]:
+                        _ldr_profiles_sb["parish_priests"][p_k_sb].update({
+                            "name": sb_in_name or _my_sb_name,
+                            "position": sb_in_pos or _def_role_sb,
+                            "parish": p_k_sb,
+                            "photo_b64": new_sb_b64,
+                            "drive_link": new_sb_link,
+                            "is_active_online": True,
+                            "last_active_ph": get_philippine_datetime_str(),
+                        })
+                    save_leadership_and_priests_profiles(_ldr_profiles_sb)
+                    st.success("✅ Na-update na ang iyong Profile!")
+                    time.sleep(0.1)
+                    st.rerun()
+
+    # Dashboard (Overview) Button at Top
+    if st.button("🏠  Dashboard (Overview)", use_container_width=True, type="primary" if _cur_page_sb == "🧭 Parish Leader Portal (Wizard & Summary)" else "secondary", key="sb_main_dash_overview_btn"):
+        st.session_state["current_nav_page"] = "🧭 Parish Leader Portal (Wizard & Summary)"
+        st.rerun()
+
+    # 5 Collapsible Category Folders (> 📁 1..5) matching Image 2 (without Home & Leadership Portal inside Folder 1)
+    for _g_idx, (_g_title, _g_items) in enumerate(main_sidebar_groups):
+        _g_keys = [k for k, _ in _g_items]
+        _is_open = (_cur_page_sb in _g_keys)
+        with st.expander(_g_title, expanded=_is_open):
+            for _item_k, _item_lbl in _g_items:
+                _is_act_item = (_item_k == _cur_page_sb)
+                if st.button(
+                    f"{'▸ ' if _is_act_item else ''}{_item_lbl}",
+                    key=f"main_sb_grp_{_g_idx}_{hash(_item_k)}",
+                    use_container_width=True,
+                    type="primary" if _is_act_item else "secondary",
+                ):
+                    st.session_state["current_nav_page"] = _item_k
+                    st.rerun()
+
+    if st.button("🔄  Sync Live Data", use_container_width=True, key="sb_sync_live_data_btn"):
+        st.cache_data.clear()
+        st.cache_resource.clear()
+        st.rerun()
+
+    if st.session_state.user_role == "Master Admin":
+        with st.expander("📈 Live Activity Monitor", expanded=False):
+            if not global_records_df.empty:
+                c_s1, c_s2 = st.columns(2)
+                cnt_sub = len(global_records_df[global_records_df["Status"].str.contains("For Master Admin Approval", case=False, na=False)])
+                cnt_ass = len(global_records_df[global_records_df["Status"].str.contains("Assigned to Parish Leader", case=False, na=False)])
+                c_s1.metric("📥 For Approval", cnt_sub)
+                c_s2.metric("📤 Assigned", cnt_ass)
+                st.caption("🔔 **Pinakahuling Galaw / Updates:**")
+                for _, l_row in global_records_df.head(3).iterrows():
+                    st.markdown(
+                        f"<div class='sidebar-log-card'>"
+                        f"<b>{l_row['Pangalan ng Nag-request']}</b> ({l_row['Parokya']})<br>"
+                        f"📊 {l_row['Status']}<br>"
+                        f"🏛️ {l_row['Isinumite / Inaprubahan Ni']}"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+            else:
+                st.caption("Wala pang aktibong rekord.")
+
+        with st.expander("☁️ Cloud Backup", expanded=False):
+            st.session_state.auto_cloud_backup = st.checkbox(
+                "Auto-save bawat update sa Gmail Cloud",
+                value=st.session_state.auto_cloud_backup,
+            )
+            if not global_records_df.empty:
+                csv_bytes = global_records_df.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    label="📥 Download CSV (Para sa Google Drive)",
+                    data=csv_bytes,
+                    file_name=f"CTG_Ministry_Backup_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
+                if st.button("📧 I-email ang Buong Backup sa Gmail Ko", use_container_width=True):
+                    with st.spinner(f"Ipinapadala sa {BACKUP_DISPLAY_NAME}..."):
+                        res_b = send_email_via_gmail(
+                            BACKUP_ADMIN_EMAIL,
+                            f"CTG Full Database Backup — {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                            f"Narito ang kumpletong CSV backup ng lahat ng CTG Ministry Hub records ({len(global_records_df)} rows).",
+                            attachment_bytes=csv_bytes,
+                            attachment_filename=f"CTG_Full_Backup_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                        )
+                        if "Matagumpay" in res_b:
+                            st.success(f"Naipadala sa {BACKUP_DISPLAY_NAME}!")
+                        else:
+                            st.error(res_b)
+
+    if st.session_state.login_role == "Master Admin":
+        with st.expander("👥 Admin/Parish Switcher", expanded=False):
+            st.caption("Silipin o kontrolin ang dashboard ng Diocese Head o kahit anong Parokya:")
+            override_role = st.selectbox(
+                "Pumili ng View Mode:",
+                ["Master Admin (Lahat)", "Diocese Head I View (Region 1 + Manila/HK)", "Diocese Head 2 View (Region 2)", "Parish Leader View"],
+                key="ctrl_role_override",
+            )
+            if override_role == "Master Admin (Lahat)":
+                new_role, new_parish, new_dio_key = "Master Admin", "Lahat ng Parokya", ""
+            elif override_role.startswith("Diocese Head I"):
+                new_role, new_dio_key = "Diocese Admin", DIOCESE_1_KEY
+                new_parish = st.selectbox("Pumili ng Sakop na Parokya (Diocese I):", DIOCESE_1_PARISHES, key="ctrl_d1_parish_override")
+            elif override_role.startswith("Diocese Head 2"):
+                new_role, new_dio_key = "Diocese Admin", DIOCESE_2_KEY
+                new_parish = st.selectbox("Pumili ng Sakop na Parokya (Diocese 2):", DIOCESE_2_PARISHES, key="ctrl_d2_parish_override")
+            else:
+                new_role, new_dio_key = "Parish Leader", ""
+                new_parish = st.selectbox("Pumili ng Parokya:", PARISH_ORDER, key="ctrl_parish_override")
+            if st.button("🔄 Ilipat ang Control View", use_container_width=True):
+                st.session_state.user_role = new_role
+                st.session_state.assigned_parish = new_parish
+                if new_dio_key:
+                    st.session_state.diocese_scope_key = new_dio_key
+                else:
+                    st.session_state.pop("diocese_scope_key", None)
                 st.rerun()
-        with sb_bot_c2:
-            if st.button("🚪 Logout", use_container_width=True, type="primary", key="sb_main_logout_btn"):
-                _perform_clean_user_logout()
+
+    selected_model = st.selectbox(
+        "✨ CTG AI Assistant:",
+        ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3.1-pro-preview"],
+        index=0,
+        key="selected_gemini_model_global",
+    )
+    sb_bot_c1, sb_bot_c2 = st.columns(2)
+    with sb_bot_c1:
+        if st.button("🗑️ Clear History", use_container_width=True, key="sb_clear_ai_hist_btn"):
+            st.session_state.messages = []
+            st.session_state.pop("chat_session", None)
+            st.rerun()
+    with sb_bot_c2:
+        if st.button("🚪 Logout", use_container_width=True, type="primary", key="sb_main_logout_btn"):
+            _perform_clean_user_logout()
 
 app_mode = st.session_state["current_nav_page"]
 selected_model = st.session_state.get("selected_gemini_model_global", "gemini-3.8-flash")
@@ -20945,22 +20783,51 @@ def render_ctg_gabay_ai_assistant_section(show_top_banner: bool = True, key_pref
             st.session_state.messages.append({"role": "assistant", "content": str(full_reply)})
 
 # =====================================================================
-# 🏛️ PERSISTENT TOP HEADER BAR (VISIBLE ACROSS ALL PAGES — APP DESIGN.JPG)
+# 🏛️ TOP BAR REPLACING NATIVE STREAMLIT HEADER (IMAGE 1 — ☰ CONTROLS SIDE PANEL)
 # =====================================================================
 def render_persistent_ctg_top_navbar() -> None:
     """
-    Renders the persistent top navigation bar shown at the top of ALL pages in App Design.jpg:
-    - Left: ☰ Side Panel Toggle + 'Church of the Temple of God' ('One Church • One Faith • One Family')
-    - Right:
-      1) 🟢 System Online + Philippine Date/Time
-      2) 🔔 Live Notifications Popover (all logins, report submissions, member uploads, requests)
-      3) 🔄 Refresh (unified single App Refresh button)
-      4) MA Master Admin ▾ / Leader ▾ Popover showing ONLY currently Online Leaders/Admins in the system
+    Hides Streamlit's native top header bar (and native [◧] button) and puts our custom Top Bar
+    at the very top of the page. Clicking '☰' opens or closes (collapses/expands) the Left Side Panel.
     """
     profiles_top = load_leadership_and_priests_profiles()
     is_master_top = (st.session_state.get("user_role") == "Master Admin")
     cur_p_top = str(st.session_state.get("assigned_parish") or "").strip()
     ph_now_str = get_philippine_datetime_str()
+    sb_collapsed = bool(st.session_state.get("ctg_sidebar_collapsed", False))
+
+    # Hide native Streamlit header bar & apply sidebar collapse state controlled by our ☰ button
+    sidebar_hide_css = (
+        """
+        section[data-testid="stSidebar"] {
+            display: none !important;
+        }
+        """
+        if sb_collapsed else ""
+    )
+
+    st.markdown(
+        f"""
+        <style>
+        header[data-testid="stHeader"] {{
+            display: none !important;
+            height: 0px !important;
+        }}
+        div[data-testid="stToolbar"],
+        div[data-testid="stDecoration"],
+        div[data-testid="stStatusWidget"],
+        button[data-testid="stSidebarCollapseButton"],
+        div[data-testid="collapsedControl"] {{
+            display: none !important;
+        }}
+        .block-container {{
+            padding-top: 0.75rem !important;
+        }}
+        {sidebar_hide_css}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
     online_leaders_list = [{"name": "Master Admin", "role": "System Administrator", "scope": "All Parishes", "time": ph_now_str}]
     dio1_t = profiles_top.get("diocese_head_1", {})
@@ -21003,11 +20870,8 @@ def render_persistent_ctg_top_navbar() -> None:
 
     tb_c_menu, tb_c_brand, tb_c_status, tb_c_bell, tb_c_ref, tb_c_user = st.columns([0.42, 2.35, 1.35, 0.62, 0.78, 1.48])
     with tb_c_menu:
-        if st.button("☰", key="top_navbar_hamburger_btn", use_container_width=True, help="Buksan ang Main Side Panel / Dashboard"):
-            if st.session_state.get("current_nav_page") != "🧭 Parish Leader Portal (Wizard & Summary)":
-                st.session_state["force_main_hub_sidebar"] = not bool(st.session_state.get("force_main_hub_sidebar", False))
-            else:
-                st.session_state["force_main_hub_sidebar"] = False
+        if st.button("☰", key="top_navbar_hamburger_btn", use_container_width=True, help="Buksan o Isara ang Side Panel"):
+            st.session_state["ctg_sidebar_collapsed"] = not sb_collapsed
             st.rerun()
     with tb_c_brand:
         st.markdown(
@@ -21078,7 +20942,6 @@ def render_persistent_ctg_top_navbar() -> None:
             st.divider()
             if st.button("🏠 Buksan ang Main Dashboard", use_container_width=True, key="top_pop_go_dash"):
                 st.session_state["current_nav_page"] = "🧭 Parish Leader Portal (Wizard & Summary)"
-                st.session_state["force_main_hub_sidebar"] = False
                 st.rerun()
             if st.button("🚪 Logout sa System", type="primary", use_container_width=True, key="top_pop_logout"):
                 _perform_clean_user_logout()
@@ -21098,55 +20961,17 @@ elif app_mode == "🏠 House Visitation, Missionary Work, Indoctrination & Remar
     st.stop()
 
 # =====================================================================
-# 🧭 PARISH LEADER PORTAL (WIZARD & SUMMARY — APP DESIGN.JPG LAYOUT)
+# 🧭 PARISH LEADER PORTAL (WIZARD & SUMMARY — ORIGINAL DASHBOARD)
 # =====================================================================
 elif app_mode == "🧭 Parish Leader Portal (Wizard & Summary)":
-    render_church_leadership_and_priests_directory(context_key="home_portal")
-
-    # PANEL 3: ⚡ QUICK ACCESS (5 HORIZONTAL NAVY & GOLD CARDS MATCHING APP DESIGN.JPG)
-    st.markdown(
-        "<div style='background:linear-gradient(90deg, rgba(15,44,89,0.95), rgba(7,20,46,0.95));"
-        "border-left:4px solid #D4AF37;border-top:1px solid rgba(212,175,55,0.45);"
-        "border-right:1px solid rgba(212,175,55,0.25);border-bottom:1px solid rgba(212,175,55,0.25);"
-        "border-radius:10px;padding:8px 14px;margin:8px 0 10px 0;display:flex;align-items:center;gap:8px;'>"
-        "<span style='font-size:1.05rem;'>⚡</span>"
-        "<span style='font-size:0.98rem;font-weight:800;color:#F8FAFC;letter-spacing:0.3px;'>Quick Access</span>"
-        "</div>",
-        unsafe_allow_html=True,
+    render_title_with_logo(
+        f"🏠 CTG Ministry Home & Leadership Portal — {st.session_state.assigned_parish}",
+        "Opisyal na Home Dashboard ng Supreme Head, Diocese Heads, at mga Parish Priests ng Church of the Temple of God."
     )
-
-    is_master_dash = (st.session_state.user_role == "Master Admin")
-    qa_items = [
-        ("📊", "Parish Operations<br>&amp; Reports", "📑 Weekly Report & Parish Monitoring", "🚀 Operations & Reports"),
-        ("👥", "Census &amp;<br>Member Directory", "📊 Parish Census & Member Manager", "🚀 Census & Directory"),
-        ("🕊️", "Sacramental<br>Certificates", "⛪ Baptismal Records & Certificates", "🚀 Certificates Hub"),
-        (
-            "🔒" if is_master_dash else "📥",
-            "Admin Control<br>&amp; Queue" if is_master_dash else "Parish Inbox<br>&amp; Action Hub",
-            "🛡️ Master Admin Controller & Approval Queue" if is_master_dash else "📥 Parish Inbox & Action Hub",
-            "🚀 Admin Queue" if is_master_dash else "🚀 Parish Inbox",
-        ),
-        ("🌐", "Community &amp;<br>System", "🗣️ Ministry Messenger (Admin & Users Chat)", "🚀 Community & Chat"),
-    ]
-
-    qa_cols = st.columns(5)
-    for q_idx, (q_ico, q_title_html, q_target, q_btn_lbl) in enumerate(qa_items):
-        with qa_cols[q_idx]:
-            st.markdown(
-                f"<div style='background:linear-gradient(155deg, #0D2247 0%, #07142B 100%);"
-                f"border:1.5px solid #D4AF37;border-radius:14px;padding:14px 10px;text-align:center;"
-                f"box-shadow:0 6px 16px rgba(0,0,0,0.25);margin-bottom:6px;min-height:112px;'>"
-                f"<div style='font-size:1.75rem;margin-bottom:4px;'>{q_ico}</div>"
-                f"<div style='font-size:0.86rem;font-weight:800;color:#F8FAFC;line-height:1.25;'>{q_title_html}</div>"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
-            if st.button(q_btn_lbl, key=f"app_design_qa_btn_{q_idx}", use_container_width=True):
-                st.session_state.app_mode_override = q_target
-                st.rerun()
-
+    render_church_leadership_and_priests_directory(context_key="home_portal")
     st.divider()
 
+    is_master_dash = (st.session_state.user_role == "Master Admin")
     is_dio_dash = is_current_user_diocese_admin()
     dio_allowed_dash = get_allowed_parishes_for_current_user()
     dash_scope_lbl = (
@@ -21172,7 +20997,7 @@ elif app_mode == "🧭 Parish Leader Portal (Wizard & Summary)":
     if not df_home_scope.empty:
         act_mask_h = df_home_scope.apply(
             lambda r: (not is_removed_or_deceased_record(r)) and classify_member_status(r.get("Status", ""), r.get("Church Member", "")) == "ACTIVE",
-            axis=1,
+            axis=1
         )
         df_act_home = df_home_scope[act_mask_h]
         act_adults_seniors_h = sum(1 for _, r in df_act_home.iterrows() if classify_category(r.get("Category", "")) in ("Adults", "Seniors"))
@@ -21182,14 +21007,144 @@ elif app_mode == "🧭 Parish Leader Portal (Wizard & Summary)":
         act_adults_seniors_h = 0
         act_youth_kids_h = 0
 
-    with st.expander(f"📊 Live Census & Ministry Summary — {dash_scope_lbl}", expanded=True):
-        hk1, hk2, hk3, hk4, hk5 = st.columns(5)
-        hk1.metric("👨‍👩‍👧‍👦 Registered Families", tot_fam_home)
-        hk2.metric("👥 Total Members", tot_mem_home)
-        hk3.metric("🟢 Active Members", len(df_act_home))
-        hk4.metric("🧑👴 Active Adults & Seniors", act_adults_seniors_h)
-        hk5.metric("👦👶 Active Youth & Kids", act_youth_kids_h)
+    st.markdown(f"### 📊 Live Census & Ministry Summary — **{dash_scope_lbl}**")
+    hk1, hk2, hk3, hk4, hk5 = st.columns(5)
+    hk1.metric("👨‍👩‍👧‍👦 Registered Families", tot_fam_home)
+    hk2.metric("👥 Total Members", tot_mem_home)
+    hk3.metric("🟢 Active Members", len(df_act_home))
+    hk4.metric("🧑👴 Active Adults & Seniors", act_adults_seniors_h)
+    hk5.metric("👦👶 Active Youth & Kids", act_youth_kids_h)
 
+    qa1, qa2, qa3, qa4 = st.columns(4)
+    with qa1:
+        if st.button("➕ Mag-upload / Magdagdag ng Miyembro", type="primary", use_container_width=True, key="home_qa_add_mem"):
+            st.session_state.app_mode_override = "➕ Magdagdag ng Miyembro & Litrato"
+            st.rerun()
+    with qa2:
+        if st.button("📊 Buksan ang Parish Census & Directory", use_container_width=True, key="home_qa_census"):
+            st.session_state.app_mode_override = "📊 Parish Census & Member Manager"
+            st.rerun()
+    with qa3:
+        if st.button("📑 Mag-upload ng Weekly Report", use_container_width=True, key="home_qa_weekly"):
+            st.session_state.app_mode_override = "📑 Weekly Report & Parish Monitoring"
+            st.rerun()
+    with qa4:
+        if st.button("🔄 I-sync ang Database Mula sa Google Drive", use_container_width=True, key="home_qa_sync_drive"):
+            st.cache_data.clear()
+            fetch_live_excel_bytes(ACTIVE_SPREADSHEET_URL, force_cloud=True)
+            st.rerun()
+
+    st.divider()
+    st.markdown("### 📂 Mga Pahina at Module Controls (`▶` Pindutin ang `>` upang Buksan at Kontrolin ang Bawat Pahina)")
+    st.caption("Pindutin ang arrow (`▶`) sa bawat pahina sa ibaba upang makita ang mabilisang kontrol at direktang buksan ang module.")
+
+    is_master_home = (st.session_state.user_role == "Master Admin")
+    home_pages_list = [
+        (
+            "📑 Weekly Report & Parish Monitoring",
+            "📑 Weekly Report & Parish Monitoring (Sabado Worship Service, Attendance, Passing Areas & 2027 Consolidation)",
+            "I-upload o i-verify ang Weekly Report (Liturgical Officers, Mass, Pampamilya, Online Ministry, Adal ti Evangelio, ≥75% Passing Areas, at Jan–Dec 2027 Consolidation).",
+            "🚀 Buksan ang Weekly Report & Parish Monitoring"
+        ),
+        (
+            "🏠 House Visitation, Missionary Work, Indoctrination & Remarks",
+            "🏠 House Visitation, Missionary Work, Indoctrination & Remarks",
+            "I-record at i-monitor ang House Visitation (10 Families Goal), Missionary Work, at Indoctrination na naka-sync sa Google Drive at Notion.",
+            "🚀 Buksan ang House Visitation & Outreach"
+        ),
+        (
+            "📊 Parish Census & Member Manager",
+            "📊 Parish Census, Directory & Family Search (CTG_HEADS_TOTAL_MASTER_ORDERED.xlsx)",
+            "Tingnan, salain, i-download, o i-sync ang Active, Inactive, Non-Members, at Removed/Deceased Members mula sa Google Drive Master Census Excel.",
+            "🚀 Buksan ang Parish Census & Member Directory"
+        ),
+        (
+            "➕ Magdagdag ng Miyembro & Litrato",
+            "➕ Magdagdag ng Miyembro & Litrato (Multi-Page Form Vision OCR, Excel Upload & 2-Step Sync)",
+            "Mag-upload ng Physical Registration Form Image (Page 1 & Page 2) o Excel file, i-review sa Preview Table (st.data_editor), at i-save sa HEAD OF FAMILY MASTER at Parish Sheet.",
+            "🚀 Buksan ang Magdagdag ng Miyembro & Litrato"
+        ),
+        (
+            "⛪ Baptismal Records & Certificates",
+            "⛪ Certificate of Baptismal (Baptismal Records & Official Certificates)",
+            "Mag-register ng bagong na-baptize, mag-request o mag-verify ng Historical Baptismal Records (BOOK 1–9), at mag-print ng Official Baptismal Certificate.",
+            "🚀 Buksan ang Certificate of Baptismal"
+        ),
+        (
+            "🗣️ Ministry Messenger (Admin & Users Chat)",
+            "🗣️ Ministry Messenger (Admin & Parish Leaders Chat)",
+            f"Makipag-ugnayan kay Master Admin at sa ibang Parokya ({len(visible_chats_for_me)} mensahe sa iyong inbox).",
+            "🚀 Buksan ang Ministry Messenger"
+        ),
+        (
+            "💬 AI Chat Assistant",
+            "💬 CTG Gabay AI — Madaling Sundan na Ministry Assistant (Fastest Gemini Model)",
+            "Magtanong sa AI Assistant para sa buod ng Weekly Report, bilang ng Active Members sa Census, paggawa ng imbitasyon sa Sabado, at panalangin.",
+            "🚀 Buksan ang CTG Gabay AI Assistant"
+        ),
+    ]
+    if is_master_home:
+        home_pages_list.extend([
+            (
+                "💍 Marriage Records & Certificates",
+                "💍 Certificate of Marriage (Master Admin Marriage Records & Certificates)",
+                "Eksklusibo para sa Master Admin: Search Marriage Contract ID (MAR-), tingnan ang Scanned Marriage Certificate JPEGs, at mag-print ng Official Marriage Certificate.",
+                "🚀 Buksan ang Certificate of Marriage"
+            ),
+            (
+                "📈 Live Activity & Update Dashboard",
+                "📈 Live Activity & Update Monitor (Master Admin)",
+                "Subaybayan ang lahat ng aktibidad, requests, at cloud backups ng lahat ng 10 Parokya.",
+                "🚀 Buksan ang Live Activity & Update Dashboard"
+            ),
+            (
+                "🛡️ Master Admin Controller & Approval Queue",
+                "🛡️ Master Admin Controller & Approval Queue",
+                "Aprubahan at ipadala ang mga AI Draft replies para sa Prayer Requests, Church Questions, at Counselling.",
+                "🚀 Buksan ang Master Admin Approval Queue"
+            ),
+            (
+                "🤝 Notion CRM (Visitors & Members)",
+                "🤝 Visitors & Members CRM (Notion Database)",
+                "Tingnan at i-search ang lahat ng Visitors at Members records sa Notion CRM.",
+                "🚀 Buksan ang Visitors & Members CRM"
+            ),
+            (
+                "📢 Announcement Broadcaster",
+                "📢 Announcement Broadcaster",
+                "Gumawa at magpadala ng opisyal na announcement sa email gamit ang AI.",
+                "🚀 Buksan ang Announcement Broadcaster"
+            ),
+        ])
+    else:
+        home_pages_list.append((
+            "📥 Parish Inbox & Action Hub",
+            "📥 Parish Inbox & Action Hub (Prayer Requests, Questions & Counselling)",
+            "Tugunan ang mga Prayer Requests, Church Questions, at Counselling na nakatalaga sa iyong Parokya.",
+            "🚀 Buksan ang Parish Inbox & Action Hub"
+        ))
+
+    home_pages_list.extend([
+        (
+            "🙏 Prayer Wall & Categorizer",
+            "🙏 Prayer Wall & Categorizer",
+            "Suriin at i-categorize ang mga kahilingan sa panalangin.",
+            "🚀 Buksan ang Prayer Wall & Categorizer"
+        ),
+        (
+            "🛠️ App Settings",
+            "🛠️ App Settings, Security, Supreme/Diocese Heads Editor & Google Drive Links",
+            "I-adjust ang Theme, Font Size, Account Password Security, Supreme/Diocese Leadership Profiles, at Google Drive File Links.",
+            "🚀 Buksan ang App Settings & Security"
+        ),
+    ])
+
+    for idx_hp, (nav_target_k, exp_title_lbl, exp_desc_txt, btn_open_lbl) in enumerate(home_pages_list):
+        with st.expander(f"▶ {exp_title_lbl}", expanded=False):
+            st.caption(exp_desc_txt)
+            if st.button(btn_open_lbl, type="primary", use_container_width=True, key=f"home_exp_open_{idx_hp}"):
+                st.session_state.app_mode_override = nav_target_k
+                st.rerun()
     st.stop()
 
 # =====================================================================
