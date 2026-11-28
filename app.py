@@ -20783,47 +20783,71 @@ def render_ctg_gabay_ai_assistant_section(show_top_banner: bool = True, key_pref
             st.session_state.messages.append({"role": "assistant", "content": str(full_reply)})
 
 # =====================================================================
-# 🏛️ TOP BAR REPLACING NATIVE STREAMLIT HEADER (IMAGE 1 — ☰ CONTROLS SIDE PANEL)
+# 🏛️ STICKY TOP HEADER BAR (PINNED ON SCROLL + 0MS SLIDE TOGGLE FOR SIDE PANEL)
 # =====================================================================
 def render_persistent_ctg_top_navbar() -> None:
     """
-    Hides Streamlit's native top header bar (and native [◧] button) and puts our custom Top Bar
-    at the very top of the page. Clicking '☰' opens or closes (collapses/expands) the Left Side Panel.
+    Renders the persistent top header bar that stays fixed/sticky at the very top of the viewport
+    even while scrolling, hides Streamlit's native top header bar, and makes the '☰' button smoothly
+    slide the Left Side Panel open and closed just like the original native sidebar toggle.
     """
+    import streamlit.components.v1 as _v1_comp
+
     profiles_top = load_leadership_and_priests_profiles()
     is_master_top = (st.session_state.get("user_role") == "Master Admin")
     cur_p_top = str(st.session_state.get("assigned_parish") or "").strip()
     ph_now_str = get_philippine_datetime_str()
-    sb_collapsed = bool(st.session_state.get("ctg_sidebar_collapsed", False))
-
-    # Hide native Streamlit header bar & apply sidebar collapse state controlled by our ☰ button
-    sidebar_hide_css = (
-        """
-        section[data-testid="stSidebar"] {
-            display: none !important;
-        }
-        """
-        if sb_collapsed else ""
-    )
 
     st.markdown(
-        f"""
+        """
         <style>
-        header[data-testid="stHeader"] {{
+        /* Hide native Streamlit header bar while keeping layout clean */
+        header[data-testid="stHeader"] {
             display: none !important;
             height: 0px !important;
-        }}
+        }
         div[data-testid="stToolbar"],
         div[data-testid="stDecoration"],
         div[data-testid="stStatusWidget"],
         button[data-testid="stSidebarCollapseButton"],
-        div[data-testid="collapsedControl"] {{
+        button[data-testid="stExpandSidebarButton"],
+        div[data-testid="collapsedControl"] {
             display: none !important;
-        }}
-        .block-container {{
-            padding-top: 0.75rem !important;
-        }}
-        {sidebar_hide_css}
+        }
+        section.main > div.block-container,
+        div[data-testid="stAppViewBlockContainer"] {
+            padding-top: 0.35rem !important;
+        }
+        /* Smooth slide transition on the Left Side Panel */
+        section[data-testid="stSidebar"] {
+            transition: margin-left 0.24s cubic-bezier(0.4, 0, 0.2, 1),
+                        width 0.24s cubic-bezier(0.4, 0, 0.2, 1),
+                        min-width 0.24s cubic-bezier(0.4, 0, 0.2, 1) !important;
+        }
+        section[data-testid="stSidebar"].ctg-sidebar-slid-closed {
+            margin-left: -22rem !important;
+            width: 0px !important;
+            min-width: 0px !important;
+            max-width: 0px !important;
+            overflow: hidden !important;
+            border-right: none !important;
+        }
+        /* Sticky Top Header Bar container that stays visible at the very top while scrolling */
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(#ctg-sticky-top-header-marker) {
+            position: sticky !important;
+            top: 0px !important;
+            z-index: 999990 !important;
+            background: linear-gradient(90deg, #061024 0%, #0C2147 50%, #061024 100%) !important;
+            border: 1.5px solid rgba(212, 175, 55, 0.65) !important;
+            border-radius: 12px !important;
+            padding: 6px 12px !important;
+            margin-bottom: 12px !important;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55) !important;
+            backdrop-filter: blur(10px) !important;
+        }
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(#ctg-sticky-top-header-marker) [data-testid="stHorizontalBlock"] {
+            align-items: center !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -20860,91 +20884,146 @@ def render_persistent_ctg_top_navbar() -> None:
     all_notifs_top = load_live_notifications()
     unread_cnt = len(all_notifs_top)
 
+    # Note: st.popover automatically appends its own chevron icon, so omit trailing '▾' to avoid double arrows
     if is_master_top:
-        user_pill_lbl = f"MA  Master Admin ({len(online_leaders_list)} Online) ▾"
+        user_pill_lbl = f"MA  Master Admin ({len(online_leaders_list)} Online)"
     elif is_current_user_diocese_admin():
-        user_pill_lbl = f"DH  {get_current_diocese_scope_key()[:14]} ({len(online_leaders_list)} Online) ▾"
+        user_pill_lbl = f"DH  {get_current_diocese_scope_key()[:14]} ({len(online_leaders_list)} Online)"
     else:
         initials = "".join([w[0] for w in cur_p_top.split()[:2] if w]).upper() or "PL"
-        user_pill_lbl = f"{initials}  {cur_p_top.replace(' PARISH', '').title()} ({len(online_leaders_list)} Online) ▾"
+        user_pill_lbl = f"{initials}  {cur_p_top.replace(' PARISH', '').title()} ({len(online_leaders_list)} Online)"
 
-    tb_c_menu, tb_c_brand, tb_c_status, tb_c_bell, tb_c_ref, tb_c_user = st.columns([0.42, 2.35, 1.35, 0.62, 0.78, 1.48])
-    with tb_c_menu:
-        if st.button("☰", key="top_navbar_hamburger_btn", use_container_width=True, help="Buksan o Isara ang Side Panel"):
-            st.session_state["ctg_sidebar_collapsed"] = not sb_collapsed
-            st.rerun()
-    with tb_c_brand:
-        st.markdown(
-            "<div style='background:linear-gradient(90deg, #08152E, #0F2C59);border:1px solid rgba(212,175,55,0.45);"
-            "border-radius:10px;padding:4px 14px;line-height:1.15;'>"
-            "<div style='font-size:1.05rem;font-weight:900;color:#FFFFFF;'>Church of the Temple of God</div>"
-            "<div style='font-size:0.72rem;font-style:italic;color:#FDE047;font-weight:700;'>&quot;One Church • One Faith • One Family&quot;</div>"
-            "</div>",
-            unsafe_allow_html=True,
-        )
-    with tb_c_status:
-        st.markdown(
-            f"<div style='background:rgba(15,23,42,0.92);border:1px solid rgba(16,185,129,0.5);"
-            f"border-radius:10px;padding:5px 10px;text-align:center;line-height:1.2;'>"
-            f"<div style='font-size:0.74rem;font-weight:800;color:#34D399;'>🟢 System Online</div>"
-            f"<div style='font-size:0.65rem;color:#CBD5E1;'>🕒 {html_esc(ph_now_str)}</div>"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
-    with tb_c_bell:
-        bell_lbl = f"🔔 {unread_cnt}" if unread_cnt > 0 else "🔔 0"
-        with st.popover(bell_lbl, use_container_width=True):
-            st.markdown("#### 🔔 System & Ministry Notifications")
-            st.caption("Lahat ng login, report submissions, bagong members, at requests:")
-            if all_notifs_top:
-                if st.button("🗑️ Burahin Lahat ng Notifications", use_container_width=True, key="top_bar_clear_notifs"):
-                    clear_all_live_notifications_for_user()
-                    st.rerun()
-                for nf_item in reversed(all_notifs_top[-12:]):
-                    nf_id = nf_item.get("id", "")
-                    nf_icon = "🚨" if nf_item.get("is_error") else "🔔"
-                    nc_1, nc_2 = st.columns([0.84, 0.16])
-                    with nc_1:
-                        st.markdown(
-                            f"<div style='background:#0F172A;color:#F8FAFC;border-left:3px solid #D4AF37;"
-                            f"padding:7px 9px;border-radius:7px;margin-bottom:6px;font-size:0.78rem;'>"
-                            f"<b>{nf_icon} {html_esc(nf_item.get('title'))}</b><br>"
-                            f"<span style='color:#38BDF8;'>👤 {html_esc(nf_item.get('sender'))}</span> • "
-                            f"<span style='color:#94A3B8;font-size:0.70rem;'>🕒 {html_esc(nf_item.get('timestamp'))}</span><br>"
-                            f"{html_esc(nf_item.get('details'))}</div>",
-                            unsafe_allow_html=True,
-                        )
-                    with nc_2:
-                        if st.button("🗑️", key=f"top_del_nf_{nf_id}"):
-                            delete_live_notification(nf_id)
-                            st.rerun()
-            else:
-                st.info("Walang bagong notification sa kasalukuyan.")
-    with tb_c_ref:
-        if st.button("🔄 Refresh", key="top_navbar_global_refresh_btn", use_container_width=True, help="I-refresh ang buong App at i-sync ang data"):
-            st.cache_data.clear()
-            load_internal_chat_messages(sync_cloud=True)
-            st.rerun()
-    with tb_c_user:
-        with st.popover(user_pill_lbl, use_container_width=True):
-            st.markdown("#### 🟢 Online Leaders & Admins sa System")
-            st.caption("Mga kasalukuyang naka-pasok / Online sa CTG Ministry Hub:")
-            for ol in online_leaders_list:
-                st.markdown(
-                    f"<div style='background:#0F172A;color:#F8FAFC;border:1px solid rgba(16,185,129,0.45);"
-                    f"border-left:4px solid #10B981;padding:7px 10px;border-radius:8px;margin-bottom:6px;font-size:0.80rem;'>"
-                    f"<span style='color:#34D399;font-weight:800;'>● Online</span> — <b>{html_esc(ol['name'])}</b><br>"
-                    f"<span style='color:#38BDF8;font-size:0.73rem;'>{html_esc(ol['role'])} • {html_esc(ol['scope'])}</span><br>"
-                    f"<span style='color:#94A3B8;font-size:0.68rem;'>🕒 {html_esc(str(ol.get('time') or ''))}</span>"
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
-            st.divider()
-            if st.button("🏠 Buksan ang Main Dashboard", use_container_width=True, key="top_pop_go_dash"):
-                st.session_state["current_nav_page"] = "🧭 Parish Leader Portal (Wizard & Summary)"
+    with st.container(border=True):
+        st.markdown('<div id="ctg-sticky-top-header-marker" style="display:none;"></div>', unsafe_allow_html=True)
+        tb_c_menu, tb_c_brand, tb_c_status, tb_c_bell, tb_c_ref, tb_c_user = st.columns([0.42, 2.35, 1.35, 0.62, 0.78, 1.48])
+        with tb_c_menu:
+            st.button("☰", key="top_navbar_hamburger_btn", use_container_width=True, help="Buksan o Isara ang Side Panel")
+        with tb_c_brand:
+            st.markdown(
+                "<div style='background:linear-gradient(90deg, #08152E, #0F2C59);border:1px solid rgba(212,175,55,0.45);"
+                "border-radius:10px;padding:4px 14px;line-height:1.15;'>"
+                "<div style='font-size:1.05rem;font-weight:900;color:#FFFFFF;'>Church of the Temple of God</div>"
+                "<div style='font-size:0.72rem;font-style:italic;color:#FDE047;font-weight:700;'>&quot;One Church • One Faith • One Family&quot;</div>"
+                "</div>",
+                unsafe_allow_html=True,
+            )
+        with tb_c_status:
+            st.markdown(
+                f"<div style='background:rgba(15,23,42,0.92);border:1px solid rgba(16,185,129,0.5);"
+                f"border-radius:10px;padding:5px 10px;text-align:center;line-height:1.2;'>"
+                f"<div style='font-size:0.74rem;font-weight:800;color:#34D399;'>🟢 System Online</div>"
+                f"<div style='font-size:0.65rem;color:#CBD5E1;'>🕒 {html_esc(ph_now_str)}</div>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+        with tb_c_bell:
+            bell_lbl = f"🔔 {unread_cnt}" if unread_cnt > 0 else "🔔 0"
+            with st.popover(bell_lbl, use_container_width=True):
+                st.markdown("#### 🔔 System & Ministry Notifications")
+                st.caption("Lahat ng login, report submissions, bagong members, at requests:")
+                if all_notifs_top:
+                    if st.button("🗑️ Burahin Lahat ng Notifications", use_container_width=True, key="top_bar_clear_notifs"):
+                        clear_all_live_notifications_for_user()
+                        st.rerun()
+                    for nf_item in reversed(all_notifs_top[-12:]):
+                        nf_id = nf_item.get("id", "")
+                        nf_icon = "🚨" if nf_item.get("is_error") else "🔔"
+                        nc_1, nc_2 = st.columns([0.84, 0.16])
+                        with nc_1:
+                            st.markdown(
+                                f"<div style='background:#0F172A;color:#F8FAFC;border-left:3px solid #D4AF37;"
+                                f"padding:7px 9px;border-radius:7px;margin-bottom:6px;font-size:0.78rem;'>"
+                                f"<b>{nf_icon} {html_esc(nf_item.get('title'))}</b><br>"
+                                f"<span style='color:#38BDF8;'>👤 {html_esc(nf_item.get('sender'))}</span> • "
+                                f"<span style='color:#94A3B8;font-size:0.70rem;'>🕒 {html_esc(nf_item.get('timestamp'))}</span><br>"
+                                f"{html_esc(nf_item.get('details'))}</div>",
+                                unsafe_allow_html=True,
+                            )
+                        with nc_2:
+                            if st.button("🗑️", key=f"top_del_nf_{nf_id}"):
+                                delete_live_notification(nf_id)
+                                st.rerun()
+                else:
+                    st.info("Walang bagong notification sa kasalukuyan.")
+        with tb_c_ref:
+            if st.button("🔄 Refresh", key="top_navbar_global_refresh_btn", use_container_width=True, help="I-refresh ang buong App at i-sync ang data"):
+                st.cache_data.clear()
+                load_internal_chat_messages(sync_cloud=True)
                 st.rerun()
-            if st.button("🚪 Logout sa System", type="primary", use_container_width=True, key="top_pop_logout"):
-                _perform_clean_user_logout()
+        with tb_c_user:
+            with st.popover(user_pill_lbl, use_container_width=True):
+                st.markdown("#### 🟢 Online Leaders & Admins sa System")
+                st.caption("Mga kasalukuyang naka-pasok / Online sa CTG Ministry Hub:")
+                for ol in online_leaders_list:
+                    st.markdown(
+                        f"<div style='background:#0F172A;color:#F8FAFC;border:1px solid rgba(16,185,129,0.45);"
+                        f"border-left:4px solid #10B981;padding:7px 10px;border-radius:8px;margin-bottom:6px;font-size:0.80rem;'>"
+                        f"<span style='color:#34D399;font-weight:800;'>● Online</span> — <b>{html_esc(ol['name'])}</b><br>"
+                        f"<span style='color:#38BDF8;font-size:0.73rem;'>{html_esc(ol['role'])} • {html_esc(ol['scope'])}</span><br>"
+                        f"<span style='color:#94A3B8;font-size:0.68rem;'>🕒 {html_esc(str(ol.get('time') or ''))}</span>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+                st.divider()
+                if st.button("🏠 Buksan ang Main Dashboard", use_container_width=True, key="top_pop_go_dash"):
+                    st.session_state["current_nav_page"] = "🧭 Parish Leader Portal (Wizard & Summary)"
+                    st.rerun()
+                if st.button("🚪 Logout sa System", type="primary", use_container_width=True, key="top_pop_logout"):
+                    _perform_clean_user_logout()
+
+    # Client-side enhancer: pins the header bar at top:0 on scroll AND makes ☰ smoothly slide the sidebar open/closed in 0ms
+    _v1_comp.html(
+        """
+        <script>
+        (function() {
+            const pDoc = window.parent.document;
+            // 1. Ensure sticky top header wrapper is pinned at top: 0
+            const marker = pDoc.getElementById('ctg-sticky-top-header-marker');
+            if (marker) {
+                const wrapper = marker.closest('[data-testid="stVerticalBlockBorderWrapper"]') || marker.parentElement;
+                if (wrapper) {
+                    wrapper.style.position = 'sticky';
+                    wrapper.style.top = '0px';
+                    wrapper.style.zIndex = '999990';
+                }
+            }
+
+            // 2. Make the '☰' button smoothly slide the Left Side Panel open/closed in 0ms without a page reload
+            const sidebar = pDoc.querySelector('section[data-testid="stSidebar"]');
+            if (sidebar && sidebar.getAttribute('aria-expanded') === 'false') {
+                const nativeExpand = pDoc.querySelector('button[data-testid="stExpandSidebarButton"], [data-testid="collapsedControl"] button');
+                if (nativeExpand) nativeExpand.click();
+            }
+            if (sidebar && window.parent._ctgSidebarClosed === true) {
+                sidebar.classList.add('ctg-sidebar-slid-closed');
+            }
+
+            const allBtns = pDoc.querySelectorAll('button');
+            allBtns.forEach(function(btn) {
+                if (btn.innerText && btn.innerText.trim() === '☰' && !btn.dataset.ctgHamburgerBound) {
+                    btn.dataset.ctgHamburgerBound = '1';
+                    btn.addEventListener('click', function(e) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const sb = pDoc.querySelector('section[data-testid="stSidebar"]');
+                        if (!sb) return;
+                        if (sb.getAttribute('aria-expanded') === 'false') {
+                            const natExp = pDoc.querySelector('button[data-testid="stExpandSidebarButton"], [data-testid="collapsedControl"] button');
+                            if (natExp) natExp.click();
+                            sb.classList.remove('ctg-sidebar-slid-closed');
+                            window.parent._ctgSidebarClosed = false;
+                            return;
+                        }
+                        const isClosed = sb.classList.toggle('ctg-sidebar-slid-closed');
+                        window.parent._ctgSidebarClosed = isClosed;
+                    }, true);
+                }
+            });
+        })();
+        </script>
+        """,
+        height=0,
+    )
 
 
 render_persistent_ctg_top_navbar()
