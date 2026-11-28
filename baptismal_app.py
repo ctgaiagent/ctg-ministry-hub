@@ -707,13 +707,18 @@ def render_baptismal_portal(embedded_in_hub: bool = False) -> None:
         unsafe_allow_html=True,
     )
 
-    hdr_c1, hdr_c2, hdr_c3 = st.columns([2.4, 1.4, 0.9])
+    hdr_c1, hdr_c_mar, hdr_c2, hdr_c3 = st.columns([2.1, 1.25, 1.35, 0.9])
     with hdr_c1:
         st.caption(
             f"👑 Signed in as **ctg.Baptismal.admin** (`Master Admin`) • "
             f"📂 [CTG BAPTISMAL RECORDS Drive Folder](https://drive.google.com/drive/folders/{DEFAULT_BAPTISMAL_ROOT_FOLDER_ID}) • "
             f"📗 [Master Baptismal Excel](https://drive.google.com/file/d/{DEFAULT_BAPTISMAL_WORKBOOK_FILE_ID}/view)"
         )
+    with hdr_c_mar:
+        if embedded_in_hub:
+            if st.button("💍 Switch to Certificate of Marriage", use_container_width=True, key="bap_switch_to_marriage_btn"):
+                st.session_state["app_mode_override"] = "💍 Marriage Records & Certificates"
+                st.rerun()
     with hdr_c2:
         if st.button("🔄 Sync 4,093 Records Mula Google Drive", use_container_width=True, type="primary", key="bap_top_sync_drive_btn"):
             with st.spinner("Binabasa ang OVERALL BAPTISMAL CERTIFICATE LIST.xlsx mula sa Google Drive..."):
