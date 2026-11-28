@@ -2,18 +2,19 @@
 ui_components.py — Reusable Enterprise UI/UX Components for CTG Ministries Database
 =====================================================================================
 Design System:
-- Primary:         #0B1730
-- Secondary:       #142747
-- Accent Gold:     #D4A640
-- Soft Gold:       #F2D58A
-- Background:      #0B101B
-- Card Background: #17243A
-- Border:          #34445E
-- Text:            #F8FAFC
-- Muted Text:      #AAB7CA
-- Success:         #10B981
-- Warning:         #F59E0B
-- Danger:          #EF4444
+- Top Bar Solid Navy: #10213D (100% solid, non-transparent, zero blur)
+- Primary:            #0B1730
+- Secondary:          #142747
+- Accent Gold:        #D4A640
+- Soft Gold:          #F2D58A
+- Background:         #0B101B
+- Card Background:    #17243A
+- Border:             #34445E
+- Text:               #F8FAFC
+- Muted Text:         #AAB7CA
+- Success:            #10B981
+- Warning:            #F59E0B
+- Danger:             #EF4444
 """
 
 from html import escape as _html_esc
@@ -26,6 +27,8 @@ except ImportError:  # pragma: no cover — allows headless unit testing without
     components = None  # type: ignore
 
 DESIGN_TOKENS: Dict[str, str] = {
+    "topbar_navy": "#10213D",
+    "topbar_cell_bg": "#162B4D",
     "primary": "#0B1730",
     "secondary": "#142747",
     "accent_gold": "#D4A640",
@@ -72,27 +75,108 @@ def _esc(val: Any) -> str:
     return _html_esc(str(val or ""), quote=True)
 
 
+def is_sidebar_expanded() -> bool:
+    """Returns True when the application sidebar navigation panel is open."""
+    if st is None:
+        return True
+    if "ctg_sidebar_expanded" not in st.session_state:
+        st.session_state["ctg_sidebar_expanded"] = True
+    return bool(st.session_state.get("ctg_sidebar_expanded", True))
+
+
+def toggle_sidebar_state() -> bool:
+    """Toggles the application sidebar open/closed state in Streamlit session_state."""
+    if st is None:
+        return True
+    cur = is_sidebar_expanded()
+    st.session_state["ctg_sidebar_expanded"] = not cur
+    return not cur
+
+
 def inject_enterprise_theme_css() -> None:
-    """Applies unified enterprise Navy/Gold dark-mode styling across all panels, tables, forms, and tabs."""
+    """
+    Applies unified enterprise Navy/Gold dark-mode styling, completely hides all native
+    Streamlit header/floating sidebar toggle controls, styles the solid non-transparent
+    #10213D global top bar, and enforces deterministic sidebar open/close state.
+    """
     t = DESIGN_TOKENS
+    sb_open = is_sidebar_expanded()
+    if sb_open:
+        sidebar_state_css = f"""
+        section[data-testid="stSidebar"] {{
+            background-color: {t["primary"]} !important;
+            border-right: 1px solid {t["border"]} !important;
+            width: 20.5rem !important;
+            min-width: 20.5rem !important;
+            max-width: 20.5rem !important;
+            margin-left: 0px !important;
+            transform: none !important;
+            opacity: 1 !important;
+            visibility: visible !important;
+            pointer-events: auto !important;
+            transition: width 0.18s ease, min-width 0.18s ease, max-width 0.18s ease !important;
+        }}
+        section[data-testid="stSidebar"] > div {{
+            background-color: {t["primary"]} !important;
+            width: 20.5rem !important;
+            min-width: 20.5rem !important;
+            max-width: 20.5rem !important;
+            overflow-x: hidden !important;
+        }}
+        """
+    else:
+        sidebar_state_css = """
+        section[data-testid="stSidebar"] {
+            margin-left: 0px !important;
+            width: 0px !important;
+            min-width: 0px !important;
+            max-width: 0px !important;
+            padding: 0px !important;
+            overflow: hidden !important;
+            border-right: none !important;
+            opacity: 0 !important;
+            visibility: hidden !important;
+            pointer-events: none !important;
+            transition: width 0.18s ease, min-width 0.18s ease, max-width 0.18s ease !important;
+        }
+        section[data-testid="stSidebar"] > div {
+            width: 0px !important;
+            min-width: 0px !important;
+            max-width: 0px !important;
+            padding: 0px !important;
+            overflow: hidden !important;
+        }
+        """
+
     st.markdown(
         f"""
         <style>
-        /* Hide native Streamlit header bar and native sidebar toggle so our global topbar owns the top */
-        header[data-testid="stHeader"] {{
-            display: none !important;
-            height: 0px !important;
-        }}
+        /* 1. Completely remove native Streamlit header bar and all duplicate/floating sidebar toggles */
+        header[data-testid="stHeader"],
         div[data-testid="stToolbar"],
         div[data-testid="stDecoration"],
         div[data-testid="stStatusWidget"],
+        div[data-testid="collapsedControl"],
+        div[data-testid="stSidebarCollapsedControl"],
         button[data-testid="stSidebarCollapseButton"],
         button[data-testid="stExpandSidebarButton"],
-        div[data-testid="collapsedControl"] {{
+        section[data-testid="stSidebar"] button[kind="header"],
+        section[data-testid="stSidebar"] button[kind="headerNoPadding"],
+        header button[kind="header"],
+        header button[kind="headerNoPadding"] {{
             display: none !important;
+            visibility: hidden !important;
+            opacity: 0 !important;
+            width: 0px !important;
+            height: 0px !important;
+            padding: 0px !important;
+            margin: 0px !important;
+            border: none !important;
+            pointer-events: none !important;
+            overflow: hidden !important;
         }}
 
-        /* Main canvas layout */
+        /* 2. Main application canvas layout */
         .stApp {{
             background-color: {t["background"]} !important;
             color: {t["text"]} !important;
@@ -106,92 +190,119 @@ def inject_enterprise_theme_css() -> None:
         }}
         section.main > div.block-container,
         div[data-testid="stAppViewBlockContainer"],
-        div[data-testid="stMainBlockContainer"] {{
+        div[data-testid="stMainBlockContainer"],
+        .block-container {{
             padding-top: 0.45rem !important;
             padding-bottom: 2.2rem !important;
+            padding-left: 1.1rem !important;
+            padding-right: 1.1rem !important;
             max-width: 100% !important;
         }}
 
-        /* Sidebar styling & smooth slide collapse */
-        section[data-testid="stSidebar"] {{
-            background: linear-gradient(180deg, {t["primary"]} 0%, #081226 65%, {t["background"]} 100%) !important;
-            border-right: 1px solid {t["border"]} !important;
-            transition: width 0.22s cubic-bezier(0.4, 0, 0.2, 1),
-                        min-width 0.22s cubic-bezier(0.4, 0, 0.2, 1),
-                        max-width 0.22s cubic-bezier(0.4, 0, 0.2, 1),
-                        opacity 0.18s ease !important;
-            margin-left: 0px !important;
+        /* 3. Sidebar state & compact enterprise formatting */
+        {sidebar_state_css}
+        section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"],
+        section[data-testid="stSidebar"] .block-container {{
+            padding-top: 0.65rem !important;
+            padding-left: 0.75rem !important;
+            padding-right: 0.75rem !important;
+            padding-bottom: 1.25rem !important;
         }}
-        section[data-testid="stSidebar"].ctg-sidebar-slid-closed {{
-            margin-left: 0px !important;
-            width: 0px !important;
-            min-width: 0px !important;
-            max-width: 0px !important;
-            padding: 0px !important;
-            overflow: hidden !important;
-            border-right: none !important;
-            opacity: 0 !important;
-            pointer-events: none !important;
+        section[data-testid="stSidebar"] [data-testid="stExpander"] {{
+            background-color: {t["secondary"]} !important;
+            border: 1px solid {t["border"]} !important;
+            border-radius: 8px !important;
+            margin-bottom: 6px !important;
         }}
-        section[data-testid="stSidebar"].ctg-sidebar-slid-closed > div {{
-            width: 0px !important;
-            min-width: 0px !important;
-            max-width: 0px !important;
-            padding: 0px !important;
-            overflow: hidden !important;
+        section[data-testid="stSidebar"] [data-testid="stExpander"] summary {{
+            background-color: {t["topbar_navy"]} !important;
+            color: {t["text"]} !important;
+            font-weight: 700 !important;
+            font-size: 0.82rem !important;
+            padding: 7px 10px !important;
+            border-radius: 8px !important;
+        }}
+        section[data-testid="stSidebar"] .stButton > button {{
+            font-size: 0.80rem !important;
+            padding: 0.36rem 0.65rem !important;
+            min-height: 36px !important;
+            border-radius: 7px !important;
+            text-align: left !important;
+            justify-content: flex-start !important;
         }}
 
-        /* Sticky Global Top Navigation Bar */
+        /* 4. Solid, Non-Transparent Global Top Navigation Bar (#10213D with Gold Border #D4A640) */
         div[data-testid="stVerticalBlock"] > div:has(#ctg-sticky-top-header-marker) {{
             position: sticky !important;
             top: 0.25rem !important;
             z-index: 999990 !important;
+            background-color: {t["topbar_navy"]} !important;
         }}
         div[data-testid="stVerticalBlockBorderWrapper"]:has(#ctg-sticky-top-header-marker) {{
             position: sticky !important;
             top: 0.25rem !important;
             z-index: 999990 !important;
-            background: linear-gradient(90deg, {t["primary"]} 0%, {t["secondary"]} 52%, {t["primary"]} 100%) !important;
+            background-color: {t["topbar_navy"]} !important;
+            background-image: none !important;
             border: 1.5px solid {t["accent_gold"]} !important;
-            border-radius: 12px !important;
-            padding: 6px 12px !important;
+            border-radius: 10px !important;
+            padding: 8px 12px !important;
             margin-bottom: 12px !important;
-            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45) !important;
-            backdrop-filter: blur(10px) !important;
+            box-shadow: 0 6px 18px #050A14 !important;
+            backdrop-filter: none !important;
+            -webkit-backdrop-filter: none !important;
+            opacity: 1 !important;
         }}
         div[data-testid="stVerticalBlockBorderWrapper"]:has(#ctg-sticky-top-header-marker) [data-testid="stHorizontalBlock"] {{
             align-items: center !important;
+            gap: 0.45rem !important;
+        }}
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(#ctg-sticky-top-header-marker) .stButton > button,
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(#ctg-sticky-top-header-marker) [data-testid="stPopover"] > div > button {{
+            background-color: {t["topbar_cell_bg"]} !important;
+            color: {t["text"]} !important;
+            border: 1px solid {t["accent_gold"]} !important;
+            border-radius: 8px !important;
+            font-weight: 700 !important;
+            font-size: 0.80rem !important;
+            min-height: 40px !important;
+            padding: 4px 10px !important;
+            box-shadow: none !important;
+        }}
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(#ctg-sticky-top-header-marker) .stButton > button:hover,
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(#ctg-sticky-top-header-marker) [data-testid="stPopover"] > div > button:hover {{
+            background-color: {t["secondary"]} !important;
+            border-color: {t["soft_gold"]} !important;
+            color: {t["soft_gold"]} !important;
         }}
 
-        /* Consistent Enterprise Cards, Expanders, Tabs, Tables & Forms */
+        /* 5. Enterprise Cards, Metrics & Breadcrumbs */
         .ctg-ui-card {{
-            background: {t["card_bg"]};
+            background-color: {t["card_bg"]};
             border: 1px solid {t["border"]};
-            border-radius: 12px;
+            border-radius: 10px;
             padding: 14px 16px;
-            box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
-            transition: border-color 0.18s ease, transform 0.18s ease;
         }}
         .ctg-ui-card:hover {{
             border-color: {t["accent_gold"]};
         }}
         .ctg-metric-card {{
-            background: linear-gradient(160deg, {t["secondary"]} 0%, {t["primary"]} 100%);
+            background-color: {t["secondary"]};
             border: 1px solid {t["border"]};
             border-top: 3px solid {t["accent_gold"]};
-            border-radius: 12px;
+            border-radius: 10px;
             padding: 12px 14px;
-            min-height: 92px;
+            min-height: 90px;
         }}
         .ctg-metric-label {{
-            font-size: 0.74rem;
+            font-size: 0.73rem;
             color: {t["muted_text"]};
             font-weight: 700;
             text-transform: uppercase;
             letter-spacing: 0.04em;
         }}
         .ctg-metric-value {{
-            font-size: 1.55rem;
+            font-size: 1.50rem;
             color: {t["text"]};
             font-weight: 800;
             margin-top: 4px;
@@ -203,17 +314,17 @@ def inject_enterprise_theme_css() -> None:
             margin-top: 4px;
         }}
         .ctg-sb-section-label {{
-            font-size: 0.70rem;
+            font-size: 0.69rem;
             font-weight: 800;
             color: {t["soft_gold"]};
             letter-spacing: 0.08em;
             text-transform: uppercase;
-            margin: 10px 0 6px 2px;
+            margin: 8px 0 5px 2px;
         }}
         .ctg-breadcrumbs {{
             font-size: 0.78rem;
             color: {t["muted_text"]};
-            padding: 4px 2px 8px 2px;
+            padding: 2px 2px 8px 2px;
             display: flex;
             align-items: center;
             gap: 6px;
@@ -222,11 +333,34 @@ def inject_enterprise_theme_css() -> None:
         .ctg-breadcrumbs strong {{
             color: {t["soft_gold"]};
         }}
-        /* Responsive wrapping on tablet/mobile */
-        @media (max-width: 900px) {{
+
+        /* 6. Responsive Top Bar & Layout on Tablet and Mobile */
+        @media (max-width: 1024px) {{
+            div[data-testid="stVerticalBlockBorderWrapper"]:has(#ctg-sticky-top-header-marker) {{
+                padding: 6px 8px !important;
+            }}
             div[data-testid="stVerticalBlockBorderWrapper"]:has(#ctg-sticky-top-header-marker) [data-testid="stHorizontalBlock"] {{
                 flex-wrap: wrap !important;
                 gap: 6px !important;
+            }}
+            div[data-testid="stVerticalBlockBorderWrapper"]:has(#ctg-sticky-top-header-marker) [data-testid="column"] {{
+                min-width: auto !important;
+                flex: 1 1 auto !important;
+            }}
+        }}
+        @media (max-width: 640px) {{
+            div[data-testid="stVerticalBlockBorderWrapper"]:has(#ctg-sticky-top-header-marker) {{
+                position: relative !important;
+                top: 0 !important;
+                padding: 6px 8px !important;
+            }}
+            div[data-testid="stVerticalBlock"] > div:has(#ctg-sticky-top-header-marker) {{
+                position: relative !important;
+                top: 0 !important;
+            }}
+            div[data-testid="stVerticalBlockBorderWrapper"]:has(#ctg-sticky-top-header-marker) [data-testid="column"] {{
+                min-width: 46% !important;
+                flex: 1 1 46% !important;
             }}
         }}
         </style>
@@ -236,17 +370,17 @@ def inject_enterprise_theme_css() -> None:
 
 
 def render_status_badge(label: str, tone: str = "success") -> str:
-    """Returns a compact, high-contrast status badge HTML snippet."""
+    """Returns a solid, high-contrast status badge HTML snippet (no transparent glass)."""
     tone_map = {
-        "success": ("rgba(16,185,129,0.16)", "#34D399", "#10B981"),
-        "warning": ("rgba(245,158,11,0.16)", "#FBBF24", "#F59E0B"),
-        "danger": ("rgba(239,68,68,0.16)", "#F87171", "#EF4444"),
-        "info": ("rgba(56,189,248,0.16)", "#7DD3FC", "#38BDF8"),
-        "gold": ("rgba(212,166,64,0.18)", "#F2D58A", "#D4A640"),
+        "success": ("#064E3B", "#34D399", "#10B981"),
+        "warning": ("#78350F", "#FBBF24", "#F59E0B"),
+        "danger": ("#7F1D1D", "#F87171", "#EF4444"),
+        "info": ("#0C4A6E", "#7DD3FC", "#38BDF8"),
+        "gold": ("#422006", "#F2D58A", "#D4A640"),
     }
     bg, fg, bd = tone_map.get(tone, tone_map["info"])
     return (
-        f"<span style='display:inline-flex;align-items:center;gap:5px;background:{bg};"
+        f"<span style='display:inline-flex;align-items:center;gap:5px;background-color:{bg};"
         f"color:{fg};border:1px solid {bd};font-size:0.70rem;font-weight:800;"
         f"padding:2px 9px;border-radius:999px;white-space:nowrap;'>"
         f"{_esc(label)}</span>"
@@ -259,7 +393,7 @@ def render_breadcrumbs(trail: List[str]) -> None:
         return
     parts = [_esc(x) for x in trail[:-1]]
     last = f"<strong>{_esc(trail[-1])}</strong>"
-    joined = " <span style='opacity:0.55;'>/</span> ".join(parts + [last])
+    joined = " <span style='color:#64748B;'>/</span> ".join(parts + [last])
     st.markdown(f"<div class='ctg-breadcrumbs'>{joined}</div>", unsafe_allow_html=True)
 
 
@@ -271,22 +405,22 @@ def render_dashboard_header(
     status_label: str = "System Online",
     status_tone: str = "success",
 ) -> None:
-    """Renders a consistent, enterprise dashboard header card."""
+    """Renders a solid enterprise dashboard header card."""
     t = DESIGN_TOKENS
     badge_html = render_status_badge(status_label, tone=status_tone)
     st.markdown(
-        f"<div style='background:linear-gradient(135deg, {t['primary']} 0%, {t['secondary']} 100%);"
+        f"<div style='background-color:{t['topbar_navy']};"
         f"border:1px solid {t['border']};border-left:4px solid {t['accent_gold']};"
-        f"border-radius:12px;padding:16px 20px;margin-bottom:14px;"
+        f"border-radius:10px;padding:14px 18px;margin-bottom:14px;"
         f"display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;'>"
         f"<div>"
-        f"<div style='font-size:1.28rem;font-weight:800;color:{t['text']};line-height:1.25;'>{_esc(title)}</div>"
-        f"<div style='font-size:0.86rem;color:{t['muted_text']};margin-top:4px;'>{_esc(subtitle)}</div>"
+        f"<div style='font-size:1.22rem;font-weight:800;color:{t['text']};line-height:1.25;'>{_esc(title)}</div>"
+        f"<div style='font-size:0.84rem;color:{t['muted_text']};margin-top:4px;'>{_esc(subtitle)}</div>"
         f"</div>"
         f"<div style='text-align:right;'>"
         f"{badge_html}"
-        f"<div style='font-size:0.76rem;color:{t['soft_gold']};font-weight:700;margin-top:5px;'>Scope: {_esc(scope_label)}</div>"
-        f"<div style='font-size:0.72rem;color:{t['muted_text']};margin-top:2px;'>{_esc(ph_datetime_str)}</div>"
+        f"<div style='font-size:0.75rem;color:{t['soft_gold']};font-weight:700;margin-top:5px;'>Scope: {_esc(scope_label)}</div>"
+        f"<div style='font-size:0.71rem;color:{t['muted_text']};margin-top:2px;'>{_esc(ph_datetime_str)}</div>"
         f"</div></div>",
         unsafe_allow_html=True,
     )
@@ -326,10 +460,10 @@ def render_quick_action_card(
     t = DESIGN_TOKENS
     badge_html = f"<div style='margin-bottom:6px;'>{render_status_badge(badge_text, 'gold')}</div>" if badge_text else ""
     st.markdown(
-        f"<div class='ctg-ui-card' style='min-height:112px;margin-bottom:8px;'>"
+        f"<div class='ctg-ui-card' style='min-height:108px;margin-bottom:8px;'>"
         f"{badge_html}"
-        f"<div style='font-size:0.94rem;font-weight:800;color:{t['text']};'>{_esc(title)}</div>"
-        f"<div style='font-size:0.78rem;color:{t['muted_text']};margin-top:4px;line-height:1.35;'>{_esc(description)}</div>"
+        f"<div style='font-size:0.92rem;font-weight:800;color:{t['text']};'>{_esc(title)}</div>"
+        f"<div style='font-size:0.77rem;color:{t['muted_text']};margin-top:4px;line-height:1.35;'>{_esc(description)}</div>"
         f"</div>",
         unsafe_allow_html=True,
     )
@@ -354,7 +488,7 @@ def render_activity_feed(items: List[Dict[str, Any]], empty_text: str = "No rece
         tone = item.get("tone", "info")
         border_c = t.get(tone, "#38BDF8")
         st.markdown(
-            f"<div style='background:{t['card_bg']};border:1px solid {t['border']};"
+            f"<div style='background-color:{t['card_bg']};border:1px solid {t['border']};"
             f"border-left:4px solid {border_c};border-radius:8px;padding:8px 12px;margin-bottom:8px;'>"
             f"<div style='display:flex;justify-content:space-between;gap:8px;align-items:center;'>"
             f"<strong style='color:{t['text']};font-size:0.84rem;'>{_esc(title)}</strong>"
@@ -382,50 +516,93 @@ def render_global_topbar(
     on_open_profile: Callable[[], None],
     on_logout: Callable[[], None],
     on_open_notifications_view: Optional[Callable[[], None]] = None,
+    logo_b64: str = "",
 ) -> None:
     """
-    Permanent Top Navigation/Header Bar across all authenticated pages (never inside sidebar).
-    Left: ☰ Sidebar toggle + Church of the Temple of God + 'One Church • One Faith • One Family'
-    Center: Live System Online/Offline indicator + Philippine date/time
-    Right: Notification dropdown (with unread count, Mark as read, View all) + Refresh button + User Profile dropdown
+    Unified, Solid Dark Navy (#10213D), Non-Transparent Top Navigation Bar across all authenticated pages.
+    Strict left-to-right element order inside one unified bar:
+      1. Sidebar panel toggle button (far left: '◧ ❮' when open, '◧ ❯' when closed — no three-line hamburger)
+      2. CTG logo and 'Church of the Temple of God' name
+      3. Tagline: 'One Church • One Faith • One Family'
+      4. System Online/Offline status
+      5. Current Philippine date and time
+      6. Notification dropdown with unread count
+      7. Refresh button
+      8. Logged-in user profile and role dropdown
     """
     t = DESIGN_TOKENS
+    sb_open = is_sidebar_expanded()
+    toggle_icon_lbl = "◧ ❮" if sb_open else "◧ ❯"
+    toggle_help = "Close sidebar navigation panel" if sb_open else "Open sidebar navigation panel"
+
     read_ids = set(st.session_state.get("_ctg_read_notif_ids", []))
     unread_notifs = [n for n in notifications if n.get("id", "") not in read_ids]
     unread_count = len(unread_notifs)
 
-    status_dot = "● System Online" if system_online else "● Connection Degraded"
+    status_dot = "● System Online" if system_online else "● System Offline"
     status_fg = "#34D399" if system_online else "#FBBF24"
-    status_bd = "rgba(16,185,129,0.55)" if system_online else "rgba(245,158,11,0.55)"
+    status_bd = "#10B981" if system_online else "#F59E0B"
 
     initials = "".join(w[0] for w in (display_name or role or "U").split()[:2] if w).upper() or "CT"
     user_pill_lbl = f"{initials}  {role} ({len(online_leaders)} Online)"
 
+    if logo_b64:
+        logo_html = (
+            f"<img src='data:image/png;base64,{logo_b64}' alt='CTG Logo' "
+            f"style='width:34px;height:34px;border-radius:50%;object-fit:cover;"
+            f"border:1.5px solid {t['accent_gold']};flex-shrink:0;' />"
+        )
+    else:
+        logo_html = (
+            f"<div style='width:34px;height:34px;border-radius:50%;background-color:{t['primary']};"
+            f"border:1.5px solid {t['accent_gold']};display:flex;align-items:center;justify-content:center;"
+            f"font-size:0.75rem;font-weight:900;color:{t['soft_gold']};flex-shrink:0;'>CTG</div>"
+        )
+
     with st.container(border=True):
         st.markdown('<div id="ctg-sticky-top-header-marker" style="display:none;"></div>', unsafe_allow_html=True)
-        c_menu, c_brand, c_status, c_bell, c_ref, c_user = st.columns([0.42, 2.35, 1.38, 0.65, 0.80, 1.48])
-        with c_menu:
-            st.button("☰", key="top_navbar_hamburger_btn", use_container_width=True, help="Toggle Side Panel")
+        c_toggle, c_brand, c_status, c_bell, c_ref, c_user = st.columns([0.52, 2.35, 1.35, 0.65, 0.78, 1.45])
+
+        # 1. Far-left Sidebar Panel Toggle Button (Chevron + Panel icon, never 3-line hamburger)
+        with c_toggle:
+            if st.button(
+                toggle_icon_lbl,
+                key="top_navbar_sidebar_panel_toggle_btn",
+                use_container_width=True,
+                help=toggle_help,
+            ):
+                toggle_sidebar_state()
+                st.rerun()
+
+        # 2 & 3. CTG Logo + Church of the Temple of God + Tagline: One Church • One Faith • One Family
         with c_brand:
             st.markdown(
-                f"<div style='background:linear-gradient(90deg, {t['primary']}, {t['secondary']});"
-                f"border:1px solid rgba(212,166,64,0.45);border-radius:10px;padding:4px 14px;line-height:1.15;'>"
-                f"<div style='font-size:1.02rem;font-weight:900;color:{t['text']};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'>"
+                f"<div style='background-color:{t['topbar_cell_bg']};"
+                f"border:1px solid {t['accent_gold']};border-radius:8px;padding:4px 12px;"
+                f"display:flex;align-items:center;gap:10px;min-height:40px;'>"
+                f"{logo_html}"
+                f"<div style='min-width:0;line-height:1.15;'>"
+                f"<div style='font-size:0.98rem;font-weight:900;color:{t['text']};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'>"
                 f"Church of the Temple of God</div>"
-                f"<div style='font-size:0.72rem;font-style:italic;color:{t['soft_gold']};font-weight:700;'>"
+                f"<div style='font-size:0.71rem;color:{t['soft_gold']};font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'>"
                 f"One Church &bull; One Faith &bull; One Family</div>"
-                f"</div>",
+                f"</div></div>",
                 unsafe_allow_html=True,
             )
+
+        # 4 & 5. System Online/Offline Status + Current Philippine Date and Time
         with c_status:
             st.markdown(
-                f"<div style='background:rgba(11,16,27,0.88);border:1px solid {status_bd};"
-                f"border-radius:10px;padding:5px 10px;text-align:center;line-height:1.2;'>"
+                f"<div style='background-color:{t['primary']};border:1px solid {status_bd};"
+                f"border-radius:8px;padding:4px 10px;text-align:center;line-height:1.2;min-height:40px;"
+                f"display:flex;flex-direction:column;justify-content:center;'>"
                 f"<div style='font-size:0.74rem;font-weight:800;color:{status_fg};'>{status_dot}</div>"
-                f"<div style='font-size:0.65rem;color:{t['muted_text']};'>{_esc(ph_datetime_str)}</div>"
+                f"<div style='font-size:0.66rem;color:{t['text']};font-weight:600;'>{_esc(ph_datetime_str)}</div>"
                 f"</div>",
                 unsafe_allow_html=True,
             )
+
+        # 6. Notification Dropdown with Unread Count
         with c_bell:
             bell_lbl = f"🔔 {unread_count}"
             with st.popover(bell_lbl, use_container_width=True):
@@ -449,7 +626,7 @@ def render_global_topbar(
                         with nc1:
                             badge = "🆕 " if is_unread else ""
                             st.markdown(
-                                f"<div style='background:{t['card_bg']};color:{t['text']};border-left:3px solid {t['accent_gold']};"
+                                f"<div style='background-color:{t['card_bg']};color:{t['text']};border-left:3px solid {t['accent_gold']};"
                                 f"padding:6px 8px;border-radius:6px;margin-bottom:5px;font-size:0.76rem;'>"
                                 f"<b>{badge}{_esc(nf.get('title'))}</b><br>"
                                 f"<span style='color:{t['soft_gold']};'>{_esc(nf.get('sender'))}</span> • "
@@ -463,20 +640,32 @@ def render_global_topbar(
                                 st.rerun()
                 else:
                     st.info("No new notifications.")
+
+        # 7. State-Preserving Refresh Button
         with c_ref:
-            if st.button("🔄 Refresh", key="top_navbar_global_refresh_btn", use_container_width=True, help="Refresh live data without resetting login or form state"):
+            if st.button(
+                "🔄 Refresh",
+                key="top_navbar_global_refresh_btn",
+                use_container_width=True,
+                help="Refresh live data without resetting login or form state",
+            ):
                 on_refresh()
                 st.rerun()
+
+        # 8. Logged-in User Profile & Role Dropdown
         with c_user:
             with st.popover(user_pill_lbl, use_container_width=True):
                 st.markdown(f"**{_esc(display_name or username)}**")
                 st.caption(f"Username: `{username or 'active_user'}` • Role: **{role}**")
-                st.caption(f"Scope: **{assigned_scope}**")
+                st.caption(f"Assigned Scope: **{assigned_scope}**")
+                if st.button("Role Overview Dashboard", use_container_width=True, key="top_pop_role_dash_btn"):
+                    st.session_state["current_nav_page"] = PAGE_ID_TO_APP_MODE["home_overview"]
+                    st.rerun()
                 st.divider()
                 st.markdown("**Online Leaders in System**")
                 for ol in online_leaders[:8]:
                     st.markdown(
-                        f"<div style='background:{t['card_bg']};border:1px solid {t['border']};"
+                        f"<div style='background-color:{t['card_bg']};border:1px solid {t['border']};"
                         f"border-left:3px solid {t['success']};padding:5px 8px;border-radius:6px;margin-bottom:4px;font-size:0.76rem;'>"
                         f"<span style='color:#34D399;font-weight:700;'>● Online</span> — <b>{_esc(ol.get('name'))}</b><br>"
                         f"<span style='color:{t['muted_text']};font-size:0.69rem;'>{_esc(ol.get('role'))} • {_esc(ol.get('scope'))}</span>"
@@ -493,66 +682,28 @@ def render_global_topbar(
                     if st.button("Logout", type="primary", use_container_width=True, key="top_pop_logout"):
                         on_logout()
 
-    # Bind ☰ button to instant 0ms smooth sidebar slide toggle
-    components.html(
-        """
-        <script>
-        (function() {
-            const pDoc = window.parent.document;
-            const marker = pDoc.getElementById('ctg-sticky-top-header-marker');
-            if (marker) {
-                const borderWrap = marker.closest('[data-testid="stVerticalBlockBorderWrapper"]');
-                if (borderWrap) {
-                    borderWrap.style.position = 'sticky';
-                    borderWrap.style.top = '0.25rem';
-                    borderWrap.style.zIndex = '999990';
-                    if (borderWrap.parentElement && borderWrap.parentElement.style) {
-                        borderWrap.parentElement.style.position = 'sticky';
-                        borderWrap.parentElement.style.top = '0.25rem';
-                        borderWrap.parentElement.style.zIndex = '999990';
-                    }
-                }
-            }
-            const sidebar = pDoc.querySelector('section[data-testid="stSidebar"]');
-            if (sidebar) {
-                sidebar.style.marginLeft = '0px';
-                if (sidebar.getAttribute('aria-expanded') === 'false') {
-                    const natExp = pDoc.querySelector('button[data-testid="stExpandSidebarButton"], [data-testid="collapsedControl"] button');
-                    if (natExp) natExp.click();
-                }
-                if (window.parent._ctgSidebarClosed === true) {
-                    sidebar.classList.add('ctg-sidebar-slid-closed');
-                } else {
-                    sidebar.classList.remove('ctg-sidebar-slid-closed');
-                }
-            }
-            const allBtns = pDoc.querySelectorAll('button');
-            allBtns.forEach(function(btn) {
-                if (btn.innerText && btn.innerText.trim() === '☰' && !btn.dataset.ctgHamburgerBound) {
-                    btn.dataset.ctgHamburgerBound = '1';
-                    btn.addEventListener('click', function(e) {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        const sb = pDoc.querySelector('section[data-testid="stSidebar"]');
-                        if (!sb) return;
-                        sb.style.marginLeft = '0px';
-                        if (sb.getAttribute('aria-expanded') === 'false') {
-                            const natExp = pDoc.querySelector('button[data-testid="stExpandSidebarButton"], [data-testid="collapsedControl"] button');
-                            if (natExp) natExp.click();
-                            sb.classList.remove('ctg-sidebar-slid-closed');
-                            window.parent._ctgSidebarClosed = false;
-                            return;
-                        }
-                        const isClosed = sb.classList.toggle('ctg-sidebar-slid-closed');
-                        window.parent._ctgSidebarClosed = isClosed;
-                    }, true);
-                }
-            });
-        })();
-        </script>
-        """,
-        height=0,
-    )
+    # Ensure native Streamlit sidebar DOM container stays expanded when sb_open is True
+    if components is not None:
+        sb_flag_js = "true" if sb_open else "false"
+        components.html(
+            f"""
+            <script>
+            (function() {{
+                const pDoc = window.parent.document;
+                const sbOpen = {sb_flag_js};
+                const sb = pDoc.querySelector('section[data-testid="stSidebar"]');
+                if (sb) {{
+                    sb.style.marginLeft = '0px';
+                    if (sbOpen && sb.getAttribute('aria-expanded') === 'false') {{
+                        const natExp = pDoc.querySelector('button[data-testid="stExpandSidebarButton"], [data-testid="collapsedControl"] button, [data-testid="stSidebarCollapsedControl"] button');
+                        if (natExp) natExp.click();
+                    }}
+                }}
+            }})();
+            </script>
+            """,
+            height=0,
+        )
 
 
 def render_user_profile_card(
@@ -563,36 +714,36 @@ def render_user_profile_card(
     avatar_data_uri: str = "",
     is_online: bool = True,
 ) -> None:
-    """Renders Sidebar Section A: User Profile Card with CTG logo/avatar, role, parish, and online status."""
+    """Renders Sidebar Section A: Compact User Profile Card with CTG logo/avatar, role, parish, and online status."""
     t = DESIGN_TOKENS
     initials = "".join(w[0] for w in (display_name or role or "CTG").split()[:2] if w).upper() or "CT"
     if avatar_data_uri and avatar_data_uri.startswith("data:image"):
         avatar_html = (
-            f"<img src='{avatar_data_uri}' style='width:46px;height:46px;border-radius:50%;"
+            f"<img src='{avatar_data_uri}' style='width:42px;height:42px;border-radius:50%;"
             f"object-fit:cover;border:2px solid {t['accent_gold']};flex-shrink:0;'>"
         )
     elif logo_b64:
         avatar_html = (
-            f"<img src='data:image/png;base64,{logo_b64}' style='width:46px;height:46px;border-radius:50%;"
+            f"<img src='data:image/png;base64,{logo_b64}' style='width:42px;height:42px;border-radius:50%;"
             f"object-fit:cover;border:2px solid {t['accent_gold']};flex-shrink:0;'>"
         )
     else:
         avatar_html = (
-            f"<div style='width:46px;height:46px;border-radius:50%;background:{t['secondary']};"
+            f"<div style='width:42px;height:42px;border-radius:50%;background-color:{t['secondary']};"
             f"border:2px solid {t['accent_gold']};display:flex;align-items:center;justify-content:center;"
-            f"font-weight:800;color:{t['soft_gold']};font-size:0.95rem;flex-shrink:0;'>{_esc(initials)}</div>"
+            f"font-weight:800;color:{t['soft_gold']};font-size:0.90rem;flex-shrink:0;'>{_esc(initials)}</div>"
         )
     status_badge = render_status_badge("Online" if is_online else "Offline", "success" if is_online else "danger")
     st.markdown(
-        f"<div style='background:{t['card_bg']};border:1px solid {t['border']};border-radius:12px;"
-        f"padding:10px 12px;margin-bottom:10px;'>"
-        f"<div style='display:flex;align-items:center;gap:10px;'>"
+        f"<div style='background-color:{t['topbar_navy']};border:1px solid {t['accent_gold']};border-radius:10px;"
+        f"padding:9px 11px;margin-bottom:8px;'>"
+        f"<div style='display:flex;align-items:center;gap:9px;'>"
         f"{avatar_html}"
         f"<div style='min-width:0;flex:1;'>"
-        f"<div style='font-size:0.86rem;font-weight:800;color:{t['text']};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'>"
+        f"<div style='font-size:0.84rem;font-weight:800;color:{t['text']};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'>"
         f"{_esc(display_name)}</div>"
-        f"<div style='font-size:0.72rem;color:{t['soft_gold']};font-weight:700;'>{_esc(role)}</div>"
-        f"<div style='font-size:0.70rem;color:{t['muted_text']};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'>"
+        f"<div style='font-size:0.71rem;color:{t['soft_gold']};font-weight:700;'>{_esc(role)}</div>"
+        f"<div style='font-size:0.68rem;color:{t['muted_text']};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'>"
         f"{_esc(assigned_scope)}</div>"
         f"</div>"
         f"{status_badge}"
@@ -604,7 +755,8 @@ def render_user_profile_card(
 def get_role_navigation_groups(user_role: str, login_role: str = "") -> List[Dict[str, Any]]:
     """
     Returns the 5 clean expandable sidebar navigation groups strictly scoped by user_role.
-    Every item uses a stable internal `page_id` mapped to its existing backend route.
+    Note: No separate 'Home' or 'Home & Leadership Portal' shortcut is shown in the sidebar;
+    after login, the application opens directly to the role-based landing dashboard.
     """
     is_master = (user_role == "Master Admin")
     groups: List[Dict[str, Any]] = [
@@ -614,7 +766,6 @@ def get_role_navigation_groups(user_role: str, login_role: str = "") -> List[Dic
             "dashboard_page_id": "group_parish_operations",
             "items": [
                 {"page_id": "group_parish_operations", "label": "Operations Overview"},
-                {"page_id": "home_overview", "label": "Home & Leadership Portal"},
                 {"page_id": "weekly_report", "label": "Weekly Report & Monitoring"},
                 {"page_id": "outreach_visitation", "label": "Visitation, Mission & Indoctrination"},
             ],
@@ -678,22 +829,14 @@ def render_grouped_sidebar_navigation(
     current_app_mode: str,
 ) -> str:
     """
-    Renders Sidebar Section C: Home/Dashboard shortcut + 5 clean expandable navigation groups.
+    Renders Sidebar Section C: The 5 clean expandable navigation groups (without any separate
+    Home menu button or duplicate Home & Leadership Portal entry).
     Returns the active `app_mode` string.
     """
     groups = get_role_navigation_groups(user_role=user_role, login_role=login_role)
     active_page_id = APP_MODE_TO_PAGE_ID.get(current_app_mode, "home_overview")
 
-    st.markdown("<div class='ctg-sb-section-label'>Navigation</div>", unsafe_allow_html=True)
-    is_home_active = (active_page_id == "home_overview")
-    if st.button(
-        "🏠  Dashboard (Overview)",
-        key="sb_nav_home_overview",
-        use_container_width=True,
-        type="primary" if is_home_active else "secondary",
-    ):
-        st.session_state["current_nav_page"] = PAGE_ID_TO_APP_MODE["home_overview"]
-        st.rerun()
+    st.markdown("<div class='ctg-sb-section-label'>Ministry Modules</div>", unsafe_allow_html=True)
 
     for grp in groups:
         grp_page_ids = {it["page_id"] for it in grp["items"]}
