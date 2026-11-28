@@ -358,6 +358,33 @@ def render_marriage_portal(embedded_in_hub: bool = False) -> None:
         except Exception:
             st.session_state["_mar_jpeg_auto_synced"] = True
 
+    _mar_side_sel = str(st.session_state.get("mar_contextual_nav") or "Dashboard").strip()
+    _mar_tab_map = {
+        "Dashboard": 0,
+        "Global Search & Print": 1,
+        "MARRIAGE JPEG Archive": 2,
+        "New Marriage Registration": 3,
+        "Certificate Generator": 4,
+        "Generated Certificates": 4,
+        "Google Drive Storage": 0,
+    }
+    _mar_t_idx = _mar_tab_map.get(_mar_side_sel, 0)
+    if st.session_state.get("_mar_force_tab_jump"):
+        st.session_state["_mar_force_tab_jump"] = False
+        components.html(
+            f"""
+            <script>
+            setTimeout(function() {{
+                const tabs = window.parent.document.querySelectorAll('button[data-baseweb="tab"]');
+                if (tabs && tabs.length > {_mar_t_idx}) {{
+                    tabs[{_mar_t_idx}].click();
+                }}
+            }}, 120);
+            </script>
+            """,
+            height=0,
+        )
+
     tabs = st.tabs(
         [
             "📊 1. Dashboard",
