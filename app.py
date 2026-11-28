@@ -20888,6 +20888,7 @@ def render_vscode_docked_right_chat_panel(selected_model_name: str = "gemini-3.8
     )
 
     with st.container(border=True):
+        st.markdown('<div id="vsc-right-dock-marker" style="display:none;"></div>', unsafe_allow_html=True)
         dock_tab_ai, dock_tab_msg = st.tabs([
             "🤖 Gabay AI Chat",
             f"🗣️ Messenger ({len(all_msgs)})",
@@ -21117,10 +21118,33 @@ if st.session_state.get("vscode_right_chat_open", True) and app_mode not in (
     "🗣️ Ministry Messenger (Admin & Users Chat)",
     "💬 AI Chat Assistant",
 ):
-    _vscode_center_workbench_col, _vscode_right_chat_dock_col = st.columns([3.05, 1.15], gap="medium")
-    with _vscode_right_chat_dock_col:
-        render_vscode_docked_right_chat_panel(selected_model_name=selected_model)
-    _vscode_center_workbench_col.__enter__()
+    st.markdown(
+        """
+        <style>
+        @media (min-width: 1100px) {
+            section.main > div.block-container {
+                padding-right: 365px !important;
+                max-width: 100% !important;
+            }
+            div[data-testid="stVerticalBlockBorderWrapper"]:has(#vsc-right-dock-marker) {
+                position: fixed !important;
+                top: 3.5rem !important;
+                right: 0.65rem !important;
+                width: 342px !important;
+                max-height: calc(100vh - 4.2rem) !important;
+                overflow-y: auto !important;
+                z-index: 990 !important;
+                background: #FFFFFF !important;
+                border: 2px solid #D4AF37 !important;
+                border-radius: 12px !important;
+                box-shadow: -6px 6px 24px rgba(15, 23, 42, 0.16) !important;
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    render_vscode_docked_right_chat_panel(selected_model_name=selected_model)
 
 # =====================================================================
 # 📑 WEEKLY REPORT & PARISH MONITORING ROUTE
