@@ -20814,34 +20814,60 @@ def render_persistent_ctg_top_navbar() -> None:
         div[data-testid="collapsedControl"] {
             display: none !important;
         }
-        section.main > div.block-container,
-        div[data-testid="stAppViewBlockContainer"] {
-            padding-top: 0.35rem !important;
+        section.main,
+        [data-testid="stMain"] {
+            flex: 1 1 0% !important;
+            width: 100% !important;
+            max-width: 100% !important;
+            margin-left: 0px !important;
         }
-        /* Smooth slide transition on the Left Side Panel */
+        section.main > div.block-container,
+        div[data-testid="stAppViewBlockContainer"],
+        div[data-testid="stMainBlockContainer"] {
+            padding-top: 0.35rem !important;
+            max-width: 100% !important;
+        }
+        /* Smooth slide transition on the Left Side Panel WITHOUT negative margin-left so main page never clips */
         section[data-testid="stSidebar"] {
-            transition: margin-left 0.24s cubic-bezier(0.4, 0, 0.2, 1),
-                        width 0.24s cubic-bezier(0.4, 0, 0.2, 1),
-                        min-width 0.24s cubic-bezier(0.4, 0, 0.2, 1) !important;
+            transition: width 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+                        min-width 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+                        max-width 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+                        opacity 0.18s ease !important;
+            margin-left: 0px !important;
         }
         section[data-testid="stSidebar"].ctg-sidebar-slid-closed {
-            margin-left: -22rem !important;
+            margin-left: 0px !important;
             width: 0px !important;
             min-width: 0px !important;
             max-width: 0px !important;
+            padding: 0px !important;
             overflow: hidden !important;
             border-right: none !important;
+            opacity: 0 !important;
+            pointer-events: none !important;
         }
-        /* Sticky Top Header Bar container that stays visible at the very top while scrolling */
+        section[data-testid="stSidebar"].ctg-sidebar-slid-closed > div {
+            width: 0px !important;
+            min-width: 0px !important;
+            max-width: 0px !important;
+            padding: 0px !important;
+            overflow: hidden !important;
+        }
+        /* Sticky Top Header Bar container that stays visible at the very top while scrolling the full page */
+        div[data-testid="stVerticalBlock"] > div:has(#ctg-sticky-top-header-marker) {
+            position: sticky !important;
+            top: 0.25rem !important;
+            z-index: 999990 !important;
+        }
         div[data-testid="stVerticalBlockBorderWrapper"]:has(#ctg-sticky-top-header-marker) {
             position: sticky !important;
-            top: 0px !important;
+            top: 0.25rem !important;
             z-index: 999990 !important;
             background: linear-gradient(90deg, #061024 0%, #0C2147 50%, #061024 100%) !important;
             border: 1.5px solid rgba(212, 175, 55, 0.65) !important;
             border-radius: 12px !important;
             padding: 6px 12px !important;
-            margin-bottom: 12px !important;
+            margin-bottom: 10px !important;
             box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55) !important;
             backdrop-filter: blur(10px) !important;
         }
@@ -20884,7 +20910,6 @@ def render_persistent_ctg_top_navbar() -> None:
     all_notifs_top = load_live_notifications()
     unread_cnt = len(all_notifs_top)
 
-    # Note: st.popover automatically appends its own chevron icon, so omit trailing '▾' to avoid double arrows
     if is_master_top:
         user_pill_lbl = f"MA  Master Admin ({len(online_leaders_list)} Online)"
     elif is_current_user_diocese_admin():
@@ -20971,31 +20996,40 @@ def render_persistent_ctg_top_navbar() -> None:
                 if st.button("🚪 Logout sa System", type="primary", use_container_width=True, key="top_pop_logout"):
                     _perform_clean_user_logout()
 
-    # Client-side enhancer: pins the header bar at top:0 on scroll AND makes ☰ smoothly slide the sidebar open/closed in 0ms
     _v1_comp.html(
         """
         <script>
         (function() {
             const pDoc = window.parent.document;
-            // 1. Ensure sticky top header wrapper is pinned at top: 0
+            // 1. Ensure sticky top header wrapper AND its outer row container stay pinned at top while scrolling
             const marker = pDoc.getElementById('ctg-sticky-top-header-marker');
             if (marker) {
-                const wrapper = marker.closest('[data-testid="stVerticalBlockBorderWrapper"]') || marker.parentElement;
-                if (wrapper) {
-                    wrapper.style.position = 'sticky';
-                    wrapper.style.top = '0px';
-                    wrapper.style.zIndex = '999990';
+                const borderWrap = marker.closest('[data-testid="stVerticalBlockBorderWrapper"]');
+                if (borderWrap) {
+                    borderWrap.style.position = 'sticky';
+                    borderWrap.style.top = '0.25rem';
+                    borderWrap.style.zIndex = '999990';
+                    if (borderWrap.parentElement) {
+                        borderWrap.parentElement.style.position = 'sticky';
+                        borderWrap.parentElement.style.top = '0.25rem';
+                        borderWrap.parentElement.style.zIndex = '999990';
+                    }
                 }
             }
 
-            // 2. Make the '☰' button smoothly slide the Left Side Panel open/closed in 0ms without a page reload
+            // 2. Make the '☰' button smoothly collapse/expand the Left Side Panel to width:0px (no negative margin-left!)
             const sidebar = pDoc.querySelector('section[data-testid="stSidebar"]');
-            if (sidebar && sidebar.getAttribute('aria-expanded') === 'false') {
-                const nativeExpand = pDoc.querySelector('button[data-testid="stExpandSidebarButton"], [data-testid="collapsedControl"] button');
-                if (nativeExpand) nativeExpand.click();
-            }
-            if (sidebar && window.parent._ctgSidebarClosed === true) {
-                sidebar.classList.add('ctg-sidebar-slid-closed');
+            if (sidebar) {
+                sidebar.style.marginLeft = '0px';
+                if (sidebar.getAttribute('aria-expanded') === 'false') {
+                    const nativeExpand = pDoc.querySelector('button[data-testid="stExpandSidebarButton"], [data-testid="collapsedControl"] button');
+                    if (nativeExpand) nativeExpand.click();
+                }
+                if (window.parent._ctgSidebarClosed === true) {
+                    sidebar.classList.add('ctg-sidebar-slid-closed');
+                } else {
+                    sidebar.classList.remove('ctg-sidebar-slid-closed');
+                }
             }
 
             const allBtns = pDoc.querySelectorAll('button');
@@ -21007,6 +21041,7 @@ def render_persistent_ctg_top_navbar() -> None:
                         e.stopPropagation();
                         const sb = pDoc.querySelector('section[data-testid="stSidebar"]');
                         if (!sb) return;
+                        sb.style.marginLeft = '0px';
                         if (sb.getAttribute('aria-expanded') === 'false') {
                             const natExp = pDoc.querySelector('button[data-testid="stExpandSidebarButton"], [data-testid="collapsedControl"] button');
                             if (natExp) natExp.click();
